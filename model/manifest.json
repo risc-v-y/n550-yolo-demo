@@ -1,0 +1,33 @@
+{
+    "model":  "YOLO26n",
+    "nodes":  334,
+    "input":  [
+                  1,
+                  3,
+                  416,
+                  416
+              ],
+    "output":  [
+                   300,
+                   6
+               ],
+    "constant_bytes":  9678644,
+    "arena_bytes":  7614720,
+    "files":  [
+                  {
+                      "name":  "constants.bin",
+                      "bytes":  9678644,
+                      "sha256":  "ce4ce892ec5cc8b0f1bee0f4cb754535aa4932b5879da95ed01c3db9039ad1ce"
+                  },
+                  {
+                      "name":  "model_generated.c",
+                      "bytes":  68326,
+                      "sha256":  "5ba73d90411632bf4ad8e254d1ddfe27eebf34bd5858bafd65e1ac7be213d47c"
+                  },
+                  {
+                      "name":  "model_generated.h",
+                      "bytes":  358,
+                      "sha256":  "6784eedef90341f3a2b22d2c8abaa97723c49c399d8e0aa07e906c3e20fe9cc6"
+                  }
+              ]
+}

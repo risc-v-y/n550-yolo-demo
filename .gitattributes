@@ -1,0 +1,14 @@
+* text=auto
+*.sh text eol=lf
+*.S text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.ld text eol=lf
+*.bin binary
+*.pt binary
+*.jpg binary
+*.png binary
+*.mp4 binary
+# Frozen generated assets retain byte-identical hashes across clones.
+/model/model_generated.c -text whitespace=cr-at-eol
+/model/model_generated.h -text whitespace=cr-at-eol

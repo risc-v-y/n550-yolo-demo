@@ -1,0 +1,16 @@
+# Machine-local tools/environments and generated runs
+/toolchain/
+/manual/
+/dist/
+**/__pycache__/
+**/.venv*/
+**/.python/
+**/.cache/
+**/.tools/
+**/outputs/
+**/build/
+*.log
+# Deployment binaries are distributed as Release assets.
+*.elf
+*.map
+*.disasm

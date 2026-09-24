@@ -6,9 +6,12 @@ import struct
 import threading
 import time
 import zlib
+import json
+from datetime import datetime
 
 HEADER = struct.Struct('<4sHHIIIIII')
 HELLO, INFO, BEGIN, DATA, RUN, ACK, GET, RESULT, ERROR, PING, PONG, STOP = range(1,13)
+DIAG_GET, DIAG, DIAG_CONFIG = 13, 14, 15
 LIMIT = 1024
 
 
@@ -20,7 +23,7 @@ def packet(kind, seq, frame=0, offset=0, payload=b''):
 
 
 class UARTBackend:
-    def __init__(self, port, baud=115200, stop=None, infer_timeout=900, progress=None, transport=None):
+    def __init__(self, port, baud=115200, stop=None, infer_timeout=900, progress=None, transport=None, diagnostic=None):
         if transport is None:
             import serial
             transport = serial.Serial(port, baudrate=baud, bytesize=8, parity='N', stopbits=1,
@@ -34,6 +37,9 @@ class UARTBackend:
         self.frame = 0
         self.buffer = bytearray()
         self.last_timing = {}
+        self.diagnostic = diagnostic or (lambda event: None)
+        self.last_diagnostic = None
+        self.last_diagnostic_seq = None
         try:
             data = self.request(HELLO,INFO)
             if len(data)!=24:
@@ -60,7 +66,7 @@ class UARTBackend:
             self._check(deadline)
             self.buffer.extend(self.link.read(n-len(self.buffer)))
 
-    def _response(self, seq, frame, offset, deadline):
+    def _response(self, seq, frame, offset, deadline, expected):
         while True:
             self._check(deadline)
             self._fill(4,deadline)
@@ -79,7 +85,21 @@ class UARTBackend:
                 raise ValueError('UART payload CRC mismatch')
             if (h[3],h[4],h[5]) != (seq,frame,offset):
                 continue  # late reply to an earlier request
+            if h[2] == DIAG:
+                from board_diagnostics import decode_snapshot
+                self.last_diagnostic = decode_snapshot(body)
+                self.last_diagnostic_seq = seq
+                self.diagnostic({'type': 'board', 'request_seq': seq, 'request_frame': frame,
+                                 'diagnostic': self.last_diagnostic})
+                if expected != DIAG:
+                    continue
             return h[2],body
+
+    def configure_diagnostics(self, trace=False, check_finite=False):
+        self.request(DIAG_CONFIG, ACK, struct.pack('<I', 1 | (2 if trace else 0) | (4 if check_finite else 0)))
+        self.request(DIAG_GET, DIAG)
+        if self.last_diagnostic['error']:
+            raise RuntimeError(f'Board startup diagnostic reports failure: {self.last_diagnostic}')
 
     def request(self, kind, expected, payload=b'', offset=0, timeout=3):
         self.seq = (self.seq+1)&0xffffffff
@@ -96,10 +116,11 @@ class UARTBackend:
                     if not written:
                         raise TimeoutError('UART write made no progress')
                     cursor+=written
-                response,body=self._response(seq,self.frame,offset,deadline)
+                response,body=self._response(seq,self.frame,offset,deadline,expected)
                 if response==ERROR:
                     code=struct.unpack('<I',body)[0] if len(body)==4 else 'malformed'
-                    raise RuntimeError(f'Board rejected command {kind}: error {code}')
+                    detail = self.last_diagnostic if self.last_diagnostic_seq == seq else None
+                    raise RuntimeError(f'Board rejected command {kind}: error {code}; diagnostic={detail}')
                 if response!=expected:
                     raise RuntimeError(f'Unexpected response {response}, expected {expected}')
                 if expected==ACK and body:
@@ -109,6 +130,8 @@ class UARTBackend:
                 failure=exc
                 self.buffer.clear()
                 self.progress(f'UART retry {attempt+1}/3: {exc}')
+                self.diagnostic({'type': 'transport', 'message': str(exc), 'command': kind,
+                                 'seq': seq, 'frame': self.frame, 'offset': offset, 'attempt': attempt+1})
         raise TimeoutError(f'UART failed after 3 attempts: {failure}')
 
     def ping(self, data):
@@ -159,9 +182,21 @@ def main():
     parser.add_argument('--reference',type=Path,help='Historical Y26VDET candidate .bin for the SAME source image')
     parser.add_argument('--output',type=Path,default=Path('outputs/board-image'))
     parser.add_argument('--ping',type=int,default=1,help='Number of 1024-byte loopback checks')
+    parser.add_argument('--board-trace',action='store_true')
+    parser.add_argument('--check-intermediates',action='store_true')
+    parser.set_defaults(output=None)
     args=parser.parse_args()
-    backend=UARTBackend(args.port,args.baud,progress=print)
+    from board_diagnostics import DiagnosticLog
+    if args.output is None:
+        args.output=Path(__file__).resolve().parent/'outputs'/'board-uart'/datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    args.output.mkdir(parents=True,exist_ok=False)
+    log=DiagnosticLog(args.output)
+    backend=None
+    report={'status':'starting','port':args.port,'baud':args.baud}
     try:
+        backend=UARTBackend(args.port,args.baud,progress=print,diagnostic=log.emit)
+        backend.configure_diagnostics(args.board_trace,args.check_intermediates)
+        report['board']=backend.info
         print(backend.info)
         for i in range(args.ping):
             backend.ping(bytes((j+i)%256 for j in range(LIMIT)))
@@ -169,14 +204,13 @@ def main():
         if args.image:
             from video_demo import read_image, prepare_input, postprocess, annotate, np, write_json
             from live_demo import save_image
-            args.output.mkdir(parents=True,exist_ok=False)
             image=read_image(args.image)
             tensor,transform=prepare_input(image)
             candidates=backend.infer(tensor)
             boxes=postprocess(candidates,transform,.25)
             np.save(args.output/'candidates.npy',candidates)
             save_image(args.output/'annotated.png',annotate(image,boxes))
-            report={'board':backend.info,'timing':backend.last_timing,'detections':boxes.tolist()}
+            report.update(timing=backend.last_timing,detections=boxes.tolist())
             if args.reference:
                 blob=args.reference.read_bytes()
                 if len(blob)!=7232 or blob[:8]!=b'Y26VDET\0':
@@ -187,9 +221,18 @@ def main():
                                      'class_sequence_match':bool(np.array_equal(candidates[:,5],expected[:,5])),
                                      'max_coordinate_difference':float(np.max(np.abs(candidates[:,:4]-expected[:,:4]))),
                                      'max_score_difference':float(np.max(np.abs(candidates[:,4]-expected[:,4])))}
-            write_json(args.output/'report.json',report)
+        report['status']='passed'
+    except BaseException as exc:
+        report.update(status='failed',error=str(exc),exception=type(exc).__name__)
+        log.exception(exc)
+        raise
     finally:
-        backend.close()
+        if backend is not None:
+            report['last_diagnostic']=backend.last_diagnostic
+            backend.close()
+        (args.output/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+        log.close()
+        print(f'UART logs: {args.output}',flush=True)
 
 
 if __name__=='__main__':

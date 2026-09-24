@@ -36,7 +36,9 @@ AMU输入打包后clean；输出各行在写前flush，矩阵完成等待后inva
 
 ## 故障定位
 
-由同事使用现有调试器观察全局变量：`board_error`（1权重长度、2图格式、3AMU能力、4自检失败、0x21–0x25 UART初始化失败、0x100异常）；`board_trap_cause/pc/value`保存mcause/mepc/mtval；`board_test_stage`（1 RVV缓存、2 AMU、3通过）；`board_current_node`定位模型节点。
+优先按 [诊断说明](DIAGNOSTICS.md) 查看 host 的 `diagnostics.jsonl` 或通过调试器读取 `board_diag`。它记录阶段、错误及原始返回码、节点、输入输出形状、AMU flags、异常 CSR 与整数寄存器，并执行缓存同步。
+
+保留的旧符号包括：`board_error`（1权重长度、2图格式、3AMU能力、4自检失败、0x21–0x25 UART初始化失败、0x100异常）；`board_trap_cause/pc/value`；`board_test_stage`（1 RVV缓存、2 AMU、3通过）；`board_current_node`。旧符号用于兼容，完整诊断以 `board_diag` 为准。
 
 UART固件不向协议串口写printf文本。没有INFO时先检查固件是否通过自检，再检查端口、接线、分频和时钟。传输异常可能需要等待板端当前RUN完成或由同事重新运行固件；程序不通过串口执行硬件复位。
 

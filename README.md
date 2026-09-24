@@ -1,6 +1,8 @@
 # N550 YOLO26 UART demo
 
-交付目标：开发机采集/预处理 → UART → N550 RVV+AMU FP16 推理 → UART → 开发机后处理/显示。固定416×416、batch=1、COCO80、334节点，输出300×6 FP32候选框。
+交付目标：host 采集/预处理 → UART → N550 RVV+AMU FP16 推理 → UART → host 后处理/显示，开发机远程查看。固定416×416、batch=1、COCO80、334节点，输出300×6 FP32候选框。
+
+当前实验室部署改为 **host（物理连接开发板的 Linux 电脑）完成视频读取、预处理、后处理和显示，开发机远程查看 host 桌面**。Python 3.10 安装命令、日志与诊断见 [host 运行与故障定位](docs/DIAGNOSTICS.md)。程序及权重加载仍由软件同事负责。
 
 **当前属于待上板验证的软件交付。编译与本机协议测试通过不等于 UART、缓存或 AMU 硬件已验收。** JTAG连接、下载及调试由软件/FPGA同事负责。
 
@@ -51,6 +53,7 @@ bash yolo26_riscv/build_board.sh
 - [板端约束、验收与故障定位](docs/BOARD.md)
 - [UART二进制协议](docs/UART_PROTOCOL.md)
 - [软件验证记录](docs/VALIDATION.md)
+- [host 运行与诊断日志](docs/DIAGNOSTICS.md)
 - `reference/`：bus/zidane的历史QEMU FP16候选框与后处理基准，用于上板核对，不代表本次板端结果。
 - 本地PyTorch模式：在仓库根目录执行以下命令。
 

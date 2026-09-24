@@ -30,7 +30,7 @@ model_weights_end:
 EOF
 "$tc-gcc" "${flags[@]}" -c "$out/weights.S" -o "$out/weights.o"
 sources=(matmul.c conv2d.c activation.c basic.c basic_rvv.c scalar_model.c
-         rvv_model_ops.c amu.c accel_model.c board/uart.c board/protocol.c board/main.c board/selftest.c
+         rvv_model_ops.c amu.c accel_model.c board/uart.c board/protocol.c board/main.c board/selftest.c board/diagnostics.c
          "$root/model/model_generated.c")
 "$tc-gcc" "${flags[@]}" -include board/coherent_rvv.h -nostdlib -nostartfiles \
     -Wl,--gc-sections -Wl,-Map="$out/demo.map" -T board/ddr.ld \
@@ -48,6 +48,6 @@ sha256sum "$out/demo.elf" "$root/model/constants.bin" "$root/model/model_generat
     "$root/model/model_generated.h" > "$out/sha256.txt"
 "$tc-gcc" --version > "$out/compiler.txt"
 "$tc-gcc" "${flags[@]}" -DBOARD_SELFTEST_STANDALONE=1 -nostdlib -nostartfiles \
-    -Wl,--gc-sections -T board/ddr.ld "$out/start.o" board/selftest.c board/uart.c amu.c \
+    -Wl,--gc-sections -T board/ddr.ld "$out/start.o" board/selftest.c board/uart.c board/diagnostics.c amu.c \
     -o "$out/selftest.elf"
 printf 'Board ELF compiled; physical UART/cache/AMU verification is still required.\n'

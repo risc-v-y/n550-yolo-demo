@@ -39,3 +39,20 @@ PC按精确字节数读取，允许任意分片。通常每次请求超时3秒�
 板端记住最后一个请求及应答；完全相同的重复请求重发缓存应答，不重复拷贝或推理。CRC/头格式错误丢弃并等待下一包，PC在超时后重发。旧seq响应被PC跳过。新帧只有上一帧完成后才发送，取消后重新HELLO；板端计算期间不接收取消命令，须等其完成或由同事重新启动固件。
 
 协议只处理帧流和诊断，不承载权重、任意内存访问或调试器命令。
+
+## 诊断扩展（2026-09）
+
+原 v1 包头及 INFO 24 字节保持不变。类型 13 `DIAG_GET`（空请求）返回类型 14 `DIAG`；类型 15 `DIAG_CONFIG`（4 字节 uint32 位掩码）返回 ACK。配置 bit0 开启事件、bit1 开启逐节点、bit2 开启中间有限值检查，其他位拒绝。新 HELLO 将选项清零；旧 host 不配置时不会收到额外消息。
+
+开启事件后，同一请求的最终 ACK/ERROR 之前可出现 DIAG，回显当前请求 seq/frame/offset。host 消费这些消息后继续等待最终应答，总超时不因收到诊断消息重置。重复 RUN 只重发应答及当前快照，不重复推理；重发 DIAG_GET 可能返回该请求缓存的快照。DIAG_GET 不改变模型帧状态；同步 RUN 执行中不能并发查询。
+
+DIAG 固定 816 字节，为 102 个 little-endian uint64。前 28 项依次是：
+
+```
+version stage frame node op phase error detail
+received rx_errors rx_timeouts tx_errors crc_errors protocol_errors retries
+amu_flags tensor element observed expected
+trap_cause trap_pc trap_value node_start node_cycles inputs outputs options
+```
+
+随后 6 组各 7 项：`tensor_id,dtype,rank,shape[4]`，前四组输入、后两组输出；最后 32 项为 x0–x31。无有效节点/张量时为 UINT64_MAX，detail 按 int64 二补码解释。诊断版本当前为 1；具体枚举以 `board/diagnostics.h`、`board_diagnostics.py` 为准。CPU trap 不保证能发出 UART 消息，内存记录的限制见 [诊断说明](DIAGNOSTICS.md)。

@@ -9,7 +9,7 @@ import sys
 import time
 import unittest
 
-from uart_backend import UARTBackend, HEADER, BEGIN, DATA, RUN, ACK, GET, RESULT, STOP, PING, PONG, packet
+from uart_backend import UARTBackend, HEADER, BEGIN, DATA, RUN, ACK, GET, RESULT, STOP, PING, PONG, DIAG_GET, DIAG, packet
 
 
 class PipeTransport:
@@ -18,6 +18,7 @@ class PipeTransport:
         self.raw=bytearray()
         self.ready=bytearray()
         self.drop=False
+        self.drop_kind=None
         self.corrupt=False
         self.stale=False
     def write(self, data):
@@ -34,7 +35,7 @@ class PipeTransport:
                 count=32+h[6]
                 if len(self.raw)>=count:
                     response=bytes(self.raw[:count]); del self.raw[:count]
-                    if self.drop:
+                    if self.drop and (self.drop_kind is None or h[2]==self.drop_kind):
                         self.drop=False
                     elif self.corrupt:
                         self.corrupt=False
@@ -91,6 +92,53 @@ class ProtocolTests(unittest.TestCase):
         self.client.ping(b'recovered')
         self.client.stop.set()
         with self.assertRaises(InterruptedError): self.client.ping(b'cancelled')
+
+    def test_diagnostic_snapshot_and_crc_counter(self):
+        events=[]
+        self.client.diagnostic=events.append
+        self.client.configure_diagnostics(trace=True,check_finite=True)
+        self.assertEqual(self.client.last_diagnostic['options'],7)
+        broken=bytearray(packet(PING,123)); broken[-1]^=1
+        self.link.write(broken)
+        self.client.request(DIAG_GET,DIAG)
+        self.assertEqual(self.client.last_diagnostic['crc_errors'],1)
+        self.assertTrue(events)
+
+    def test_model_error_keeps_node_and_signed_detail(self):
+        events=[]
+        self.client.diagnostic=events.append
+        self.client.configure_diagnostics()
+        self.client.request(BEGIN,ACK)
+        total=3*416*416*4
+        for offset in range(0,total,1024):
+            block=bytearray(min(1024,total-offset))
+            if not offset: block[0]=255
+            self.client.request(DATA,ACK,block,offset)
+        with self.assertRaisesRegex(RuntimeError,'error 3'):
+            self.client.request(RUN,ACK)
+        d=self.client.last_diagnostic
+        self.assertEqual((d['node'],d['error'],d['detail']),(17,0x31,-7))
+        self.assertEqual(d['stage_name'],'failed')
+        self.assertEqual(d['received'],total)
+        self.assertTrue(any(e['diagnostic']['stage_name']=='run' for e in events))
+
+    def test_trace_shapes_and_retry_do_not_repeat_model(self):
+        events=[]
+        self.client.diagnostic=events.append
+        self.client.configure_diagnostics(trace=True)
+        self.client.request(BEGIN,ACK)
+        total=3*416*416*4
+        for offset in range(0,total,1024):
+            self.client.request(DATA,ACK,bytes(min(1024,total-offset)),offset)
+        self.link.drop=True; self.link.drop_kind=ACK
+        self.client.request(RUN,ACK,timeout=.5)
+        result=self.client.request(GET,RESULT)
+        self.assertEqual(struct.unpack_from('<f',result)[0],1.0)
+        starts=[e['diagnostic'] for e in events if e.get('type')=='board' and e['diagnostic']['phase_name']=='node_begin']
+        self.assertEqual(len(starts),1)
+        self.assertEqual(starts[0]['tensors'][0]['shape'],[1,3,416,416])
+        self.assertEqual(starts[0]['tensors'][1]['shape'],[1,300,6])
+        self.assertGreaterEqual(self.client.last_diagnostic['retries'],1)
 
 
 if __name__=='__main__':

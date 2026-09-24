@@ -1,4 +1,4 @@
 # Host-only serial demo; PyTorch is not needed for --backend uart.
-numpy==2.5.3
-opencv-python==5.0.0.93
+numpy==2.2.6
+opencv-python==4.11.0.86
 pyserial==3.5

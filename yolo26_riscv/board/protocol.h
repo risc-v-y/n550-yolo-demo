@@ -4,7 +4,8 @@
 #include <stddef.h>
 #define RPC_LIMIT 1024u
 enum { RPC_HELLO=1, RPC_INFO, RPC_BEGIN, RPC_DATA, RPC_RUN, RPC_ACK,
-       RPC_GET, RPC_RESULT, RPC_ERROR, RPC_PING, RPC_PONG, RPC_STOP };
+       RPC_GET, RPC_RESULT, RPC_ERROR, RPC_PING, RPC_PONG, RPC_STOP,
+       RPC_DIAG_GET, RPC_DIAG, RPC_DIAG_CONFIG };
 typedef struct {
     uint32_t magic;
     uint16_t version, kind;

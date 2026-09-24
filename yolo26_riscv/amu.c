@@ -3,6 +3,10 @@
 #include <xewmatrix_intrinsic.h>
 #ifdef YOLO_N550_BOARD
 #include "board/cache.h"
+#include "board/diagnostics.h"
+#define DIAG_PHASE(p) board_diag_phase(p)
+#else
+#define DIAG_PHASE(p) ((void)0)
 #endif
 
 enum { TILE_M = 32, TILE_N = 32, TILE_K = 32 };
@@ -38,10 +42,15 @@ int amu_half(float value, uint16_t *bits) {
  * the vendor load/store macros themselves do not declare memory clobbers.
  * Platform cache maintenance will be supplied by the platform adapter. */
 static void complete(void) {
+    DIAG_PHASE(PHASE_AMU_WAIT);
     uint64_t start = model_ticks();
     uintptr_t flags;
     __asm__ volatile ("csrr %0, xmfflags" : "=r"(flags) : : "memory");
     (void)flags;
+#ifdef YOLO_N550_BOARD
+    board_diag.amu_flags=flags;
+    board_clean((const void *)&board_diag.amu_flags,sizeof(board_diag.amu_flags));
+#endif
     model_profile_end(PROFILE_MATRIX_WAIT, start);
 }
 
@@ -66,11 +75,13 @@ int amu_matmul_fp16(const float *a, const float *b, float *c,
             size_t cols = n - col < TILE_N ? n - col : TILE_N;
             uint64_t start = model_ticks();
             uintptr_t old;
+            DIAG_PHASE(PHASE_AMU_SUBMIT);
             __riscv_msettilem(old, rows, w);
             __riscv_msettilen(old, cols, w);
             __riscv_mzero("acc0");
             model_profile_end(PROFILE_MATRIX_SUBMIT, start);
             for (size_t inner = 0; inner < k; inner += TILE_K) {
+                DIAG_PHASE(PHASE_AMU_PACK);
                 size_t count = k - inner < TILE_K ? k - inner : TILE_K;
                 start = model_ticks();
                 for (size_t i = 0; i < rows; ++i)
@@ -89,6 +100,7 @@ int amu_matmul_fp16(const float *a, const float *b, float *c,
                 board_clean(left_tile, sizeof(left_tile));
                 board_clean(right_tile, sizeof(right_tile));
 #endif
+                DIAG_PHASE(PHASE_AMU_SUBMIT);
                 __riscv_msettilek(old, count, w);
                 __riscv_mlae16("tr0", left_tile, TILE_K * sizeof(uint16_t));
                 __riscv_mlbe16("tr1", right_tile, TILE_K * sizeof(uint16_t));
@@ -102,6 +114,7 @@ int amu_matmul_fp16(const float *a, const float *b, float *c,
             for (size_t i = 0; i < rows; ++i)
                 board_prepare_write(c + (row+i)*ldc + col, cols*sizeof(float));
 #endif
+            DIAG_PHASE(PHASE_AMU_STORE);
             __riscv_msce32("acc0", c + row * ldc + col, ldc * sizeof(float));
             model_profile_end(PROFILE_MATRIX_SUBMIT, start);
             complete();

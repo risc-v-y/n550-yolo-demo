@@ -8,6 +8,8 @@ import struct
 import subprocess
 import threading
 import time
+import sys
+from board_diagnostics import DiagnosticLog
 
 from video_demo import (ROOT, RISCV, WORKSPACE, cv2, np, prepare_input, postprocess,
                         annotate, find_wsl, windows_to_wsl, stop_process, write_json)
@@ -52,6 +54,8 @@ def main():
     parser.add_argument('--baud', type=int, default=115200)
     parser.add_argument('--infer-timeout', type=float, default=900)
     parser.add_argument('--save-frames', action='store_true', help='Save diagnostic PNG/NPY files for every result')
+    parser.add_argument('--board-trace', action='store_true', help='Log every board node start/end (adds UART traffic)')
+    parser.add_argument('--check-intermediates', action='store_true', help='Check each board FP32 node output for NaN/Inf')
     parser.add_argument('--source', help='Loop a local video for repeatable validation')
     parser.add_argument('--port', type=int, default=5557)
     parser.add_argument('--distro', default='Ubuntu-24.04')
@@ -65,6 +69,7 @@ def main():
         parser.error('Invalid port, duration or result count')
     output = ROOT / 'outputs' / 'live-demo' / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     output.mkdir(parents=True)
+    diagnostics = DiagnosticLog(output)
     stop = threading.Event()
     lock = threading.Lock()
     state = {'latest': None, 'detected': None, 'status': f'Starting {args.backend}', 'error': None,
@@ -82,15 +87,21 @@ def main():
 
     def fail(exc):
         with lock:
-            state['error'] = str(exc)
-        stop.set()
+            if state['error'] is None:
+                state['error'] = str(exc)
+        try:
+            diagnostics.exception(exc)
+        except OSError as log_error:
+            print(f'Cannot save diagnostic: {log_error}; original error: {exc}',file=sys.stderr)
+        finally:
+            stop.set()
 
     def capture():
         cap = None
         try:
             cap = (cv2.VideoCapture(args.source) if args.source else
-                   cv2.VideoCapture(args.camera, cv2.CAP_DSHOW))
-            if not cap.isOpened() and not args.source:
+                   cv2.VideoCapture(args.camera, cv2.CAP_DSHOW if sys.platform == 'win32' else cv2.CAP_ANY))
+            if not cap.isOpened() and not args.source and sys.platform == 'win32':
                 cap.release()
                 cap = cv2.VideoCapture(args.camera, cv2.CAP_MSMF)
             if not cap.isOpened():
@@ -151,7 +162,9 @@ def main():
                 def progress(message):
                     with lock:
                         state['status'] = message
-                backend = UARTBackend(args.serial_port,args.baud,stop,args.infer_timeout,progress)
+                backend = UARTBackend(args.serial_port,args.baud,stop,args.infer_timeout,progress,
+                                      diagnostic=diagnostics.emit)
+                backend.configure_diagnostics(args.board_trace,args.check_intermediates)
                 report['board'] = backend.info
             deadline = time.monotonic() + 180
             while args.backend == 'qemu' and not stop.is_set():
@@ -236,7 +249,10 @@ def main():
                 fail(exc)
         finally:
             if backend is not None and hasattr(backend, 'close'):
-                backend.close()
+                try:
+                    backend.close()
+                except Exception as exc:
+                    fail(exc)
             if sock is not None:
                 sock.close()
 
@@ -313,6 +329,8 @@ def main():
         if results:
             report['mean_postprocess_ms'] = float(np.mean([r['postprocess_seconds'] for r in results])*1000)
         write_json(output / 'report.json', report)
+        if all(not thread.is_alive() for thread in threads):
+            diagnostics.close()
         print(output, flush=True)
     if state['error']:
         raise RuntimeError(state['error'])

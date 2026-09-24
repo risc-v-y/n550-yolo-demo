@@ -1,5 +1,6 @@
 #include "uart.h"
 #include <stddef.h>
+#include "diagnostics.h"
 #define UART_BASE ((uintptr_t)0x20100000u)
 #define UART_CLOCK 10000000u
 #define UART_BAUD 115200u
@@ -56,15 +57,18 @@ int board_uart_get(unsigned char *value) {
     for (unsigned i=0; i<UART_POLL_LIMIT; ++i) {
         uint32_t status = read_reg(LSR);
         if (status & 0x1e) {
+            ++board_diag.rx_errors; board_diag_commit();
             if (status & 1) (void)read_reg(RBR);
             return -2;
         }
         if (status & 1) { *value = (unsigned char)read_reg(RBR); return 0; }
     }
+    ++board_diag.rx_timeouts; board_diag_commit();
     return -1;
 }
 int board_uart_put(unsigned char value) {
     for (unsigned i=0; i<UART_POLL_LIMIT; ++i)
         if (read_reg(LSR) & 0x20) { write_reg(THR, value); return 0; }
+    ++board_diag.tx_errors; board_diag_commit();
     return -1;
 }

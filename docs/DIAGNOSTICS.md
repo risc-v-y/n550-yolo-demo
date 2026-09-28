@@ -2,25 +2,9 @@
 
 链路：**host 视频/预处理 → UART → 开发板 → UART → host 后处理、绘框、保存 → 开发机远程查看 host 桌面**。这里 host 指物理连接开发板的 Linux 电脑。程序与权重由软件同事加载，网络转发暂不实施。
 
-## 使用
+## 使用入口
 
-同事加载本次配套 `demo.elf` 后，在 host 的仓库根目录执行：
-
-```bash
-python3.10 -m venv .venv-host
-.venv-host/bin/python -m pip install -r yolo26_pc/requirements-board.txt
-# 先查串口；此操作不发送数据
-.venv-host/bin/python yolo26_pc/serial_probe.py
-# 将 ttyUSB0 换成实际设备，关闭 PuTTY/minicom
-.venv-host/bin/python yolo26_pc/uart_backend.py --port /dev/ttyUSB0 --ping 100
-.venv-host/bin/python yolo26_pc/uart_backend.py --port /dev/ttyUSB0 --image yolo26_pc/samples/bus.jpg
-# 图像通过后，运行视频。窗口开在 host 的当前图形会话中。
-.venv-host/bin/python yolo26_pc/live_demo.py --backend uart --serial-port /dev/ttyUSB0 --source yolo26_pc/samples/pexels-3796613.mp4 --max-results 2
-```
-
-必须在能显示窗口的 host 桌面会话执行；普通 SSH 终端未必有图形显示环境。可先加 `--no-display` 验证文件输出。Python 3.10 的 UART 模式只需上述三个依赖，不执行面向本地 PyTorch 的 `setup.ps1`。
-
-新版 host 的模型演示入口要求固件支持诊断扩展；旧固件只适合原版本 host 或串口 HELLO 探测。请配套更新，协议错误 2 可能意味着仍在运行旧固件。
+准备环境、加载固件、确认串口和运行图片/视频的完整步骤统一放在 [README：板端验证入口](../README.md)。本页只说明日志、错误码及板端无法应答时的定位方式。
 
 ## 日志分级
 

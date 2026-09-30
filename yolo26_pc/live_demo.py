@@ -1,4 +1,4 @@
-"""Live preview and asynchronous YOLO detection: local PyTorch or QEMU TCP/UART."""
+"""Live preview and asynchronous YOLO detection: PyTorch, QEMU TCP, board UART/PCIe."""
 import argparse
 from datetime import datetime
 import queue
@@ -49,7 +49,11 @@ def save_image(path, image):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--camera', type=int, default=0)
-    parser.add_argument('--backend', choices=('pc', 'qemu', 'uart'), default='pc')
+    parser.add_argument('--backend', choices=('pc', 'qemu', 'uart', 'pcie'), default='pc')
+    parser.add_argument('--pbcopy', default='pbcopy', help='PCIe write executable')
+    parser.add_argument('--pbload', default='pbload', help='PCIe read executable')
+    parser.add_argument('--tool-timeout', type=float, default=30)
+    parser.add_argument('--poll-interval', type=float, default=.1)
     parser.add_argument('--serial-port', help='UART port, e.g. COM3 or /dev/ttyUSB0')
     parser.add_argument('--baud', type=int, default=115200)
     parser.add_argument('--infer-timeout', type=float, default=900)
@@ -65,6 +69,8 @@ def main():
     args = parser.parse_args()
     if args.backend == 'uart' and (not args.serial_port or args.baud<=0 or args.infer_timeout<=0):
         parser.error('UART needs --serial-port, positive baud and infer-timeout')
+    if args.backend == 'pcie' and (args.board_trace or min(args.infer_timeout,args.tool_timeout,args.poll_interval)<=0):
+        parser.error('PCIe needs positive timeouts/poll interval; --board-trace is UART-only')
     if not 1024 <= args.port <= 65535 or args.seconds < 0 or args.max_results < 0:
         parser.error('Invalid port, duration or result count')
     output = ROOT / 'outputs' / 'live-demo' / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
@@ -81,6 +87,8 @@ def main():
     if args.backend == 'uart':
         report.update(transport='physical UART',backend='N550 RVV+AMU FP16',
                       serial_port=args.serial_port,baud=args.baud)
+    elif args.backend == 'pcie':
+        report.update(transport='PCIe DDR via pbcopy/pbload',backend='N550 RVV+AMU FP16')
     connection = [None]
     process = None
     log = None
@@ -166,6 +174,15 @@ def main():
                                       diagnostic=diagnostics.emit)
                 backend.configure_diagnostics(args.board_trace,args.check_intermediates)
                 report['board'] = backend.info
+            elif args.backend == 'pcie':
+                from pcie_backend import PCIeBackend
+                def progress(message):
+                    with lock:
+                        state['status'] = message
+                backend = PCIeBackend(args.pbcopy,args.pbload,stop,args.infer_timeout,progress,
+                                      diagnostics.emit,tool_timeout=args.tool_timeout,
+                                      poll_interval=args.poll_interval,check_finite=args.check_intermediates)
+                report['board'] = backend.info
             deadline = time.monotonic() + 180
             while args.backend == 'qemu' and not stop.is_set():
                 if process.poll() is not None:
@@ -230,6 +247,8 @@ def main():
                           'detections': boxes.tolist()}
                 if args.backend == 'uart':
                     record['uart_timing'] = backend.last_timing
+                elif args.backend == 'pcie':
+                    record['pcie_timing'] = backend.last_timing
                 with lock:
                     state['detected'] = (annotated, record)
                     state['results'].append(record)

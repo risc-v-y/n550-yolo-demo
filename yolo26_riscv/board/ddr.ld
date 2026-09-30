@@ -16,7 +16,11 @@ SECTIONS {
         . = ALIGN(64);
         __bss_end = .;
     } > RAM
+    .pcie_mailbox 0x81f00000 (NOLOAD) : ALIGN(64) {
+        KEEP(*(.pcie_mailbox))
+    } > RAM
     __stack_top = ORIGIN(RAM) + LENGTH(RAM);
-    ASSERT(__bss_end <= __stack_top - 256K, "Board model exceeds reserved DDR region")
+    ASSERT(__bss_end <= 0x81f00000, "Board model overlaps PCIe mailbox reserve")
+    ASSERT(SIZEOF(.pcie_mailbox) <= 256, "PCIe mailbox exceeds wire layout")
     /DISCARD/ : { *(.comment .eh_frame .eh_frame_hdr) }
 }

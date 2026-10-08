@@ -1,4 +1,5 @@
-# Host-only serial demo; PyTorch is not needed for --backend uart.
+# Optional image/video host dependencies; not needed for the prepared PCIe samples.
 numpy==2.2.6
 opencv-python==4.11.0.86
+# UART model backend only; PCIe does not use pyserial.
 pyserial==3.5

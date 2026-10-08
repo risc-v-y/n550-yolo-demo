@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "format": "RGB CHW [3,416,416] little-endian FP32",
+  "preprocessing": "yolo26_pc/video_demo.py:prepare_input",
+  "numpy_version": "2.2.6",
+  "opencv_version": "4.11.0",
+  "samples": {
+    "bus": {
+      "input": "reference/prepared/bus-input-fp32.bin",
+      "input_sha256": "c6cb9f5c4a06bcd1cfcd427097acd8edb8da8762608f06878c81ceb3bd6cb11f",
+      "source": "yolo26_pc/samples/bus.jpg",
+      "source_sha256": "c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63",
+      "reference": "reference/bus-qemu-fp16.bin",
+      "reference_sha256": "e32f7ab08c13f0087185ece8f6cb29677f4ea5fcc5e19b7fb54029dc144e5acd",
+      "transform": {
+        "original_hw": [
+          1080,
+          810
+        ],
+        "resized_hw": [
+          416,
+          312
+        ],
+        "scale": 0.3851851851851852,
+        "padding_ltrb": [
+          52,
+          0,
+          52,
+          0
+        ],
+        "padding_value": 114,
+        "interpolation": "cv2.INTER_LINEAR",
+        "layout": "NCHW",
+        "channels": "RGB",
+        "dtype": "float32",
+        "normalization": "uint8 / 255.0",
+        "shape": [
+          1,
+          3,
+          416,
+          416
+        ]
+      }
+    },
+    "zidane": {
+      "input": "reference/prepared/zidane-input-fp32.bin",
+      "input_sha256": "f69e191c7c57daa836ab76e13345de3f3a6db5c1660381f107c57f4b8a0f8392",
+      "source": "yolo26_pc/samples/zidane.jpg",
+      "source_sha256": "16d73869e3267a7d4ed00de8e860833bd1657c1b252e94c0c348277adc7b6edb",
+      "reference": "reference/zidane-qemu-fp16.bin",
+      "reference_sha256": "8c0d63c30d202836c695c2392bb2aa1e525c692a4d8acbea1fbfbaeee6a21c50",
+      "transform": {
+        "original_hw": [
+          720,
+          1280
+        ],
+        "resized_hw": [
+          234,
+          416
+        ],
+        "scale": 0.325,
+        "padding_ltrb": [
+          0,
+          91,
+          0,
+          91
+        ],
+        "padding_value": 114,
+        "interpolation": "cv2.INTER_LINEAR",
+        "layout": "NCHW",
+        "channels": "RGB",
+        "dtype": "float32",
+        "normalization": "uint8 / 255.0",
+        "shape": [
+          1,
+          3,
+          416,
+          416
+        ]
+      }
+    }
+  }
+}

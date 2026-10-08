@@ -2,6 +2,7 @@
 import argparse
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 import secrets
 import shutil
@@ -125,7 +126,7 @@ class PCIeBackend:
             deadline=time.monotonic()+infer_timeout
             values=INFO.unpack(checked(self.link.read(MAILBOX,64,deadline)))
             if values[:3]!=(MAGIC,1,256) or values[7:11]!=(INPUT_BYTES,OUTPUT_BYTES,816,334):
-                raise ValueError('Incompatible PCIe firmware; load demo-pcie.elf')
+                raise ValueError('Incompatible PCIe firmware; load firmware/demo-pcie.bin')
             self.input_address,self.output_address,self.diag_address=values[4:7]
             for address,size in ((self.input_address,INPUT_BYTES),(self.output_address,OUTPUT_BYTES),(self.diag_address,816)):
                 if address<BASE or address%64 or address+size>MAILBOX:
@@ -211,12 +212,13 @@ class PCIeBackend:
                     return state
             self._pause(deadline)
 
-    def infer(self,tensor):
-        import numpy as np
+    def infer_bytes(self,data):
         if self.failed:
             raise RuntimeError('PCIe session failed; reconnect before sending another frame')
-        if tensor.shape!=(3,416,416) or tensor.dtype!=np.float32 or not np.isfinite(tensor).all():
-            raise ValueError('Expected finite RGB CHW FP32 416x416 input')
+        if not isinstance(data,bytes) or len(data)!=INPUT_BYTES:
+            raise ValueError(f'Expected {INPUT_BYTES} bytes of RGB CHW FP32 input')
+        if not all(math.isfinite(value) for (value,) in struct.iter_unpack('<f',data)):
+            raise ValueError('Input contains NaN/Inf')
         started=time.monotonic()
         deadline=started+self.infer_timeout
         try:
@@ -224,7 +226,6 @@ class PCIeBackend:
             if previous['session']!=self.session or previous['sequence']!=self.sequence or previous['state'] not in (READY,DONE):
                 raise RuntimeError('PCIe ownership/state changed; refusing to overwrite DDR')
             self.frame+=1
-            data=tensor.astype('<f4',copy=False).tobytes()
             self.progress(f'PCIe uploading frame {self.frame}')
             self.link.write(self.input_address,data,deadline)
             self._submit(2,len(data),zlib.crc32(data),deadline)
@@ -240,17 +241,24 @@ class PCIeBackend:
             confirmed=self._status(deadline)
             if confirmed!=state:
                 raise ValueError('PCIe status changed during result download')
-            candidates=np.frombuffer(result,dtype='<f4').reshape(300,6).copy()
-            classes=candidates[:,5]
-            if not np.isfinite(candidates).all() or np.any(classes!=np.rint(classes)) or np.any((classes<0)|(classes>=80)):
-                raise ValueError('Invalid PCIe result values/classes')
+            for candidate in struct.iter_unpack('<6f',result):
+                category=candidate[5]
+                if not all(map(math.isfinite,candidate)) or category!=round(category) or not 0<=category<80:
+                    raise ValueError('Invalid PCIe result values/classes')
             self.last_timing={'upload_seconds':uploaded-started,'run_roundtrip_seconds':inferred-uploaded,
                               'download_seconds':time.monotonic()-inferred,'pcie_frame':self.frame}
             self._snapshot(deadline)
-            return candidates
+            return result
         except BaseException:
             self.failed=True
             raise
+
+    def infer(self,tensor):
+        import numpy as np
+        if tensor.shape!=(3,416,416) or tensor.dtype!=np.float32 or not np.isfinite(tensor).all():
+            raise ValueError('Expected finite RGB CHW FP32 416x416 input')
+        return np.frombuffer(self.infer_bytes(tensor.astype('<f4',copy=False).tobytes()),
+                             dtype='<f4').reshape(300,6).copy()
 
 
 def main():

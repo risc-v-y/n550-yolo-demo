@@ -1,6 +1,6 @@
 # N550 YOLO26 板端验证操作指南
 
-本页供物理连接 S2C 板卡的 Linux 实验室电脑（下称 **host**）上的软件同事使用。**PCIe 和 UART 是两套独立方案**：PCIe 上板加载 `firmware/demo-pcie.bin`，UART 使用 `firmware/demo.elf`，同一时刻只加载、运行其中一个模型固件。PCIe 对应的 `demo-pcie.elf` 保留用于构建、符号和调试，不能直接交给 PCIe 加载工具。两套方案都由 host 传图、N550 推理、host 绘框及录像；当前优先验收 PCIe。
+本页供物理连接 S2C 板卡的 Linux 实验室电脑（下称 **host**）上的软件同事使用。**PCIe 和 UART 是两套独立方案**：PCIe 上板加载 `firmware/demo-pcie.bin`，UART 使用 `firmware/demo.elf`，同一时刻只加载、运行其中一个模型固件。PCIe 对应的 `demo-pcie.elf` 保留用于构建、符号和调试，不能直接交给 PCIe 加载工具。当前优先验收 PCIe：先用已预处理的固定图片跑通并生成绘框图，再在 host 具备 NumPy/OpenCV 后进行实时摄像头演示。
 
 本仓库包含板端源码、预编译固件、样例和数值基准。本机的构建与协议检查已通过；**真实板卡的传输、缓存可见性、模型数值及吞吐仍须现场验收**。以下步骤用于上板验证，本机检查不代表实板通过。
 
@@ -13,11 +13,9 @@ git clone https://github.com/risc-v-y/n550-yolo-demo.git
 cd n550-yolo-demo
 sha256sum -c firmware/SHA256SUMS
 python3 --version
-python3 -m venv .venv-host
-.venv-host/bin/python -m pip install -r yolo26_pc/requirements-board.txt
 ```
 
-host 的 Python 应为已确认的 3.10；虚拟环境只安装板端 host 所需的 NumPy、OpenCV 和 pyserial，无需 PyTorch。若 host 缺少 `venv`、`pip` 或依赖安装权限，请先补齐。固件哈希检查必须全部通过；`firmware/` 是本次交付的预编译文件，重新构建的输出不会自动替换它。
+PCIe 第一步只使用 Python 3 标准库和现场已有的 `pbcopy/pbload`，**不执行 `pip`、不创建 `venv`，也不要求 host 联网**；本机在 Python 3.10 下验证，脚本最低使用 Python 3.8 的标准库功能。第二步的图像依赖在对应小节单独说明。固件哈希检查必须全部通过；`firmware/` 是本次交付的预编译文件，重新构建的输出不会自动替换它。
 
 加载任何固件前，由板级同事确认 DDR 可用且 `0x80000000–0x81FFFFFF` 这 32 MiB 由本演示独占、DCache 已开启、下载后的代码和数据对 CPU 可见。PCIe 使用已转换的裸二进制，从 CPU 地址 `0x80000000`（PCIe 偏移 `0x0`）加载并启动；UART 的 ELF 仍需由支持 ELF 的加载方式按加载段地址写入，不能直接改名为 BIN。DDR 初始化、复位及启动由板级同事负责，固件不执行这些板级初始化；复位/启动步骤须保证已写入的 DDR 内容不会丢失。详细条件见 [板端条件](docs/BOARD.md)。切换 PCIe/UART 方案时，应加载对应固件并重新启动。
 
@@ -44,31 +42,41 @@ pbcopy -d firmware/demo-pcie.bin:0x0
 
 `0x0` 是 PCIe 偏移，对应 CPU 入口 `0x80000000`；`pbcopy` 只负责写入，不负责启动。写入后由板级同事按现场已验证的复位/启动步骤从该入口启动 **一次**，并确认复位不清除 DDR。不要把 `demo-pcie.elf` 改名为 BIN 上传。现有 `run_yolo26n.sh` 属于同一 S2C 板的另一套 YOLO 方案，会写入其他程序和数据段，不能原样套用或逐帧复位本演示。程序运行期间须允许 PCIe 访问 DDR；仅运行一个 host 控制程序，不要让其他 PCIe 工具同时改写本演示缓冲区。`pbcopy`、`pbload` 不在 `PATH` 内时，加载命令使用实际绝对路径，并在下列 Python 命令末尾加 `--pbcopy /绝对路径/pbcopy --pbload /绝对路径/pbload`。
 
-### 2. 握手和单图
+### 2. 第一步：预处理图片上板、数值对照与静态绘框（免安装）
 
 ```bash
 # 读取固件接口、建立会话；这一步不运行图像推理
-.venv-host/bin/python yolo26_pc/pcie_backend.py
+python3 yolo26_pc/pcie_backend.py
 
-# 分别上传、推理、读回并对照固定 QEMU FP16 数值基准
-.venv-host/bin/python yolo26_pc/pcie_backend.py --image yolo26_pc/samples/bus.jpg --reference reference/bus-qemu-fp16.bin
-.venv-host/bin/python yolo26_pc/pcie_backend.py --image yolo26_pc/samples/zidane.jpg --reference reference/zidane-qemu-fp16.bin
+# 分别传输已预处理的 bus/zidane，运行推理并生成可查看的绘框图
+python3 yolo26_pc/pcie_prepared.py --sample bus
+python3 yolo26_pc/pcie_prepared.py --sample zidane
 ```
 
-每次运行会打印并建立独立的 `yolo26_pc/outputs/board-pcie/<时间>/` 目录。检查 `report.json` 的 `status`、板端信息、检测框和参考差异；单图还保存 `source.png`、`annotated.png`、`candidates.npy` 和 `diagnostics.jsonl`。握手成功只说明通信接口可读，仍须核对两张图的类别、置信度、坐标和绘框效果。不要预设经验阈值掩盖数值差异。
+两张图片的原始 JPEG、相同预处理流程产生的 RGB CHW FP32 输入、输入哈希和缩放补边参数已随仓库交付，见 `reference/prepared/manifest.json`；host 不需解码或预处理图片。每次命令建立独立的 `yolo26_pc/outputs/board-pcie/<时间>/` 目录，保存 `report.json`、`diagnostics.jsonl`、原始候选框 `candidates.bin` 和内嵌原图、检测框及类别标签的 `annotated.svg`。SVG 可在 host 的浏览器打开，或复制到有浏览器的电脑查看。检查报告中的 `status=completed`、`reference.byte_identical`、类别顺序、坐标/分数最大差异，以及绘框效果；`completed` 只表示传输及结果检查完成，数值差异仍须人工验收。握手成功不代表图像推理通过，不设经验阈值掩盖差异。
 
-### 3. 两帧视频与连续演示
+### 3. 第二步：NumPy/OpenCV 实时摄像头与视频演示
 
-在能显示窗口的 host 桌面会话运行：
+本步才需要 NumPy 2.2.6 和带 GUI 功能的 OpenCV 4.11.0.86，版本清单见 `yolo26_pc/requirements-board.txt`。先检查 host 已有的 Python 环境；缺少依赖时由部署方按 host 的 Linux 架构准备并验证兼容的离线包，第一步不受影响。不要求现场联网或在 host 上运行安装命令；本仓库不附带跨平台通用的 Python 依赖包。无需 PyTorch，PCIe 不需要 pyserial。
 
 ```bash
-.venv-host/bin/python yolo26_pc/live_demo.py \
+python3 -c 'import numpy, cv2; print(numpy.__version__, cv2.__version__)'
+```
+
+只有这条检查成功后，才在能显示窗口的 host 桌面会话执行下面的摄像头命令；若摄像头暂不可用，可先用仓库样例视频检查完整软件流程：
+
+```bash
+python3 yolo26_pc/live_demo.py --backend pcie --camera 0 --save-frames
+```
+
+```bash
+python3 yolo26_pc/live_demo.py \
   --backend pcie \
   --source yolo26_pc/samples/pexels-3796613.mp4 \
   --max-results 2 --save-frames
 ```
 
-先确认两帧的帧号、原图、检测图、候选框和录像；随后去掉 `--max-results 2` 连续运行，以 Q/Esc 退出。普通 SSH 终端没有图形桌面时加 `--no-display` 检查文件输出；host 本地摄像头可用 `--camera 0` 替换 `--source`。视频循环播放，推理选择当前最新帧，不保证处理素材的每一帧。
+先确认两帧的帧号、原图、检测图、候选框和录像；随后去掉 `--max-results 2` 连续运行，以 Q/Esc 退出。普通 SSH 终端没有图形桌面时加 `--no-display` 检查文件输出。视频循环播放，推理选择当前最新帧，不保证处理素材的每一帧。
 
 输出位于 `yolo26_pc/outputs/live-demo/<时间>/`，包括 `raw.mp4`、`demo.mp4`、`report.json`、`diagnostics.jsonl`；`--save-frames` 另外保存对应编号的原图、检测图、候选框和逐帧 JSON。录像采用 20 FPS 写文件，**实际处理速度以 `report.json` 的结果帧率和各阶段耗时为准**。
 
@@ -78,7 +86,7 @@ pbcopy -d firmware/demo-pcie.bin:0x0
 
 ## 方案二：UART
 
-链路：**host 采集/预处理 → UART 上传 → N550 RVV+AMU 推理 → UART 下载 → host 绘框/录像**。板端使用 `firmware/demo.elf`，不是 PCIe 固件。UART 时钟、复位、引脚和接线须已就绪；host 串口设为 **115200、8N1，关闭硬件及软件流控**。
+链路：**host 采集/预处理 → UART 上传 → N550 RVV+AMU 推理 → UART 下载 → host 绘框/录像**。板端使用 `firmware/demo.elf`，不是 PCIe 固件。这是独立备选方案，不属于上面的免安装 PCIe 第一步：串口枚举/HELLO 探测只需 Python 标准库，当前 UART ping/模型后端需要 pyserial，图像与视频还需要 NumPy/OpenCV。UART 时钟、复位、引脚和接线须已就绪；host 串口设为 **115200、8N1，关闭硬件及软件流控**。
 
 ### 1. 可选：独立自测
 
@@ -105,8 +113,8 @@ CACHE/RVV/AMU TEST PASS
 ```bash
 python3 yolo26_pc/serial_probe.py
 PORT=/dev/ttyUSB0
-.venv-host/bin/python yolo26_pc/serial_probe.py --probe "$PORT"
-.venv-host/bin/python yolo26_pc/uart_backend.py --port "$PORT" --ping 100
+python3 yolo26_pc/serial_probe.py --probe "$PORT"
+python3 yolo26_pc/uart_backend.py --port "$PORT" --ping 100
 ```
 
 探测需确认固件 INFO 与预期输入/输出大小，100 次 ping 应全部通过。`firmware/selftest.elf` 只打印自测结果，不响应模型握手；若 probe 无响应，检查端口、占用、接线、时钟及板端启动状态，见 [串口探测](docs/SERIAL_PROBE.md)。
@@ -114,8 +122,8 @@ PORT=/dev/ttyUSB0
 ### 3. 单图数值与绘框
 
 ```bash
-.venv-host/bin/python yolo26_pc/uart_backend.py --port "$PORT" --image yolo26_pc/samples/bus.jpg --reference reference/bus-qemu-fp16.bin
-.venv-host/bin/python yolo26_pc/uart_backend.py --port "$PORT" --image yolo26_pc/samples/zidane.jpg --reference reference/zidane-qemu-fp16.bin
+python3 yolo26_pc/uart_backend.py --port "$PORT" --image yolo26_pc/samples/bus.jpg --reference reference/bus-qemu-fp16.bin
+python3 yolo26_pc/uart_backend.py --port "$PORT" --image yolo26_pc/samples/zidane.jpg --reference reference/zidane-qemu-fp16.bin
 ```
 
 每次结果保存在 `yolo26_pc/outputs/board-uart/<时间>/`：`report.json`、`diagnostics.jsonl`、`annotated.png`、`candidates.npy`。检查 `status`、检测框、与参考候选框的差异和绘框效果。115200、8N1 下上传一帧约需 180 秒；UART 的 `--infer-timeout 900` 是每次 RUN 的等待上限，不包含上传时间。
@@ -123,7 +131,7 @@ PORT=/dev/ttyUSB0
 ### 4. 两帧视频与连续演示
 
 ```bash
-.venv-host/bin/python yolo26_pc/live_demo.py \
+python3 yolo26_pc/live_demo.py \
   --backend uart --serial-port "$PORT" \
   --source yolo26_pc/samples/pexels-3796613.mp4 \
   --max-results 2 --save-frames

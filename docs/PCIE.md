@@ -2,6 +2,8 @@
 
 本页是 PCIe 协议和故障处理参考。克隆、固件加载、握手、单图和视频的完整操作命令统一见 [根目录 README 的 PCIe 方案](../README.md#方案一pcie)，避免两处步骤不一致。
 
+固定图片优先使用仓库内已预处理并带哈希清单的 bus/zidane 输入，由 `pcie_prepared.py` 在仅有 Python 标准库的 host 上执行；它复用本页的同一 PCIe 会话、CRC 和状态协议，输出原始候选框、基准差异与静态 SVG 绘框图。NumPy/OpenCV 只属于现场实时图像/视频阶段，不是 PCIe 通信本身的依赖。
+
 `firmware/demo-pcie.bin` 由同版本 `demo-pcie.elf` 的可加载内容转换而来，包含程序与模型常量；其 CPU 起始地址为 `0x80000000`，对应 PCIe 偏移 `0x0`。启动代码自行清 BSS；位于 `0x81F00000` 的接口邮箱不属于 BIN 的已初始化内容。ELF 保留符号和调试信息，不是现场 PCIe 加载文件。`firmware/demo.elf` 属于独立的 UART 方案。
 
 ## 传输与同步约定

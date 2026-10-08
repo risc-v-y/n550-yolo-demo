@@ -14,3 +14,8 @@
 *.elf
 *.map
 *.disasm
+
+# Local migration and agent context are not board-validation deliverables.
+/docs/HANDOFF.md
+/BUNDLE_MANIFEST.json
+/MIGRATION_README.md

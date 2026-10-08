@@ -1,5 +1,9 @@
 # 本次交付验证记录
 
+2026-10-08 交付文件核对：
+
+- PCIe/UART源码、操作文档和预编译ELF已进入仓库 `main`；软件同事从 `firmware/` 取本次固件。仓库根目录按 `firmware/SHA256SUMS` 核对三个ELF、符号/反汇编/map、编译器记录与模型常量，共8项哈希通过。此项只验证文件一致性，不证明实板运行通过。
+
 2026-09-30 PCIe自动逐帧收发：
 
 - 新增独立 `demo-pcie.elf`，模型图与权重不变；固定接口地址 `0x81F00000`，描述/命令/提交/状态各64字节，输入/输出地址由固件发布。三个固件均已交叉构建，尺寸和符号以 `pcie-size.txt`、`pcie-symbols.txt` 为准。
@@ -7,7 +11,7 @@
 - 同一回归实际调用 `live_demo.py --backend pcie --no-display` 完成两帧，检查帧号、原图、绘框图、候选框和可解码的 `demo.mp4`。使用合成视频与测试替身推理，不是YOLO检测效果或板端吞吐证明。
 - Linux回归使用Python3.12与固定host依赖；Windows Python3.10的语法检查及两个CLI帮助入口通过。真实host Python3.10/Linux GUI和实际PCIe工具仍待现场验收。
 - 原UART协议7项回归全部通过；保留的UART模型固件与独立自测均重新构建成功。
-- 日志：`yolo26_riscv/build/n550-board/pcie-tests.log`。实板的PCIe传输、缓存可见性、模型单图数值与连续视频仍未验证；本地功能回归不能替代上板验收。旧GitHub v0.2.0固件不含本功能；跨设备补充包提供新增文件和配套ELF。
+- 日志：`yolo26_riscv/build/n550-board/pcie-tests.log`。实板的PCIe传输、缓存可见性、模型单图数值与连续视频仍未验证；本地功能回归不能替代上板验收。旧GitHub v0.2.0固件不含本功能；本次固件以仓库 `firmware/` 为准。
 
 2026-09-30 RVV/AMU依赖与缓冲区复用自测：
 

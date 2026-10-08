@@ -1,83 +1,59 @@
-# N550 YOLO26：板端验证入口
+# N550 YOLO26 板端验证操作指南
 
-**软件同事从本页开始，当前优先使用 PCIe 完成单图、连续帧和视频演示；UART 验证入口保留在第6节。** 程序加载、启动一次后，host 自动传图、等待推理、读结果和显示，无需逐帧人工操作。
+本页供物理连接 S2C 板卡的 Linux 实验室电脑（下称 **host**）上的软件同事使用。**PCIe 和 UART 是两套独立方案**：分别使用 `firmware/demo-pcie.elf` 和 `firmware/demo.elf`，同一时刻只加载、运行其中一个模型固件。两套方案都由 host 传图、N550 推理、host 绘框及录像；当前优先验收 PCIe。
 
-**本仓库已包含本次 PCIe 源码、文档和预编译固件；克隆后无需跨设备补充包。** 旧 [v0.2.0 Release](https://github.com/risc-v-y/n550-yolo-demo/releases/tag/v0.2.0-host-diagnostics) 不包含 PCIe 固件和新增32轮同步自测，请使用本仓库 `firmware/` 下的文件。
+本仓库已包含板端源码、预编译固件、样例和数值参考。固件构建、PCIe 模拟联调、UART 协议回归已经完成；**真实板卡的传输、缓存可见性、模型数值及吞吐仍须现场验证**。以下是待执行的上板流程，不能把本机模拟结果当作实板通过。
 
-当前验证：PCIe 11项本机联调、UART 7项回归及固件构建通过。PCIe联调使用模拟DDR/工具和测试替身推理；**真实板卡传输、缓存可见性和模型数值仍待现场验收**。
+## 共同准备
 
-**host** 指物理连接 S2C 开发板的 **Linux 实验室电脑，已有 Python 3.10**。当前链路：
-
-**host 读取视频、预处理 → PCIe → N550 RVV+AMU 推理 → PCIe → host 后处理、绘框、保存 → 开发机远程查看 host 桌面。**
-
-以下命令均在 **host 的仓库根目录**执行。Windows 开发机只用于远程查看，无需为本流程安装 Python。先用附带视频验证；开发机摄像头和跨机器数据转发尚未接入。
-
-## 1. 准备材料和板端加载
-
-在 host 克隆本仓库，从仓库根目录运行 `sha256sum -c firmware/SHA256SUMS`，再使用下列材料。`firmware/` 是本次验证所用预编译文件；自行构建的输出位于 `yolo26_riscv/build/n550-board/`：
-
-| 材料 | 用途 |
-|---|---|
-| `firmware/selftest.elf` | 已编译的 N550 自测程序，检查 UART、缓存、RVV 和 AMU |
-| **`firmware/demo-pcie.elf`** | **当前PCIe演示使用**；模型、权重、自测及DDR收发接口 |
-| `firmware/demo.elf` | UART模型固件；按第6节使用 |
-| `firmware/pcie-symbols.txt` / `demo-pcie.disasm` / `demo-pcie.map` | PCIe固件的符号、反汇编和内存布局 |
-| `firmware/SHA256SUMS` / `compiler.txt` | 固件与模型资产哈希 / 编译器信息 |
-| 仓库中的 `yolo26_pc/`、`reference/` | host 程序、依赖清单、测试图片/视频及对照结果 |
-
-软件同事负责通过现有 J-Link/PCIe 工具加载和启动固件。**按 ELF 加载段指定的地址写入 DDR，再从 `_start` 运行；不能把整个 ELF 文件当作裸数据直接写到某个地址。** 若加载工具只接受裸二进制，由同事处理转换及加载地址。
-
-程序预留 `0x80000000–0x81FFFFFF` 共32 MiB DDR。启动前须满足 [板端交接条件](docs/BOARD.md)：DDR可用且该区域独占、DCache已开启、下载后的代码和数据缓存一致。PCIe需host驱动与 `pbcopy/pbload` 可用，并允许CPU运行时访问DDR；UART固件及独立自测另外要求UART时钟/复位/引脚可用。固件不包含这些板级初始化。
-
-两种模型ELF均已嵌入 `model/constants.bin`，加载时权重一并进入DDR，运行时通过 `model_weights` 加张量偏移访问，无需另传 `.pt` 或逐帧重新加载。不要使用另一个仓库会复位、重写镜像和权重的批处理脚本驱动逐帧演示。
-
-## 2. 准备 host Python 环境
+以下命令均在 **host 的仓库根目录**执行。开发机可远程查看 host 的图形桌面；本流程不依赖开发机摄像头或跨机器转发。
 
 ```bash
-# 确认 host 的 python3 是已知的 Python 3.10
+git clone https://github.com/risc-v-y/n550-yolo-demo.git
+cd n550-yolo-demo
+sha256sum -c firmware/SHA256SUMS
 python3 --version
-# 创建独立环境；安装图像处理和串口依赖，无需 PyTorch
 python3 -m venv .venv-host
 .venv-host/bin/python -m pip install -r yolo26_pc/requirements-board.txt
 ```
 
-若host缺少venv/pip或依赖安装条件，请同事补齐环境。PCIe命令示例假设 `pbcopy`、`pbload` 位于PATH；否则在Python命令末尾加 `--pbcopy /绝对路径/pbcopy --pbload /绝对路径/pbload`。调用账户须具有设备访问权限。
+host 的 Python 应为已确认的 3.10；虚拟环境只安装板端 host 所需的 NumPy、OpenCV 和 pyserial，无需 PyTorch。若 host 缺少 `venv`、`pip` 或依赖安装权限，请先补齐。固件哈希检查必须全部通过；`firmware/` 是本次交付的预编译文件，重新构建的输出不会自动替换它。
 
-## 3. 独立自测（可选，需UART）
+加载任何固件前，由板级同事确认 DDR 可用且 `0x80000000–0x81FFFFFF` 这 32 MiB 由本演示独占、DCache 已开启、下载后的代码和数据对 CPU 可见。用现有加载工具按 **ELF 加载段地址**写入 DDR，从 `_start` 启动；不能把整个 ELF 当成裸二进制写到单一地址。DDR 初始化、复位、J-Link/JTAG 加载及启动由板级同事负责，固件不执行这些板级初始化。详细条件见 [板端条件](docs/BOARD.md)。切换 PCIe/UART 方案时，应加载对应固件并重新启动。
 
-两个模型固件启动时也会运行相同自测。需要独立定位UART、缓存或AMU问题时，再单独加载 `selftest.elf`：先执行 `python3 yolo26_pc/serial_probe.py` 列举串口，根据设备信息和接线确认端口。
+两套模型固件已嵌入模型图和权重，不用额外上传 `.pt` 或逐帧加载权重。输入为等比例缩放补边后的 RGB CHW `[1,3,416,416]` FP32（2,076,672 字节），结果为 `[300,6]` FP32 候选框（7,200 字节）；host 以 `score > 0.25` 绘框，不增加 NMS。两套方案都保留全部 334 个节点。请记录使用的 Git 提交、ELF 哈希、host 输出目录和板端启动方式，便于复现。
 
-先在 host 使用 minicom/PuTTY 打开候选串口，设置 **115200、8N1，关闭硬件和软件流控**，再让同事加载并启动 `selftest.elf`。
+## 方案一：PCIe
 
-期望依次看到：
+链路：**host 采集/预处理 → PCIe 写 DDR → N550 RVV+AMU 推理 → PCIe 读结果 → host 绘框/录像**。板端使用 `firmware/demo-pcie.elf`；它不初始化 UART，状态和诊断从 DDR 读取。
 
-```text
-UART OK
-RVV->AMU->RVV REUSE 32 ROUNDS PASS
-CACHE/RVV/AMU TEST PASS
-```
+### 1. 检查工具并启动固件
 
-`UART OK` 表示该端口收到了板端输出，后两句表示新增32轮用例及全部自测通过。失败时打印轮次、缓冲区、元素下标和实际/期望值，解释见 [诊断说明](docs/DIAGNOSTICS.md)。程序不会列出 host 端口名，也不知道 Linux 将其命名为 ttyUSB0 还是其他设备。输出只在启动时发送；如果打开终端太晚，请同事重新启动自测。无输出时需检查候选端口、板端启动状态和接线。
-
-## 4. PCIe：加载模型，验证通信与单图
-
-由同事加载并启动 **`firmware/demo-pcie.elf`**，保持程序运行。此固件不初始化UART，状态与诊断通过DDR读取。三个ELF分别运行，不同时驻留。
+host 必须已有可用的 PCIe 驱动、设备访问权限及 `pbcopy`、`pbload`。先确认命令位置：
 
 ```bash
-# 读取接口并建立会话，不执行图像推理
+command -v pbcopy
+command -v pbload
+```
+
+不在 `PATH` 内时，在下列 Python 命令末尾加 `--pbcopy /绝对路径/pbcopy --pbload /绝对路径/pbload`。由板级同事加载并启动 `firmware/demo-pcie.elf` **一次**，保持程序运行；不要用另一个仓库会复位并重写程序/权重的批处理脚本逐帧驱动。CPU 运行期间须允许 PCIe 访问 DDR。仅运行一个 host 控制程序，不要让其他 PCIe 工具同时改写本演示缓冲区。
+
+### 2. 握手和单图
+
+```bash
+# 读取固件接口、建立会话；这一步不运行图像推理
 .venv-host/bin/python yolo26_pc/pcie_backend.py
-# 自动上传、推理、下载、绘框，并记录与历史QEMU结果的差异
+
+# 分别上传、推理、读回并对照历史 QEMU FP16 结果
 .venv-host/bin/python yolo26_pc/pcie_backend.py --image yolo26_pc/samples/bus.jpg --reference reference/bus-qemu-fp16.bin
 .venv-host/bin/python yolo26_pc/pcie_backend.py --image yolo26_pc/samples/zidane.jpg --reference reference/zidane-qemu-fp16.bin
 ```
 
-输出在 `yolo26_pc/outputs/board-pcie/<时间>/`：`source.png`、`annotated.png`、`candidates.npy`、`report.json`、`diagnostics.jsonl`。指定 `--output` 时目录必须尚不存在。检查绘框效果及报告中的类别、置信度、坐标差异；握手通过不代表模型已经通过。
+每次运行会打印并建立独立的 `yolo26_pc/outputs/board-pcie/<时间>/` 目录。检查 `report.json` 的 `status`、板端信息、检测框和参考差异；单图还保存 `source.png`、`annotated.png`、`candidates.npy` 和 `diagnostics.jsonl`。握手成功只说明通信接口可读，仍须核对两张图的类别、置信度、坐标和绘框效果。不要预设经验阈值掩盖数值差异。
 
-host检查工具退出状态、读回长度、CRC、会话和帧号；仅允许一个控制程序。DDR地址、缓存交接和故障处理详见 [PCIe说明](docs/PCIE.md)。
+### 3. 两帧视频与连续演示
 
-## 5. 运行视频并保存演示结果
-
-在 **能显示窗口的 host 桌面会话**执行：
+在能显示窗口的 host 桌面会话运行：
 
 ```bash
 .venv-host/bin/python yolo26_pc/live_demo.py \
@@ -86,64 +62,82 @@ host检查工具退出状态、读回长度、CRC、会话和帧号；仅允许�
   --max-results 2 --save-frames
 ```
 
-首次处理两帧后自动停止；持续演示时去掉 `--max-results 2`，按Q/Esc退出。左侧持续预览，右侧每完成一帧推理才更新。程序顺序收发，并选取当前最新采集帧；不保证处理视频素材的每一帧。host本地摄像头可用 `--camera 0` 替换 `--source` 参数。普通SSH终端未必有图形显示环境，可加 `--no-display` 先验证文件输出。
+先确认两帧的帧号、原图、检测图、候选框和录像；随后去掉 `--max-results 2` 连续运行，以 Q/Esc 退出。普通 SSH 终端没有图形桌面时加 `--no-display` 检查文件输出；host 本地摄像头可用 `--camera 0` 替换 `--source`。视频循环播放，推理选择当前最新帧，不保证处理素材的每一帧。
 
-输出目录为 `yolo26_pc/outputs/live-demo/<时间>/`：
+输出位于 `yolo26_pc/outputs/live-demo/<时间>/`，包括 `raw.mp4`、`demo.mp4`、`report.json`、`diagnostics.jsonl`；`--save-frames` 另外保存对应编号的原图、检测图、候选框和逐帧 JSON。录像采用 20 FPS 写文件，**实际处理速度以 `report.json` 的结果帧率和各阶段耗时为准**。
 
-| 文件 | 内容 |
-|---|---|
-| `demo.mp4` / `raw.mp4` | 预览与检测结果组成的演示录像 / 原始预览录像 |
-| `report.json` / `diagnostics.jsonl` | 帧结果与耗时汇总 / 板端诊断和 host 异常堆栈 |
-| `source-*.png` / `detected-*.png` | 加 `--save-frames` 后保存的推理原图 / 检测图，同编号对应 |
-| `candidates-*.npy` / `result-*.json` | 加 `--save-frames` 后保存的候选框和逐帧结果 |
+### 4. PCIe 验收和故障记录
 
-检查中间NaN/Inf可加 `--check-intermediates`；`--board-trace` 仅用于UART。PCIe在完成/失败时读取板端诊断快照，并记录工具返回值与传输耗时，见 [诊断说明](docs/DIAGNOSTICS.md)。
+记录握手、bus/zidane 数值对照、两帧视频、持续运行及实际耗时。工具返回 0 仍需由程序核对读回长度、CRC、会话和帧号。默认 `--infer-timeout 900` 覆盖一帧的传输及推理，`--tool-timeout 30` 限制一次工具调用；超时或退出不会复位板卡，也不能中断已开始的板端推理。失败后保留输出目录和 `diagnostics.jsonl`，先由板级同事检查板端状态，再重新连接。接口、缓存交接和错误码见 [PCIe 说明](docs/PCIE.md)，日志解释见 [诊断说明](docs/DIAGNOSTICS.md)。
 
-### 当前格式与耗时
+## 方案二：UART
 
-固定 416×416、batch=1、COCO80、334 节点。host 将图片等比例缩放补边、转 RGB、除以 255，生成 `[1,3,416,416]` FP32 输入；模型使用 AMU 的计算块再转换为 FP16。FP32 是现有模型接口，不是 UART 的要求。板端返回 `[300,6]` FP32 候选框，host 按 `score > 0.25` 过滤、还原坐标和绘框，不额外增加 NMS。
+链路：**host 采集/预处理 → UART 上传 → N550 RVV+AMU 推理 → UART 下载 → host 绘框/录像**。板端使用 `firmware/demo.elf`，不是 PCIe 固件。UART 时钟、复位、引脚和接线须已就绪；host 串口设为 **115200、8N1，关闭硬件及软件流控**。
 
-一帧输入2,076,672字节、结果7,200字节。PCIe实际速度待现场测量；报告中的结果帧率表示处理速度，录像自身的20 FPS不代表推理速度。PCIe的 `--infer-timeout 900` 覆盖整帧传输与推理，`--tool-timeout 30` 限制单次工具调用。超时或退出不会复位板卡，也不代表板端推理已停止。
+### 1. 可选：独立自测
 
-## 6. 保留的UART验证入口
+需要先定位 UART、缓存、RVV 或 AMU 问题时，在 host 列出候选串口，按接线确认设备：
 
-由同事加载 **`firmware/demo.elf`**。关闭占用串口的minicom/PuTTY，按探测结果替换端口：
+```bash
+python3 yolo26_pc/serial_probe.py
+```
+
+先用 minicom/PuTTY 按上述串口参数打开正确端口，再由板级同事加载、启动 `firmware/selftest.elf`。期望依次看到：
+
+```text
+UART OK
+RVV->AMU->RVV REUSE 32 ROUNDS PASS
+CACHE/RVV/AMU TEST PASS
+```
+
+这验证启动时的自测，不能代替全模型数值验收。输出只在启动时发送；若终端打开太晚，请同事重新启动自测。两个模型固件启动时也运行相同自测；切换到模型演示前，须加载相应模型 ELF。
+
+### 2. 加载 UART 模型、确认端口与通信
+
+由板级同事加载并启动 `firmware/demo.elf`。关闭占用串口的 minicom/PuTTY，按实际设备替换 `PORT`：
 
 ```bash
 python3 yolo26_pc/serial_probe.py
 PORT=/dev/ttyUSB0
 .venv-host/bin/python yolo26_pc/serial_probe.py --probe "$PORT"
 .venv-host/bin/python yolo26_pc/uart_backend.py --port "$PORT" --ping 100
+```
+
+探测需确认固件 INFO 与预期输入/输出大小，100 次 ping 应全部通过。`firmware/selftest.elf` 只打印自测结果，不响应模型握手；若 probe 无响应，检查端口、占用、接线、时钟及板端启动状态，见 [串口探测](docs/SERIAL_PROBE.md)。
+
+### 3. 单图数值与绘框
+
+```bash
 .venv-host/bin/python yolo26_pc/uart_backend.py --port "$PORT" --image yolo26_pc/samples/bus.jpg --reference reference/bus-qemu-fp16.bin
 .venv-host/bin/python yolo26_pc/uart_backend.py --port "$PORT" --image yolo26_pc/samples/zidane.jpg --reference reference/zidane-qemu-fp16.bin
 ```
 
-视频复用第5节命令，将 `--backend pcie` 替换为 `--backend uart --serial-port "$PORT"`。单图输出在 `yolo26_pc/outputs/board-uart/<时间>/`，视频输出与第5节相同。
+每次结果保存在 `yolo26_pc/outputs/board-uart/<时间>/`：`report.json`、`diagnostics.jsonl`、`annotated.png`、`candidates.npy`。检查 `status`、检测框、与参考候选框的差异和绘框效果。115200、8N1 下上传一帧约需 180 秒；UART 的 `--infer-timeout 900` 是每次 RUN 的等待上限，不包含上传时间。
 
-115200、8N1下仅上传一帧约180秒；UART的 `--infer-timeout 900` 是每次RUN等待上限，不包含上传。串口数据为二进制协议，由host程序解码，终端不能直接显示检测图。`selftest.elf` 不响应模型握手；旧v0.1.0模型固件不支持新增诊断命令。
-
-## 按需查阅
-
-| 文档 | 什么时候看 |
-|---|---|
-| [Codex上下文交接](docs/HANDOFF.md) | 换设备或新会话时恢复已确认决策、工作状态和未提交修改 |
-| [板端条件](docs/BOARD.md) | 加载前确认地址、缓存、UART 和启动状态 |
-| [PCIe说明](docs/PCIE.md) | DDR接口布局、缓存交接、工具约定和失败处理 |
-| [串口探测](docs/SERIAL_PROBE.md) | 不清楚端口、权限或占用情况 |
-| [诊断说明](docs/DIAGNOSTICS.md) | 失败、卡住、逐节点日志及调试器读取诊断区 |
-| [UART 协议](docs/UART_PROTOCOL.md) | 修改收发程序或检查协议细节 |
-| [验证记录](docs/VALIDATION.md) | 区分已经完成的本机检查与待完成的实板验收 |
-
-## 可选：重新编译固件
-
-需要改 C/汇编代码时，从 [v0.1.0 Release](https://github.com/risc-v-y/n550-yolo-demo/releases/tag/v0.1.0-board-bringup) 获取配套 Linux x86-64 ESWIN 工具链（v0.2.0 沿用），在具备 Python3 的 Linux/WSL 构建机、仓库根目录执行：
+### 4. 两帧视频与连续演示
 
 ```bash
-mkdir -p toolchain
-tar -xzf /path/to/eswin-riscv-toolchain-linux-x86_64.tar.gz -C toolchain
-bash yolo26_riscv/build_board.sh
+.venv-host/bin/python yolo26_pc/live_demo.py \
+  --backend uart --serial-port "$PORT" \
+  --source yolo26_pc/samples/pexels-3796613.mp4 \
+  --max-results 2 --save-frames
 ```
 
-输出在 `yolo26_riscv/build/n550-board/`，包括UART模型 `demo.elf`、PCIe模型 `demo-pcie.elf` 和独立自测 `selftest.elf`；不会自动替换 `firmware/` 中的已验收构建。必须使用支持 `xewmatrix1p0` 的配套工具链。可通过 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定已有安装。模型常量和图位于 `model/`，更换模型需同步重新生成图、常量及数值参考。
+检查两帧结果后，去掉 `--max-results 2` 连续运行；无图形桌面可加 `--no-display`。host 本地摄像头可用 `--camera 0` 替换 `--source`。输出目录和逐帧文件与 PCIe 视频相同，但 `report.json` 标记 UART 传输；结果帧率才是处理速度。串口传输的是二进制协议，普通终端不能直接显示检测图。
 
-附带视频：[Pexels 3796613](https://www.pexels.com/video/people-walking-on-the-street-3796613/)，SHA256 为 `fcd2af324d05ae09da2570ffd693da084f6afdb209b078b419c30741742b43c5`。QEMU 历史结果仅作数值参考，不代表实板已经通过。
+### 5. UART 验收和故障记录
+
+保留串口探测、ping、bus/zidane、两帧及持续运行的日志和耗时。失败时检查 `diagnostics.jsonl`、`report.json` 和板端 `board_diag`；必要时由板级同事重新启动固件。协议格式和重试约定见 [UART 协议](docs/UART_PROTOCOL.md)，错误定位见 [诊断说明](docs/DIAGNOSTICS.md)。
+
+## 按需查阅与重新构建
+
+| 文档 | 用途 |
+|---|---|
+| [板端条件](docs/BOARD.md) | DDR、缓存、AMU、UART 和加载条件 |
+| [PCIe 说明](docs/PCIE.md) | DDR 接口、缓存交接、工具约定和失败处理 |
+| [串口探测](docs/SERIAL_PROBE.md) | 端口、权限及占用排查 |
+| [诊断说明](docs/DIAGNOSTICS.md) | host 日志、板端错误码与调试器读取 |
+| [UART 协议](docs/UART_PROTOCOL.md) | 串口收发程序的协议细节 |
+| [验证记录](docs/VALIDATION.md) | 已完成的本机检查与待完成的实板验收 |
+
+只有需要修改或复验 C/汇编代码时，才在 Linux/WSL 构建机使用配套 ESWIN 工具链执行 `bash yolo26_riscv/build_board.sh`。工具链须支持 `xewmatrix1p0`，可通过 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定；构建结果位于 `yolo26_riscv/build/n550-board/`，不会自动替换 `firmware/` 下的交付文件。样例视频来源为 [Pexels 3796613](https://www.pexels.com/video/people-walking-on-the-street-3796613/)，SHA-256：`fcd2af324d05ae09da2570ffd693da084f6afdb209b078b419c30741742b43c5`。

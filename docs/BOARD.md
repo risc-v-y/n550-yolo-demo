@@ -2,17 +2,17 @@
 
 ## 固定配置
 
-| 项目 | 本次设置 |
+| 项目 | 交付配置 |
 |---|---|
 | CPU | N550，RV64，单hart0，M模式；其他hart停车 |
 | 运算 | RVV+AMU FP16，FP32激活与输出；不改数值计算顺序 |
 | DDR | Memory port，独占0x80000000–0x81FFFFFF，平台已保证可直接读写 |
 | 数据区 | 图工作区7,614,720字节；模型常量9,678,644字节；另有代码、scratch和256 KiB栈 |
-| CLP | 首版不使用0x10000000→0xF0000000重映射，RVV/标量/AMU均使用DDR同一地址 |
+| CLP | 不使用0x10000000→0xF0000000重映射，RVV/标量/AMU均使用DDR同一地址 |
 | DCache | 保持开启；cacheline与本次缓存维护步长64字节；标准Zicbom |
 | UART0 | Synopsys DW_apb_uart，0x20100000，32-bit MMIO、寄存器间距4字节 |
 | 时钟/格式 | pclk=sclk=10 MHz，115200、8N1、无RTS/CTS和XON/XOFF |
-| 中断 | UART中断号16，首版采用轮询，不配置中断控制器 |
+| 中断 | UART中断号16；当前固件采用轮询，不配置中断控制器 |
 
 小数分频已确认支持。驱动在UART空闲时保存DLF、写入低6位并读回识别4/5/6位掩码、恢复旧值，再按有效位宽四舍五入计算分频并验证寄存器。4/5位得到约114943 baud，6位约115274 baud。遇到不支持的掩码或忙状态超时，启动失败，不悄悄使用整数分频。
 
@@ -24,7 +24,7 @@
 
 已确认平台支持标准 `cbo.clean/flush/inval` 和 FP16 AMU 指令。AMU输入打包后clean；输出各行在写前flush，矩阵完成等待后invalidate，再允许标量读取。`cbo.*`负责缓存内容，`fence rw,rw`负责DDR访问顺序，矩阵完成等待负责AMU执行完成；三者不能互相替代。当前完成等待采用读取 `xmfflags` 的N550约定，仍须实板确认，不能仅由“支持FP16指令”推断其完成语义。
 
-缓存维护覆盖首尾完整cacheline，避免部分行旧脏数据回写覆盖新数据。首版单hart、禁中断，不允许其他任务并发修改交接缓存行。保守维护有开销，暂不优化；实际RVV/AMU完成语义与缓存可见性必须经板上自检和模型结果确认。
+缓存维护覆盖首尾完整cacheline，避免部分行旧脏数据回写覆盖新数据。当前固件单hart、禁中断，不允许其他任务并发修改交接缓存行。缓存维护采用保守策略，有性能开销；实际RVV/AMU完成语义与缓存可见性必须经板上自检和模型结果确认。
 
 ## 上板顺序与方案选择
 
@@ -40,7 +40,7 @@
 
 优先按 [诊断说明](DIAGNOSTICS.md) 查看 host 的 `diagnostics.jsonl` 或通过调试器读取 `board_diag`。它记录阶段、错误及原始返回码、节点、输入输出形状、AMU flags、异常 CSR 与整数寄存器，并执行缓存同步。
 
-保留的旧符号包括：`board_error`（1权重长度、2图格式、3AMU能力、4自检失败、0x21–0x25 UART初始化失败、0x100异常）；`board_trap_cause/pc/value`；`board_test_stage`（1 RVV缓存、2 AMU、4直接依赖与复用、3全部通过）；`board_current_node`。旧符号用于兼容，完整诊断以 `board_diag` 为准。
+兼容符号包括：`board_error`（1权重长度、2图格式、3AMU能力、4自检失败、0x21–0x25 UART初始化失败、0x100异常）；`board_trap_cause/pc/value`；`board_test_stage`（1 RVV缓存、2 AMU、4直接依赖与复用、3全部通过）；`board_current_node`。完整诊断以 `board_diag` 为准。
 
 UART固件不向协议串口写printf文本。没有INFO时先检查固件是否通过自检，再检查端口、接线、分频和时钟。传输异常可能需要等待板端当前RUN完成或由同事重新运行固件；程序不通过串口执行硬件复位。
 

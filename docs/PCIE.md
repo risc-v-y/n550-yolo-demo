@@ -29,7 +29,7 @@
 3. 板端invalidate提交区及正文；相同提交序号不重复执行。核对会话、长度、输入CRC后运行模型。
 4. 板端clean结果，flush即将交还host的输入缓存行，完成fence后发布DONE、帧号、结果长度和CRC。host读结果并核对CRC/有限值/类别，以及读取前后状态一致；完成后才提交下一帧。中间张量有限值检查可用 `--check-intermediates` 开启。
 
-状态：0 BOOT、1 READY、2 BUSY、3 DONE、4 ERROR。新增错误：`0x40`命令CRC/格式、`0x41`会话、`0x42`输入CRC、`0x43`模型执行失败；模型详细错误仍在 `board_diag`。输入/输出可在模型arena内复用内存，host不得在BUSY时写输入，也不得在下载旧结果前开始写下一帧。
+状态：0 BOOT、1 READY、2 BUSY、3 DONE、4 ERROR。错误码：`0x40`命令CRC/格式、`0x41`会话、`0x42`输入CRC、`0x43`模型执行失败；模型详细错误仍在 `board_diag`。输入/输出可在模型arena内复用内存，host不得在BUSY时写输入，也不得在下载旧结果前开始写下一帧。
 
 ## 失败与复验
 
@@ -39,4 +39,4 @@
 
 取消/超时停止host收发，不复位板子，也不能中断已经开始的推理。同一个失败会话不能再提交帧；重新连接会先等旧命令结束。若内核驱动调用本身不可中断，或板端始终BUSY，由同事检查/恢复平台后再启动。板端trap尽力发布ERROR和诊断；无法返回的总线/AMU指令只能靠host超时及同事调试器定位。
 
-本机回归命令：`HOST_PYTHON=/path/to/python bash yolo26_riscv/test_board_pcie.sh`。测试使用真实板端协议C代码、模拟DDR和可执行的模拟pbcopy/pbload，推理是测试替身。它能检查协议、错误分支和视频软件流程，不能替代真实PCIe、DCache、RVV/AMU及模型数值验收。
+当前验证范围与实板待验项目见 [交付与验收状态](VALIDATION.md)。

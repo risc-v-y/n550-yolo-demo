@@ -2,7 +2,7 @@
 
 本页供物理连接 S2C 板卡的 Linux 实验室电脑（下称 **host**）上的软件同事使用。**PCIe 和 UART 是两套独立方案**：PCIe 上板加载 `firmware/demo-pcie.bin`，UART 使用 `firmware/demo.elf`，同一时刻只加载、运行其中一个模型固件。PCIe 对应的 `demo-pcie.elf` 保留用于构建、符号和调试，不能直接交给 PCIe 加载工具。两套方案都由 host 传图、N550 推理、host 绘框及录像；当前优先验收 PCIe。
 
-本仓库已包含板端源码、预编译固件、样例和数值参考。固件构建、PCIe 模拟联调、UART 协议回归已经完成；**真实板卡的传输、缓存可见性、模型数值及吞吐仍须现场验证**。以下是待执行的上板流程，不能把本机模拟结果当作实板通过。
+本仓库包含板端源码、预编译固件、样例和数值基准。本机的构建与协议检查已通过；**真实板卡的传输、缓存可见性、模型数值及吞吐仍须现场验收**。以下步骤用于上板验证，本机检查不代表实板通过。
 
 ## 共同准备
 
@@ -50,7 +50,7 @@ pbcopy -d firmware/demo-pcie.bin:0x0
 # 读取固件接口、建立会话；这一步不运行图像推理
 .venv-host/bin/python yolo26_pc/pcie_backend.py
 
-# 分别上传、推理、读回并对照历史 QEMU FP16 结果
+# 分别上传、推理、读回并对照固定 QEMU FP16 数值基准
 .venv-host/bin/python yolo26_pc/pcie_backend.py --image yolo26_pc/samples/bus.jpg --reference reference/bus-qemu-fp16.bin
 .venv-host/bin/python yolo26_pc/pcie_backend.py --image yolo26_pc/samples/zidane.jpg --reference reference/zidane-qemu-fp16.bin
 ```
@@ -144,6 +144,6 @@ PORT=/dev/ttyUSB0
 | [串口探测](docs/SERIAL_PROBE.md) | 端口、权限及占用排查 |
 | [诊断说明](docs/DIAGNOSTICS.md) | host 日志、板端错误码与调试器读取 |
 | [UART 协议](docs/UART_PROTOCOL.md) | 串口收发程序的协议细节 |
-| [验证记录](docs/VALIDATION.md) | 已完成的本机检查与待完成的实板验收 |
+| [交付与验收状态](docs/VALIDATION.md) | 当前交付结论、本机检查及实板待验项目 |
 
 只有需要修改或复验 C/汇编代码时，才在 Linux/WSL 构建机使用配套 ESWIN 工具链执行 `bash yolo26_riscv/build_board.sh`。工具链须支持 `xewmatrix1p0`，可通过 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定；构建结果位于 `yolo26_riscv/build/n550-board/`，其中 PCIe 固件同时生成 ELF 和可加载的 BIN，不会自动替换 `firmware/` 下的交付文件。样例视频来源为 [Pexels 3796613](https://www.pexels.com/video/people-walking-on-the-street-3796613/)，SHA-256：`fcd2af324d05ae09da2570ffd693da084f6afdb209b078b419c30741742b43c5`。

@@ -2,13 +2,13 @@
 
 在**物理连接开发板的实验室电脑**运行。兼容 Python 3.10 及以上，仅用标准库；不需要安装 PyTorch、OpenCV 或 pyserial。网络链路、J-Link 和 PCIe 加载不在本工具范围内。
 
-将仓库中的 `yolo26_pc/serial_probe.py`、`yolo26_pc/uart_backend.py` 放在同一目录即可单独使用。以下命令在该目录执行。
+以下命令在仓库根目录执行；探测脚本与 UART 后端均位于 `yolo26_pc/`。
 
 ## 1. 查找候选串口
 
 ```bash
-python3 serial_probe.py
-python3 serial_probe.py --json > serial-ports.json
+python3 yolo26_pc/serial_probe.py
+python3 yolo26_pc/serial_probe.py --json > serial-ports.json
 ```
 
 默认只读取 Linux sysfs、设备属性和可见的进程信息，**不打开串口、不发送数据、不改串口配置**。输出包括：
@@ -27,9 +27,9 @@ python3 serial_probe.py --json > serial-ports.json
 关闭同一串口的 PuTTY、minicom 和其他 demo，然后执行：
 
 ```bash
-python3 serial_probe.py --probe /dev/ttyUSB0
+python3 yolo26_pc/serial_probe.py --probe /dev/ttyUSB0
 # 也可使用第一步查到的 /dev/serial/by-id/... 路径
-python3 serial_probe.py --probe /dev/ttyUSB0 --json > serial-probe.json
+python3 yolo26_pc/serial_probe.py --probe /dev/ttyUSB0 --json > serial-probe.json
 ```
 
 默认 115200、8N1、无流控；`--baud` 可指定 Linux 支持的标准波特率，但必须与板端一致。只探测指定设备，不向所有串口轮发数据。工具设置独占打开保护，结束时恢复原串口参数并关闭设备；该保护不能赶走已经打开设备的程序，所以仍需先关闭终端。
@@ -48,6 +48,4 @@ python3 serial_probe.py --probe /dev/ttyUSB0 --json > serial-probe.json
 
 退出码：成功或正常列举为 0，探测失败为 1，参数错误为 2，Ctrl+C 取消为 130。基础握手通过不代表全模型推理或持续传输已经通过。
 
-将 `serial-ports.json` 和指定串口的 `serial-probe.json` 发回即可继续定位。网络转发方案待网络条件确定后接入。
-
-本机验证：Linux/Python 3.12 下七项检查通过，覆盖只读枚举、占用拒绝、参数恢复、分片应答与 CRC 重试、不兼容 INFO、超时，以及 Python 3.10 语法检查。尚未在 Python 3.10 运行时或实验室实板上验证。
+通信失败时保留 `serial-ports.json`、指定串口的 `serial-probe.json` 及固件哈希，结合 [诊断说明](DIAGNOSTICS.md) 定位。当前验证范围与实板待验项目见 [交付与验收状态](VALIDATION.md)。

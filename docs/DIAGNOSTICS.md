@@ -1,8 +1,8 @@
 # host 显示与故障诊断
 
-链路：**host 视频/预处理 → UART → 开发板 → UART → host 后处理、绘框、保存 → 开发机远程查看 host 桌面**。这里 host 指物理连接开发板的 Linux 电脑。程序与权重由软件同事加载，网络转发暂不实施。
+链路：**host 视频/预处理 → UART → 开发板 → UART → host 后处理、绘框、保存 → 开发机远程查看 host 桌面**。这里 host 指物理连接开发板的 Linux 电脑。程序与权重由软件同事加载；本方案不通过网络转发板卡数据。
 
-PCIe模式将上述UART收发替换为 `pbcopy/pbload` 读写DDR，入口见 [PCIe说明](PCIE.md)。板端加载独立的 `demo-pcie.bin`，对应ELF供符号查询；新增状态错误 `0x40–0x43` 在PCIe状态记录中，模型详细错误仍读取 `board_diag`。host日志另外记录工具退出状态、输出、状态变化和阶段耗时；该模式不提供UART逐节点事件流。
+PCIe模式将上述UART收发替换为 `pbcopy/pbload` 读写DDR，入口见 [PCIe说明](PCIE.md)。板端加载独立的 `demo-pcie.bin`，对应ELF供符号查询；状态错误 `0x40–0x43` 在PCIe状态记录中，模型详细错误仍读取 `board_diag`。host日志另外记录工具退出状态、输出、状态变化和阶段耗时；该模式不提供UART逐节点事件流。
 
 ## 使用入口
 
@@ -20,7 +20,7 @@ PCIe模式将上述UART收发替换为 `pbcopy/pbload` 读写DDR，入口见 [PC
 
 ## 板端无法正常应答时
 
-通过同事已有调试器查看 ELF 符号 **`board_diag`**：816 字节、64 字节对齐的静态结构，具体地址查本版本 `symbols.txt`；地址不保证跨构建相同。含启动阶段、帧号、节点、子阶段、错误、UART 计数、最近 AMU flags、异常 CSR 及 x0–x31。另保留旧的 `board_error`、`board_current_node`、`board_test_stage` 符号；优先读取经过缓存同步的 `board_diag`。
+通过同事已有调试器查看 ELF 符号 **`board_diag`**：816 字节、64 字节对齐的静态结构；PCIe 固件地址可查 `firmware/pcie-symbols.txt`，UART 固件地址由调试器读取对应 ELF 符号，地址不保证跨构建相同。含启动阶段、帧号、节点、子阶段、错误、UART 计数、最近 AMU flags、异常 CSR 及 x0–x31。另保留兼容符号 `board_error`、`board_current_node`、`board_test_stage`；优先读取经过缓存同步的 `board_diag`。
 
 CPU trap 使用独立 4 KiB 异常栈，保存异常前的整数寄存器及 `mcause/mepc/mtval`，然后停止；不保存浮点/向量/矩阵寄存器，不尝试自动恢复执行。正常诊断更新执行缓存 clean；若 DDR、本身的缓存指令或异常栈访问也故障，记录可能不完整。异常记录期间再次 fault 会进入停车入口，不保证能通过 UART 输出。
 
@@ -44,8 +44,6 @@ AMU 等待前保存阶段，等待返回后保存原始 `xmfflags`。不擅自�
 
 相同缓冲区复用32轮，每轮改变正负输入和标记，交替使用 `(M,N,K)=(3,5,17)、(1,1,1)、(2,3,32)、(3,5,31)`。输入为−3至3整数，FP16输入及FP32乘加均可精确表示；与独立整数公式对照，不设浮点误差阈值。标量每轮先写脏缓存行，用于检查flush和相邻值保留。
 
-自测失败 `error=4`；新用例的 `detail=-100/-101/-102/-103` 分别表示输入A、输入B、AMU输出、RVV输出不匹配。此时 `frame` 为轮次（0–31），`tensor` 为缓冲区编号（0–3），`element` 为整个缓冲区内的元素下标（包含哨兵），`observed/expected` 为原始位值。它们此时不是视频帧号或模型张量号。独立自测还通过UART打印这些值（十六进制）；模型固件仍使用二进制诊断快照。
+自测失败 `error=4`；`detail=-100/-101/-102/-103` 分别表示输入A、输入B、AMU输出、RVV输出不匹配。此时 `frame` 为轮次（0–31），`tensor` 为缓冲区编号（0–3），`element` 为整个缓冲区内的元素下标（包含哨兵），`observed/expected` 为原始位值。它们此时不是视频帧号或模型张量号。独立自测还通过UART打印这些值（十六进制）；模型固件仍使用二进制诊断快照。
 
-开发者可执行 `bash yolo26_riscv/test_board_sync.sh`，通过 `QEMU_SYSTEM_RISCV64` 指定支持AMU和Zicbom的QEMU。该回归覆盖VLEN 128/256/512及结果、边界破坏的失败定位；QEMU不模拟N550非一致DCache，不能证明实板fence/完成等待/缓存可见性正确。板上须保持DCache开启运行自测，再进行单图和连续帧验收。
-
-依赖版本按 Python 3.10 选择：[NumPy 2.2.6 发布元数据](https://pypi.org/pypi/numpy/2.2.6/json)、[OpenCV 4.11.0.86 发布元数据](https://pypi.org/pypi/opencv-python/4.11.0.86/json)。实板 UART、缓存可见性、真实 trap 和 GUI 会话仍需实验室验证。
+QEMU不模拟N550非一致DCache，不能证明实板fence/完成等待/缓存可见性正确。板上须保持DCache开启运行自测，再进行单图和连续帧验收；状态见 [交付与验收状态](VALIDATION.md)。

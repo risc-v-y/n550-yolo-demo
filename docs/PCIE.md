@@ -1,30 +1,8 @@
-# PCIe 自动逐帧演示
+# PCIe 接口与同步约定
 
-host 为物理连接板卡的 Linux 实验室电脑，Python 3.10。链路为：**host 采集/预处理 → PCIe 写DDR → 板端推理 → PCIe 读结果 → host 后处理/显示/录像**。开发机远程查看 host 桌面。
+本页是 PCIe 协议和故障处理参考。克隆、固件加载、握手、单图和视频的完整操作命令统一见 [根目录 README 的 PCIe 方案](../README.md#方案一pcie)，避免两处步骤不一致。
 
-## 使用步骤
-
-1. 克隆本仓库，在仓库根目录执行 `sha256sum -c firmware/SHA256SUMS`，使用 `firmware/demo-pcie.elf`。如需重新构建，执行 `bash yolo26_riscv/build_board.sh`，新固件位于 `yolo26_riscv/build/n550-board/demo-pcie.elf`。模型图、权重和自测均在ELF内。由同事通过现有工具加载ELF并启动一次，保持程序运行。不要运行另一个仓库会复位和重写权重的 `run_yolo26n.sh`。`firmware/demo.elf` 仍用于UART，两个固件二选一。
-2. 按 README 准备 `.venv-host` 和 `requirements-board.txt`。host 必须已有可执行的 `pbcopy`、`pbload` 和配套驱动、访问权限。我们直接调用命令，不安装内核驱动、不控制复位。非PATH内的命令通过 `--pbcopy /绝对路径/pbcopy --pbload /绝对路径/pbload` 指定。
-3. 在 host 仓库根目录执行：
-
-```bash
-# 握手并读取固件接口，尚不运行图像推理
-.venv-host/bin/python yolo26_pc/pcie_backend.py
-
-# 先验单图，原图、候选框、绘框图和差异报告自动保存
-.venv-host/bin/python yolo26_pc/pcie_backend.py --image yolo26_pc/samples/bus.jpg --reference reference/bus-qemu-fp16.bin
-.venv-host/bin/python yolo26_pc/pcie_backend.py --image yolo26_pc/samples/zidane.jpg --reference reference/zidane-qemu-fp16.bin
-
-# 自动循环视频；先收两帧验证收发与录像
-.venv-host/bin/python yolo26_pc/live_demo.py --backend pcie --source yolo26_pc/samples/pexels-3796613.mp4 --max-results 2 --save-frames
-
-# 连续演示：去掉 --max-results 2。host 本地摄像头用 --camera 0 替换 --source 参数
-```
-
-等待期间左侧继续预览，右侧每收到一帧结果才更新。Q/Esc或关闭窗口退出。无检测时正常显示原图。视频来源循环播放，推理选取当前最新帧；首版每次只有一帧在途，不保证处理素材的每一帧。
-
-单图结果在 `yolo26_pc/outputs/board-pcie/<时间>/`；视频在 `yolo26_pc/outputs/live-demo/<时间>/`，含 `raw.mp4`、`demo.mp4`、`report.json` 和 `diagnostics.jsonl`。`--save-frames` 额外保存原图、候选框、绘框图和逐帧JSON。录像沿用现有20 FPS录制方式，报告中的实际结果帧率才是推理链路速度。
+`firmware/demo-pcie.bin` 由同版本 `demo-pcie.elf` 的可加载内容转换而来，包含程序与模型常量；其 CPU 起始地址为 `0x80000000`，对应 PCIe 偏移 `0x0`。启动代码自行清 BSS；位于 `0x81F00000` 的接口邮箱不属于 BIN 的已初始化内容。ELF 保留符号和调试信息，不是现场 PCIe 加载文件。`firmware/demo.elf` 属于独立的 UART 方案。
 
 ## 传输与同步约定
 

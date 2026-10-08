@@ -1,6 +1,6 @@
 # N550 YOLO26 板端验证操作指南
 
-本页供物理连接 S2C 板卡的 Linux 实验室电脑（下称 **host**）上的软件同事使用。**PCIe 和 UART 是两套独立方案**：分别使用 `firmware/demo-pcie.elf` 和 `firmware/demo.elf`，同一时刻只加载、运行其中一个模型固件。两套方案都由 host 传图、N550 推理、host 绘框及录像；当前优先验收 PCIe。
+本页供物理连接 S2C 板卡的 Linux 实验室电脑（下称 **host**）上的软件同事使用。**PCIe 和 UART 是两套独立方案**：PCIe 上板加载 `firmware/demo-pcie.bin`，UART 使用 `firmware/demo.elf`，同一时刻只加载、运行其中一个模型固件。PCIe 对应的 `demo-pcie.elf` 保留用于构建、符号和调试，不能直接交给 PCIe 加载工具。两套方案都由 host 传图、N550 推理、host 绘框及录像；当前优先验收 PCIe。
 
 本仓库已包含板端源码、预编译固件、样例和数值参考。固件构建、PCIe 模拟联调、UART 协议回归已经完成；**真实板卡的传输、缓存可见性、模型数值及吞吐仍须现场验证**。以下是待执行的上板流程，不能把本机模拟结果当作实板通过。
 
@@ -19,13 +19,13 @@ python3 -m venv .venv-host
 
 host 的 Python 应为已确认的 3.10；虚拟环境只安装板端 host 所需的 NumPy、OpenCV 和 pyserial，无需 PyTorch。若 host 缺少 `venv`、`pip` 或依赖安装权限，请先补齐。固件哈希检查必须全部通过；`firmware/` 是本次交付的预编译文件，重新构建的输出不会自动替换它。
 
-加载任何固件前，由板级同事确认 DDR 可用且 `0x80000000–0x81FFFFFF` 这 32 MiB 由本演示独占、DCache 已开启、下载后的代码和数据对 CPU 可见。用现有加载工具按 **ELF 加载段地址**写入 DDR，从 `_start` 启动；不能把整个 ELF 当成裸二进制写到单一地址。DDR 初始化、复位、J-Link/JTAG 加载及启动由板级同事负责，固件不执行这些板级初始化。详细条件见 [板端条件](docs/BOARD.md)。切换 PCIe/UART 方案时，应加载对应固件并重新启动。
+加载任何固件前，由板级同事确认 DDR 可用且 `0x80000000–0x81FFFFFF` 这 32 MiB 由本演示独占、DCache 已开启、下载后的代码和数据对 CPU 可见。PCIe 使用已转换的裸二进制，从 CPU 地址 `0x80000000`（PCIe 偏移 `0x0`）加载并启动；UART 的 ELF 仍需由支持 ELF 的加载方式按加载段地址写入，不能直接改名为 BIN。DDR 初始化、复位及启动由板级同事负责，固件不执行这些板级初始化；复位/启动步骤须保证已写入的 DDR 内容不会丢失。详细条件见 [板端条件](docs/BOARD.md)。切换 PCIe/UART 方案时，应加载对应固件并重新启动。
 
-两套模型固件已嵌入模型图和权重，不用额外上传 `.pt` 或逐帧加载权重。输入为等比例缩放补边后的 RGB CHW `[1,3,416,416]` FP32（2,076,672 字节），结果为 `[300,6]` FP32 候选框（7,200 字节）；host 以 `score > 0.25` 绘框，不增加 NMS。两套方案都保留全部 334 个节点。请记录使用的 Git 提交、ELF 哈希、host 输出目录和板端启动方式，便于复现。
+两套模型固件已嵌入模型图和权重，不用额外上传 `.pt` 或逐帧加载权重。输入为等比例缩放补边后的 RGB CHW `[1,3,416,416]` FP32（2,076,672 字节），结果为 `[300,6]` FP32 候选框（7,200 字节）；host 以 `score > 0.25` 绘框，不增加 NMS。两套方案都保留全部 334 个节点。请记录使用的 Git 提交、实际加载文件的哈希、host 输出目录和板端启动方式，便于复现。
 
 ## 方案一：PCIe
 
-链路：**host 采集/预处理 → PCIe 写 DDR → N550 RVV+AMU 推理 → PCIe 读结果 → host 绘框/录像**。板端使用 `firmware/demo-pcie.elf`；它不初始化 UART，状态和诊断从 DDR 读取。
+链路：**host 采集/预处理 → PCIe 写 DDR → N550 RVV+AMU 推理 → PCIe 读结果 → host 绘框/录像**。板端加载 `firmware/demo-pcie.bin`；它不初始化 UART，状态和诊断从 DDR 读取。
 
 ### 1. 检查工具并启动固件
 
@@ -36,7 +36,13 @@ command -v pbcopy
 command -v pbload
 ```
 
-不在 `PATH` 内时，在下列 Python 命令末尾加 `--pbcopy /绝对路径/pbcopy --pbload /绝对路径/pbload`。由板级同事加载并启动 `firmware/demo-pcie.elf` **一次**，保持程序运行；不要用另一个仓库会复位并重写程序/权重的批处理脚本逐帧驱动。CPU 运行期间须允许 PCIe 访问 DDR。仅运行一个 host 控制程序，不要让其他 PCIe 工具同时改写本演示缓冲区。
+由板级同事按现场 S2C 时序停止 CPU、确认 DDR 已初始化，再在仓库根目录写入本仓库的完整固件镜像：
+
+```bash
+pbcopy -d firmware/demo-pcie.bin:0x0
+```
+
+`0x0` 是 PCIe 偏移，对应 CPU 入口 `0x80000000`；`pbcopy` 只负责写入，不负责启动。写入后由板级同事按现场已验证的复位/启动步骤从该入口启动 **一次**，并确认复位不清除 DDR。不要把 `demo-pcie.elf` 改名为 BIN 上传。现有 `run_yolo26n.sh` 属于同一 S2C 板的另一套 YOLO 方案，会写入其他程序和数据段，不能原样套用或逐帧复位本演示。程序运行期间须允许 PCIe 访问 DDR；仅运行一个 host 控制程序，不要让其他 PCIe 工具同时改写本演示缓冲区。`pbcopy`、`pbload` 不在 `PATH` 内时，加载命令使用实际绝对路径，并在下列 Python 命令末尾加 `--pbcopy /绝对路径/pbcopy --pbload /绝对路径/pbload`。
 
 ### 2. 握手和单图
 
@@ -140,4 +146,4 @@ PORT=/dev/ttyUSB0
 | [UART 协议](docs/UART_PROTOCOL.md) | 串口收发程序的协议细节 |
 | [验证记录](docs/VALIDATION.md) | 已完成的本机检查与待完成的实板验收 |
 
-只有需要修改或复验 C/汇编代码时，才在 Linux/WSL 构建机使用配套 ESWIN 工具链执行 `bash yolo26_riscv/build_board.sh`。工具链须支持 `xewmatrix1p0`，可通过 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定；构建结果位于 `yolo26_riscv/build/n550-board/`，不会自动替换 `firmware/` 下的交付文件。样例视频来源为 [Pexels 3796613](https://www.pexels.com/video/people-walking-on-the-street-3796613/)，SHA-256：`fcd2af324d05ae09da2570ffd693da084f6afdb209b078b419c30741742b43c5`。
+只有需要修改或复验 C/汇编代码时，才在 Linux/WSL 构建机使用配套 ESWIN 工具链执行 `bash yolo26_riscv/build_board.sh`。工具链须支持 `xewmatrix1p0`，可通过 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定；构建结果位于 `yolo26_riscv/build/n550-board/`，其中 PCIe 固件同时生成 ELF 和可加载的 BIN，不会自动替换 `firmware/` 下的交付文件。样例视频来源为 [Pexels 3796613](https://www.pexels.com/video/people-walking-on-the-street-3796613/)，SHA-256：`fcd2af324d05ae09da2570ffd693da084f6afdb209b078b419c30741742b43c5`。

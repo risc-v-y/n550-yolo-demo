@@ -16,7 +16,7 @@
 
 小数分频已确认支持。驱动在UART空闲时保存DLF、写入低6位并读回识别4/5/6位掩码、恢复旧值，再按有效位宽四舍五入计算分频并验证寄存器。4/5位得到约114943 baud，6位约115274 baud。遇到不支持的掩码或忙状态超时，启动失败，不悄悄使用整数分频。
 
-**两套方案共同的平台交接条件**：启动前DCache已开启，DDR已可读写，上述32 MiB没有其他使用者。UART固件及独立自测还要求UART时钟/复位/引脚可用；PCIe固件要求host可在CPU运行期间访问DDR，不初始化UART。代码不包含DDR控制器、时钟树、引脚复用或厂商缓存使能CSR设置。JTAG下载应保证已加载代码/数据可见，避免旧cache内容覆盖下载内容；入口为 `_start`。我们的启动代码关闭中断、设置栈和异常入口、清BSS、启用浮点/RVV状态，不关闭DCache。
+**两套方案共同的平台交接条件**：启动前DCache已开启，DDR已可读写，上述32 MiB没有其他使用者。UART固件及独立自测还要求UART时钟/复位/引脚可用；PCIe固件要求host可在CPU运行期间访问DDR，不初始化UART。代码不包含DDR控制器、时钟树、引脚复用或厂商缓存使能CSR设置。无论通过PCIe写入BIN还是以支持ELF的方式下载UART固件，都应保证已加载代码/数据对CPU可见，避免旧cache内容覆盖下载内容；入口 `_start` 位于CPU地址 `0x80000000`。我们的启动代码关闭中断、设置栈和异常入口、清BSS、启用浮点/RVV状态，不关闭DCache。
 
 ## 缓存同步
 
@@ -28,7 +28,7 @@
 
 ## 上板顺序与方案选择
 
-软件同事按 [根目录操作指南](../README.md) 选择PCIe或UART完整流程，两种模型固件不能同时运行。PCIe使用 `firmware/demo-pcie.elf` 和 [PCIe接口说明](PCIE.md)，在 `0x81F00000` 保留256字节状态接口，诊断通过DDR读取。以下仅列UART的板端检查顺序；两套方案共用模型、DDR独占范围和缓存/AMU交接条件。
+软件同事按 [根目录操作指南](../README.md) 选择PCIe或UART完整流程，两种模型固件不能同时运行。PCIe加载 `firmware/demo-pcie.bin`（PCIe偏移 `0x0`），对应的ELF仅供符号/调试；[PCIe接口说明](PCIE.md)记录在 `0x81F00000` 保留的256字节状态接口，诊断通过DDR读取。以下仅列UART的板端检查顺序；两套方案共用模型、DDR独占范围和缓存/AMU交接条件。
 
 1. **下载 `firmware/selftest.elf`**：验证UART、标量↔RVV部分cacheline写入、AMU 1×1乘法，再运行32轮RVV→AMU→RVV直接依赖和缓冲区复用自测。成功输出 `RVV->AMU->RVV REUSE 32 ROUNDS PASS` 和 `CACHE/RVV/AMU TEST PASS`。这是快速检查，不替代全模型验收。
 2. **下载 `firmware/demo.elf`**：先运行相同自检，再进入二进制协议等待状态。关闭其他占用串口的软件，host执行100次1024字节ping校验。

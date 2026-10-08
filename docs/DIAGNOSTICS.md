@@ -2,7 +2,7 @@
 
 链路：**host 视频/预处理 → UART → 开发板 → UART → host 后处理、绘框、保存 → 开发机远程查看 host 桌面**。这里 host 指物理连接开发板的 Linux 电脑。程序与权重由软件同事加载，网络转发暂不实施。
 
-PCIe模式将上述UART收发替换为 `pbcopy/pbload` 读写DDR，入口见 [PCIe说明](PCIE.md)。使用独立 `demo-pcie.elf`；新增状态错误 `0x40–0x43` 在PCIe状态记录中，模型详细错误仍读取 `board_diag`。host日志另外记录工具退出状态、输出、状态变化和阶段耗时；该模式不提供UART逐节点事件流。
+PCIe模式将上述UART收发替换为 `pbcopy/pbload` 读写DDR，入口见 [PCIe说明](PCIE.md)。板端加载独立的 `demo-pcie.bin`，对应ELF供符号查询；新增状态错误 `0x40–0x43` 在PCIe状态记录中，模型详细错误仍读取 `board_diag`。host日志另外记录工具退出状态、输出、状态变化和阶段耗时；该模式不提供UART逐节点事件流。
 
 ## 使用入口
 

@@ -58,5 +58,6 @@ sha256sum "$out/selftest.elf" >> "$out/sha256.txt"
 "$tc-objdump" -d "$out/demo-pcie.elf" > "$out/demo-pcie.disasm"
 "$tc-nm" -n "$out/demo-pcie.elf" > "$out/pcie-symbols.txt"
 "$tc-size" "$out/demo-pcie.elf" > "$out/pcie-size.txt"
-sha256sum "$out/demo-pcie.elf" >> "$out/sha256.txt"
-printf 'Board ELF compiled; physical UART/cache/AMU verification is still required.\n'
+"$tc-objcopy" -O binary "$out/demo-pcie.elf" "$out/demo-pcie.bin"
+sha256sum "$out/demo-pcie.elf" "$out/demo-pcie.bin" >> "$out/sha256.txt"
+printf 'Board firmware compiled; physical UART/PCIe/cache/AMU verification is still required.\n'

@@ -2,7 +2,7 @@
 
 **软件同事从本页开始，当前优先使用 PCIe 完成单图、连续帧和视频演示；UART 验证入口保留在第6节。** 程序加载、启动一次后，host 自动传图、等待推理、读结果和显示，无需逐帧人工操作。
 
-**版本注意：旧 [v0.2.0 Release](https://github.com/risc-v-y/n550-yolo-demo/releases/tag/v0.2.0-host-diagnostics) 不包含 PCIe 固件和新增32轮同步自测。** PCIe等新增文件由跨设备补充包提供；在另一台设备克隆仓库后，须将补充包解压到仓库根目录，再按文末步骤构建或使用包内配套ELF。
+**本仓库已包含本次 PCIe 源码、文档和预编译固件；克隆后无需跨设备补充包。** 旧 [v0.2.0 Release](https://github.com/risc-v-y/n550-yolo-demo/releases/tag/v0.2.0-host-diagnostics) 不包含 PCIe 固件和新增32轮同步自测，请使用本仓库 `firmware/` 下的文件。
 
 当前验证：PCIe 11项本机联调、UART 7项回归及固件构建通过。PCIe联调使用模拟DDR/工具和测试替身推理；**真实板卡传输、缓存可见性和模型数值仍待现场验收**。
 
@@ -14,15 +14,15 @@
 
 ## 1. 准备材料和板端加载
 
-将本次源码和配套固件复制到 host。构建输出目录为 `yolo26_riscv/build/n550-board/`：
+在 host 克隆本仓库，从仓库根目录运行 `sha256sum -c firmware/SHA256SUMS`，再使用下列材料。`firmware/` 是本次验证所用预编译文件；自行构建的输出位于 `yolo26_riscv/build/n550-board/`：
 
 | 材料 | 用途 |
 |---|---|
-| `selftest.elf` | 已编译的 N550 自测程序，检查 UART、缓存、RVV 和 AMU |
-| **`demo-pcie.elf`** | **当前PCIe演示使用**；模型、权重、自测及DDR收发接口 |
-| `demo.elf` | UART模型固件；按第6节使用 |
-| `pcie-symbols.txt` / `demo-pcie.disasm` / `demo-pcie.map` | PCIe固件的符号、反汇编和内存布局 |
-| `sha256.txt` | 本次构建的固件与模型资产哈希 |
+| `firmware/selftest.elf` | 已编译的 N550 自测程序，检查 UART、缓存、RVV 和 AMU |
+| **`firmware/demo-pcie.elf`** | **当前PCIe演示使用**；模型、权重、自测及DDR收发接口 |
+| `firmware/demo.elf` | UART模型固件；按第6节使用 |
+| `firmware/pcie-symbols.txt` / `demo-pcie.disasm` / `demo-pcie.map` | PCIe固件的符号、反汇编和内存布局 |
+| `firmware/SHA256SUMS` / `compiler.txt` | 固件与模型资产哈希 / 编译器信息 |
 | 仓库中的 `yolo26_pc/`、`reference/` | host 程序、依赖清单、测试图片/视频及对照结果 |
 
 软件同事负责通过现有 J-Link/PCIe 工具加载和启动固件。**按 ELF 加载段指定的地址写入 DDR，再从 `_start` 运行；不能把整个 ELF 文件当作裸数据直接写到某个地址。** 若加载工具只接受裸二进制，由同事处理转换及加载地址。
@@ -61,7 +61,7 @@ CACHE/RVV/AMU TEST PASS
 
 ## 4. PCIe：加载模型，验证通信与单图
 
-由同事加载并启动 **`demo-pcie.elf`**，保持程序运行。此固件不初始化UART，状态与诊断通过DDR读取。三个ELF分别运行，不同时驻留。
+由同事加载并启动 **`firmware/demo-pcie.elf`**，保持程序运行。此固件不初始化UART，状态与诊断通过DDR读取。三个ELF分别运行，不同时驻留。
 
 ```bash
 # 读取接口并建立会话，不执行图像推理
@@ -107,7 +107,7 @@ host检查工具退出状态、读回长度、CRC、会话和帧号；仅允许�
 
 ## 6. 保留的UART验证入口
 
-由同事加载 **`demo.elf`**。关闭占用串口的minicom/PuTTY，按探测结果替换端口：
+由同事加载 **`firmware/demo.elf`**。关闭占用串口的minicom/PuTTY，按探测结果替换端口：
 
 ```bash
 python3 yolo26_pc/serial_probe.py
@@ -144,6 +144,6 @@ tar -xzf /path/to/eswin-riscv-toolchain-linux-x86_64.tar.gz -C toolchain
 bash yolo26_riscv/build_board.sh
 ```
 
-输出在 `yolo26_riscv/build/n550-board/`，包括UART模型 `demo.elf`、PCIe模型 `demo-pcie.elf` 和独立自测 `selftest.elf`。必须使用支持 `xewmatrix1p0` 的配套工具链。可通过 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定已有安装。模型常量和图位于 `model/`，更换模型需同步重新生成图、常量及数值参考。
+输出在 `yolo26_riscv/build/n550-board/`，包括UART模型 `demo.elf`、PCIe模型 `demo-pcie.elf` 和独立自测 `selftest.elf`；不会自动替换 `firmware/` 中的已验收构建。必须使用支持 `xewmatrix1p0` 的配套工具链。可通过 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定已有安装。模型常量和图位于 `model/`，更换模型需同步重新生成图、常量及数值参考。
 
 附带视频：[Pexels 3796613](https://www.pexels.com/video/people-walking-on-the-street-3796613/)，SHA256 为 `fcd2af324d05ae09da2570ffd693da084f6afdb209b078b419c30741742b43c5`。QEMU 历史结果仅作数值参考，不代表实板已经通过。

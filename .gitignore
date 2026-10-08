@@ -10,7 +10,7 @@
 **/outputs/
 **/build/
 *.log
-# Deployment binaries are distributed as Release assets.
+# Generated build outputs are ignored; selected handoff firmware is tracked in firmware/.
 *.elf
 *.map
 *.disasm

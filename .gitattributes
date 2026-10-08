@@ -13,4 +13,4 @@
 /model/model_generated.c -text whitespace=cr-at-eol
 /model/model_generated.h -text whitespace=cr-at-eol
 # Prebuilt handoff artifacts and checksums must retain exact bytes across hosts.
-/firmware/* -text
+/firmware/* -text -whitespace

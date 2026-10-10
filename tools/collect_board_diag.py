@@ -5,10 +5,12 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import secrets
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -157,27 +159,42 @@ class Reader:
         self.number += 1
         prefix = f'{self.number:03d}-{label}'
         destination = self.log.directory / (prefix + '.bin')
-        args = [self.command, '-d', f'{destination}:0x{relative:x}:0x{size:x}']
-        self.log.emit({'type': 'read_begin', 'command': args, 'cwd': str(self.cwd),
-                       'cpu_address': f'0x{address:x}', 'bytes': size})
-        # Each read uses a new output file, so a failed tool cannot reuse stale data.
-        with (self.log.directory / (prefix + '.log')).open('wb') as output:
-            process = subprocess.Popen(args, cwd=self.cwd, stdout=output, stderr=subprocess.STDOUT)
-            try:
-                process.wait(timeout=self.timeout)  # Monotonic on supported Python/Linux.
-            except BaseException:
-                process.kill()
+        # The deployed S2C pbload aborts with long output paths. Pass only a
+        # short basename in the license working directory, then archive it.
+        # mkstemp creates a unique empty file, so stale data is never accepted.
+        handle, temporary = tempfile.mkstemp(prefix='p', suffix='.bin', dir=self.cwd)
+        os.close(handle)
+        transfer = Path(temporary)
+        args = [self.command, '-d', f'{transfer.name}:0x{relative:x}:0x{size:x}']
+        try:
+            self.log.emit({'type': 'read_begin', 'command': args, 'cwd': str(self.cwd),
+                           'cpu_address': f'0x{address:x}', 'bytes': size,
+                           'archive': destination.name})
+            with (self.log.directory / (prefix + '.log')).open('wb') as output:
+                process = subprocess.Popen(args, cwd=self.cwd, stdout=output, stderr=subprocess.STDOUT)
                 try:
-                    process.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    pass  # A blocked platform driver may require manual intervention.
-                self.log.emit({'type': 'read_failed', 'label': label, 'reason': 'timeout_or_interruption'})
-                raise
+                    process.wait(timeout=self.timeout)  # Monotonic on supported Python/Linux.
+                except BaseException:
+                    process.kill()
+                    try:
+                        process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        pass  # A blocked platform driver may require manual intervention.
+                    self.log.emit({'type': 'read_failed', 'label': label, 'reason': 'timeout_or_interruption'})
+                    raise
+        finally:
+            # Preserve partial data on failure/timeout too. Moving works across
+            # filesystems and leaves no transfer files in the working directory.
+            if transfer.exists():
+                shutil.move(str(transfer), str(destination))
         text = (self.log.directory / (prefix + '.log')).read_text(encoding='utf-8', errors='replace')
         self.log.emit({'type': 'read_end', 'label': label, 'returncode': process.returncode,
                        'tool_log': prefix + '.log'})
         if process.returncode or FAILURE.search(text):
-            raise RuntimeError(f'pbload failed for {label}; see {prefix}.log (exit {process.returncode})')
+            reason = f'exit {process.returncode}'
+            if process.returncode < 0:
+                reason += f', signal {signal.Signals(-process.returncode).name}'
+            raise RuntimeError(f'pbload failed for {label}; see {prefix}.log ({reason})')
         if not destination.exists() or destination.stat().st_size != size:
             raise ValueError(f'pbload missing/wrong output length for {label}; expected {size} bytes')
         return destination.read_bytes()

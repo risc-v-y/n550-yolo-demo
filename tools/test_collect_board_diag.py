@@ -88,15 +88,21 @@ with Path('events.jsonl').open('a') as log:
 assert sys.argv[1] == '-d'
 destination, address, size = sys.argv[2].split(':')
 print('pbload started', flush=True)
+if len(destination) > 13 or Path(destination).is_absolute():
+    print('*** buffer overflow detected ***: terminated')
+    sys.exit(134)
 if config['mode'] == 'timeout':
+    Path(destination).write_bytes(b'partial')
     time.sleep(5)
 if config['mode'] == 'false_success':
     print('[x] ERROR: Connect to device failed')
     sys.exit(0)
 if config['mode'] == 'exit_failure':
+    Path(destination).write_bytes(b'partial')
     print('platform driver failed')
     sys.exit(7)
 if config['mode'] == 'missing':
+    Path(destination).unlink(missing_ok=True)
     sys.exit(0)
 data = bytes.fromhex(config['data'][str(int(address, 16))])
 assert len(data) == int(size, 16)
@@ -156,6 +162,16 @@ Path(destination).write_bytes(data)
         wanted = f":0x{self.symbols['board_diag'] - diag.BASE:x}:0x330"
         self.assertTrue(any(event[1].endswith(wanted) for event in events))
 
+    def test_long_archive_path_uses_unique_short_filenames(self):
+        self.out = self.base / ('long archive path ' * 8) / 'result'
+        self.assertEqual(self.run_collect(), 0)
+        names = [event[1].split(':')[0] for event in self.events()]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertTrue(all(len(name) <= 13 and Path(name).name == name for name in names))
+        self.assertEqual(list(self.cwd.glob('p*.bin')), [])
+        self.assertEqual(len(list(self.out.glob('*.bin'))), len(names))
+        self.assertEqual((self.out / '001-program-prefix.bin').stat().st_size, 256)
+
     def test_checksum_failure_prevents_any_pcie_access(self):
         (self.root / 'firmware/selftest.bin').write_bytes(b'wrong image')
         self.assertEqual(self.run_collect(), 1)
@@ -179,6 +195,8 @@ Path(destination).write_bytes(data)
         self.assertEqual(self.run_collect(), 1)
         self.assertIn('exit 7', self.report()['error'])
         self.assertIn('platform driver failed', (self.out / '001-program-prefix.log').read_text())
+        self.assertEqual((self.out / '001-program-prefix.bin').read_bytes(), b'partial')
+        self.assertEqual(list(self.cwd.glob('p*.bin')), [])
 
     def test_timeout_keeps_partial_log_and_report(self):
         self.config['mode'] = 'timeout'
@@ -187,6 +205,8 @@ Path(destination).write_bytes(data)
         self.assertLess(time.monotonic() - started, 3)
         self.assertEqual(self.report()['exception'], 'TimeoutExpired')
         self.assertIn('pbload started', (self.out / '001-program-prefix.log').read_text())
+        self.assertEqual((self.out / '001-program-prefix.bin').read_bytes(), b'partial')
+        self.assertEqual(list(self.cwd.glob('p*.bin')), [])
 
     def test_missing_and_short_output_are_rejected(self):
         for mode in ('missing', 'short'):

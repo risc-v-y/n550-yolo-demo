@@ -1,49 +1,59 @@
-# host 显示与故障诊断
+# 运行状态与故障诊断
 
-链路：**host 视频/预处理 → UART → 开发板 → UART → host 后处理、绘框、保存 → 开发机远程查看 host 桌面**。这里 host 指物理连接开发板的 Linux 电脑。程序与权重由软件同事加载；本方案不通过网络转发板卡数据。
+模型数据链路只使用 PCIe；UART 是独立文字日志输出，可用 minicom/PuTTY 与推理同时查看。操作步骤统一见 [README](../README.md)。
 
-PCIe模式将上述UART收发替换为 `pbcopy/pbload` 读写DDR，入口见 [PCIe说明](PCIE.md)。板端加载独立的 `demo-pcie.bin`，对应ELF供符号查询；状态错误 `0x40–0x43` 在PCIe状态记录中，模型详细错误仍读取 `board_diag`。host日志另外记录工具退出状态、输出、状态变化和阶段耗时；该模式不提供UART逐节点事件流。
+## 文字日志
 
-## 使用入口
+- 默认：启动配置、AMU 初始化、自测、READY、每帧 RUN/DONE、每 32 个节点一次进度、PCIe 状态发布和错误。
+- `--board-trace`：每个节点开始/结束、输入输出编号/类型/形状和 `node_cycles`。参数通过 PCIe 配置，文字从 UART 输出。
+- `--check-intermediates`：额外扫描中间 FP32 输出的 NaN/Inf；默认已检查输入和最终输出。这不等于完整数值精度验证。
 
-准备环境、加载固件、确认串口和运行图片/视频的完整步骤统一放在 [README：板端验证入口](../README.md)。本页只说明日志、错误码及板端无法应答时的定位方式。
+节点编号从 0 开始，算子编号与 `scalar_model.h` 的 ModelOp 对应。示例：
 
-## 日志分级
+```text
+[YOLO] BOOT transport=PCIe debug=UART baud=114942 dlf_bits=4 nodes=334 input_bytes=2076672 output_bytes=7200
+[YOLO] AMU_INIT frame=0
+[YOLO] SELFTEST frame=0
+[YOLO] READY frame=0
+[YOLO] RUN frame=1 node=none op=18446744073709551615 phase=1
+[YOLO] RUN frame=1 node=32 op=0 phase=2
+[YOLO] DONE frame=1 node=333 op=<实际算子编号> phase=10 frame_cycles=...
+```
 
-- 默认：固定内存诊断记录持续更新；UART 发送帧开始/结束及错误快照。host 保存 `diagnostics.jsonl`，每条立即 flush，并输出到终端。
-- `--board-trace`：每个节点开始/结束都发送快照，包含节点号（从 0 开始）、算子、输入输出张量编号/类型/形状、阶段和周期计数。仅定位问题时启用。
-- `--check-intermediates`：检查每个节点 FP32 输出的 NaN/Inf。默认已经检查输入和最终输出；中间检查有额外扫描开销，不检查完整数值精度。
+示例末节点算子以实际图表为准。模型 RUN→DONE 的 `frame_cycles` 包含整帧执行、缓存维护和日志开销；独立自测的 DONE 计数不表示模型帧耗时。`node_cycles` 从节点开始日志发完后计至结束日志前，含维护及可选有限值检查。详细打印增加耗时，不能据此直接比较优化性能。
 
-逐节点快照 816 字节，加协议头后每条 848 字节；334 个节点开始/结束的纯串口传输额外约 49 秒（115200、8N1），实际还有软件开销。`node_cycles` 是节点开始日志发完之后到结束日志发送之前的 cycle 差，包含维护与可选检查开销，不能直接当作优化后性能。没有心跳线程或看门狗，持续收到日志不延长 host 的 RUN 总等待期限；必要时调整 `--infer-timeout`。
+UART 等待有上限，初始化验证失败或发送超时后禁用后续日志，PCIe 继续工作。`board_uart_status=0` 表示可用；`-1` 空闲超时、`-2` DLF 掩码、`-3/-4/-5` 寄存器验证失败、`-6` 尚未初始化、`-7` 发送超时。`board_diag.tx_errors` 记录故障次数。UART MMIO 本身总线异常仍会触发 trap；嵌套异常可能直接停车，不能保证打印。
 
-单图/通信日志默认在 `yolo26_pc/outputs/board-uart/<时间>/`；视频日志、报告及录像在 `yolo26_pc/outputs/live-demo/<时间>/`。host 异常保存类型、消息和完整 Python traceback。JSONL 中仍保留之前已经写出的记录，即使后续任务失败；不保证突然断电时磁盘落盘。
+## host 日志与 DDR 快照
 
-## 板端无法正常应答时
+单图日志在 `yolo26_pc/outputs/board-pcie/<时间>/`，视频在 `outputs/live-demo/<时间>/`，部署日志在 `outputs/deploy-*/load.log`。`diagnostics.jsonl` 包括 PCIe 工具参数、退出码、输出尾部、状态变化和完成/失败时的板端快照。Python 异常保存 traceback。UART 文字不自动写入 JSONL，需使用终端会话日志另存。
 
-通过同事已有调试器查看 ELF 符号 **`board_diag`**：816 字节、64 字节对齐的静态结构；PCIe 固件地址可查 `firmware/pcie-symbols.txt`，UART 固件地址由调试器读取对应 ELF 符号，地址不保证跨构建相同。含启动阶段、帧号、节点、子阶段、错误、UART 计数、最近 AMU flags、异常 CSR 及 x0–x31。另保留兼容符号 `board_error`、`board_current_node`、`board_test_stage`；优先读取经过缓存同步的 `board_diag`。
+`board_diag` 为 816 字节、64 字节对齐、版本 1 的固定结构，经缓存 clean 发布，可由 PCIe 或已有调试器读取；地址见 `firmware/pcie-symbols.txt`。保留旧 RX/RPC 计数字段以兼容布局，当前不再使用。主要信息为阶段、帧号、节点/形状、子阶段、错误/detail、AMU flags、异常 CSR 和 x0–x31。
 
-CPU trap 使用独立 4 KiB 异常栈，保存异常前的整数寄存器及 `mcause/mepc/mtval`，然后停止；不保存浮点/向量/矩阵寄存器，不尝试自动恢复执行。正常诊断更新执行缓存 clean；若 DDR、本身的缓存指令或异常栈访问也故障，记录可能不完整。异常记录期间再次 fault 会进入停车入口，不保证能通过 UART 输出。
-
-AMU 等待前保存阶段，等待返回后保存原始 `xmfflags`。不擅自解释其位定义，也不将所有非零 flags 都判为错误。若等待指令或总线访问本身无法返回，C 代码不能在该指令内部实现超时；host 超时后由同事暂停 CPU，结合 PC、反汇编和最后记录定位。
+CPU trap 使用独立 4 KiB 异常栈，保存整数寄存器及 `mcause/mepc/mtval`，尽力打印并发布 PCIe ERROR，然后停车；不自动恢复，不保存浮点/向量/矩阵寄存器。DDR、缓存指令或异常栈也故障时，记录可能不完整。
 
 | 错误 | 含义 |
 |---|---|
-| 1/2 | 权重长度/图接口不匹配；初始化 UART 前失败，需调试器 |
-| 3/4 | AMU 初始化/自检失败，detail 保留返回值；UART 已初始化时 demo 仍可响应诊断，但拒绝模型任务 |
-| 0x21–0x25 | UART 初始化失败，需调试器 |
-| 0x30 | 输入出现 NaN/Inf；tensor/element/observed 保存位置和原始位 |
-| 0x31 | 算子失败；node、phase、detail 保留定位信息 |
-| 0x32 | 输出出现 NaN/Inf，含张量编号、元素偏移和原始位 |
-| 0x100 | CPU 异常，查看 trap_* 与 registers |
+| 1/2 | 权重长度/图接口不符 |
+| 3/4 | AMU 初始化/自测失败，detail 为原返回值 |
+| 0x30 | 输入 NaN/Inf，查看 tensor/element/observed |
+| 0x31 | 算子失败，查看 node/phase/detail |
+| 0x32 | 输出 NaN/Inf，查看张量、下标和原始位 |
+| 0x40–0x43 | PCIe 请求、会话、输入 CRC 或模型失败，见 PCIE.md |
+| 0x100 | CPU trap，查看 trap_* 和 registers |
 
-串口快照中的 `rx_timeouts` 包括无数据时的正常轮询超时，不单独作为链路故障判断；`rx_errors` 是 UART LSR 报错，`tx_errors` 是发送轮询超时，另统计 CRC 错误、协议拒绝和重复请求。错误快照不意味着自动恢复，数值结果仍需与基准核对。
+AMU 等待前记录阶段，返回后记录原始 `xmfflags`，不将所有非零 flags 判为错误。指令或总线访问无法返回时，C 无法在指令内部实现超时，由 host 超时及同事调试器定位 PC/反汇编。
 
-## RVV/AMU依赖与复用自测
+## 自测定位
 
-`selftest.elf` 和 `demo.elf` 启动时均执行 `board/sync_selftest.c`：RVV直接写FP16输入块，`fence rw,rw`后AMU计算并写FP32结果，完成等待和fence后RVV直接读取并加轮次标记。最后fence、invalidate，标量逐位核对结果与全部边界/行填充哨兵；中间没有标量重新打包或诊断调用代替交接。
+自测使用可精确表示的整数输入，独立整数公式逐位核对，不设浮点误差阈值。32 轮复用覆盖 `(M,N,K)=(3,5,17)、(1,1,1)、(2,3,32)、(3,5,31)`，同时检查尾块和边界哨兵。
 
-相同缓冲区复用32轮，每轮改变正负输入和标记，交替使用 `(M,N,K)=(3,5,17)、(1,1,1)、(2,3,32)、(3,5,31)`。输入为−3至3整数，FP16输入及FP32乘加均可精确表示；与独立整数公式对照，不设浮点误差阈值。标量每轮先写脏缓存行，用于检查flush和相邻值保留。
+失败 `error=4`，`detail=-100/-101/-102/-103` 对应 A、B、AMU 输出、RVV 输出不匹配；此时 `frame` 是轮次 0–31，`tensor` 是缓冲区编号 0–3，`element` 包括哨兵偏移，`observed/expected` 是原始位。此时它们不表示视频帧或模型张量。`board_test_stage`：1 RVV 缓存，2 AMU，4 依赖复用，3 全部通过。
 
-自测失败 `error=4`；`detail=-100/-101/-102/-103` 分别表示输入A、输入B、AMU输出、RVV输出不匹配。此时 `frame` 为轮次（0–31），`tensor` 为缓冲区编号（0–3），`element` 为整个缓冲区内的元素下标（包含哨兵），`observed/expected` 为原始位值。它们此时不是视频帧号或模型张量号。独立自测还通过UART打印这些值（十六进制）；模型固件仍使用二进制诊断快照。
+实板须保持 DCache 开启，通过自测后再做单图和连续帧验收，见 [验收状态](VALIDATION.md)。
 
-QEMU不模拟N550非一致DCache，不能证明实板fence/完成等待/缓存可见性正确。板上须保持DCache开启运行自测，再进行单图和连续帧验收；状态见 [交付与验收状态](VALIDATION.md)。
+## UART 接口核对来源
+
+已核对千问交接包固定提交 `21e7253b7caf7d34864fb82a807720f7eba00bbc` 的 [main_baremetal.c](https://github.com/trollsmash/n550_qwen3_bringup_handover/blob/21e7253b7caf7d34864fb82a807720f7eba00bbc/fpga_bringup/src/src/main_baremetal.c#L73)：`uart_init()` 初始化；`putc_raw()` 等待 LSR bit5 后写 THR；`putc_()` 处理换行；`P/U/I/X` 分别打印字符串、无符号数、有符号数和十六进制。
+
+YOLO 使用独立 `board/uart.c` 的 `board_uart_init/put/text/u64/i64/hex`，保留动态 DLF 检测，超时后不写 THR 并关闭后续日志。仅核对平台 UART 接口，未参考或复用千问算子。

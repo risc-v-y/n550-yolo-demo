@@ -9,7 +9,8 @@ enum { PHASE_NONE, PHASE_INPUT, PHASE_NODE_BEGIN, PHASE_CACHE, PHASE_COMPUTE,
        PHASE_CHECK, PHASE_NODE_END };
 enum { DIAG_EVENTS=1, DIAG_TRACE=2, DIAG_FINITE=4 };
 /* All fields are little-endian uint64, including signed error detail (2's complement).
- * Fixed ELF symbol, 64-byte aligned; no heap or strings needed to inspect it. */
+ * Fixed ELF symbol, 64-byte aligned. Legacy RX/RPC counters remain reserved
+ * to preserve the snapshot ABI; the physical UART only transmits debug text. */
 typedef struct {
     uint64_t version, stage, frame, node, op, phase, error, detail;
     uint64_t received, rx_errors, rx_timeouts, tx_errors, crc_errors, protocol_errors, retries;
@@ -28,6 +29,6 @@ void board_diag_error(unsigned code, int detail);
 void board_diag_node(uint32_t id, const ModelNode *node, const ModelTensor *tensors);
 void board_diag_trap(uintptr_t cause, uintptr_t pc, uintptr_t value, const uintptr_t *registers);
 uint64_t board_diag_ticks(void);
-/* Protocol supplies this only while a request is active; no raw UART printf. */
+/* Best-effort debug text. Native PCIe fixtures keep this silent. */
 void board_diag_event(void);
 #endif

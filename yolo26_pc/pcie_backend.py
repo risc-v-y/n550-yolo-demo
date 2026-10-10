@@ -106,7 +106,7 @@ class PBTools:
 class PCIeBackend:
     def __init__(self, pbcopy='pbcopy', pbload='pbload', stop=None, infer_timeout=900,
                  progress=None, diagnostic=None, transport=None, tool_timeout=30,
-                 poll_interval=.1, check_finite=False):
+                 poll_interval=.1, check_finite=False, trace=False):
         if infer_timeout<=0 or tool_timeout<=0 or poll_interval<=0:
             raise ValueError('PCIe timeouts and polling interval must be positive')
         self.stop=stop or threading.Event()
@@ -117,7 +117,7 @@ class PCIeBackend:
         self.link=transport or PBTools(pbcopy,pbload,self.stop,tool_timeout,self.diagnostic)
         self.session=secrets.randbits(64) or 1
         self.frame=0
-        self.options=4 if check_finite else 0
+        self.options=(4 if check_finite else 0) | (2 if trace else 0)
         self.failed=False
         self.last_timing={}
         self.last_diagnostic=None
@@ -269,6 +269,7 @@ def main():
     parser.add_argument('--tool-timeout',type=float,default=30)
     parser.add_argument('--poll-interval',type=float,default=.1)
     parser.add_argument('--check-intermediates',action='store_true')
+    parser.add_argument('--board-trace',action='store_true',help='Print every node and tensor shape on the debug UART')
     parser.add_argument('--image',type=Path)
     parser.add_argument('--reference',type=Path)
     parser.add_argument('--output',type=Path)
@@ -282,7 +283,7 @@ def main():
     try:
         backend=PCIeBackend(args.pbcopy,args.pbload,infer_timeout=args.infer_timeout,
                             tool_timeout=args.tool_timeout,poll_interval=args.poll_interval,
-                            progress=print,diagnostic=log.emit,check_finite=args.check_intermediates)
+                            progress=print,diagnostic=log.emit,check_finite=args.check_intermediates,trace=args.board_trace)
         report['board']=backend.info
         if args.image:
             from video_demo import read_image,prepare_input,postprocess,annotate,np

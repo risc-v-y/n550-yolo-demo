@@ -3,11 +3,9 @@
 #include "model_generated.h"
 #include "cache.h"
 #include "uart.h"
-#include "protocol.h"
+#include "model_io.h"
 #include "diagnostics.h"
-#ifdef YOLO_PCIE
 #include "pcie.h"
-#endif
 extern const unsigned char model_weights[], model_weights_end[];
 static unsigned char arena[MODEL_ARENA_BYTES] __attribute__((aligned(64)));
 /* Inspect these symbols with the team's debugger when UART cannot start. */
@@ -19,9 +17,7 @@ __attribute__((noreturn)) void platform_exit(uintptr_t code) {
     board_error=code;
     if(board_diag.stage!=DIAG_TRAP) board_diag_error((unsigned)code,0);
     board_clean((const void *)&board_error,sizeof(board_error));
-#ifdef YOLO_PCIE
     board_pcie_fault((unsigned)code,0);
-#endif
     for(;;) __asm__ volatile("wfi");
 }
 __attribute__((noreturn)) void platform_trap(uintptr_t cause,uintptr_t pc,uintptr_t value,const uintptr_t *registers) {
@@ -42,8 +38,7 @@ int board_model_run(void) {
     board_diag.element=board_diag.observed=board_diag.expected=0;
     board_diag.phase=PHASE_INPUT;
     board_diag_stage(DIAG_RUN);
-    board_diag_event();
-    /* Reject corrupt/nonfinite inputs even if the UART CRC was valid. */
+    /* Reject corrupt/nonfinite inputs even if the PCIe CRC was valid. */
     const unsigned char *input=board_model_input();
     for(size_t i=0;i<board_model_input_size();i+=4) {
         uint32_t bits=(uint32_t)input[i] | (uint32_t)input[i+1]<<8 |
@@ -84,23 +79,25 @@ int board_model_run(void) {
         if(board_diag.options&DIAG_TRACE) board_diag_event();
     }
     board_diag_stage(DIAG_DONE);
-    board_diag_event();
     return 0;
 }
 int main(void) {
     board_diag_init();
-#ifdef YOLO_PCIE
     board_pcie_init();
-#endif
+    board_diag_stage(DIAG_UART);
+    int status=board_uart_init();
+    if(!status) {
+        board_uart_text("[YOLO] BOOT transport=PCIe debug=UART baud=");
+        board_uart_u64(board_uart_baud);
+        board_uart_text(" dlf_bits="); board_uart_u64(board_uart_dlf_bits);
+        board_uart_text(" nodes="); board_uart_u64(MODEL_NODE_COUNT);
+        board_uart_text(" input_bytes="); board_uart_u64(board_model_input_size());
+        board_uart_text(" output_bytes="); board_uart_u64(board_model_output_size());
+        board_uart_text("\n");
+    }
     if((size_t)(model_weights_end-model_weights)!=MODEL_CONSTANT_BYTES) platform_exit(1);
     if(model_tensors[0].dtype!=1 || board_model_input_size()!=3*416*416*4 ||
        board_model_output_size()!=7200) platform_exit(2);
-    int status;
-#ifndef YOLO_PCIE
-    board_diag_stage(DIAG_UART);
-    status=board_uart_init();
-    if(status) platform_exit((uintptr_t)(0x20-status));
-#endif
     board_diag_stage(DIAG_AMU_INIT);
     status=amu_init();
     if(status) { startup_failure=1; board_error=3; board_diag_error(3,status); }
@@ -109,11 +106,10 @@ int main(void) {
         status=board_selftest();
         if(status) { startup_failure=1; board_error=4; board_diag_error(4,status); }
     }
-    if(!startup_failure) board_diag_stage(DIAG_READY);
-#ifdef YOLO_PCIE
+    if(!startup_failure) {
+        board_diag.frame=0; board_diag.phase=PHASE_NONE;
+        board_diag_stage(DIAG_READY);
+    }
     board_pcie_loop(startup_failure);
-#else
-    board_rpc_loop();
-#endif
     return 0;
 }

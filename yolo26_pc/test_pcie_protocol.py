@@ -10,8 +10,7 @@ import threading
 import time
 import unittest
 import zlib
-import numpy as np
-from pcie_backend import BASE,MAILBOX,PBTools,PCIeBackend,STATUS,checked
+from pcie_backend import BASE,MAILBOX,PBTools,PCIeBackend,STATUS,checked,INPUT_BYTES,OUTPUT_BYTES
 
 BINARY=sys.argv.pop(1)
 
@@ -74,14 +73,14 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
             f.seek(address-BASE); f.write(data)
 
     def tensor(self,value=1):
-        return np.full((3,416,416),value,np.float32)
+        return struct.pack('<f',value)*(INPUT_BYTES//4)
 
     def test_continuous_frames_and_duplicate_doorbell(self):
         backend=self.connect()
         for i in (1,2,3):
-            result=backend.infer(self.tensor(i))
-            self.assertEqual(result.shape,(300,6))
-            self.assertEqual(result[0,0],i)
+            result=backend.infer_bytes(self.tensor(i))
+            self.assertEqual(len(result),OUTPUT_BYTES)
+            self.assertEqual(struct.unpack_from('<f',result)[0],i)
             self.assertEqual(backend.last_status['frame'],i)
         # Re-publishing the same commit must never rerun inference.
         self.write(MAILBOX+128,struct.pack('<I',backend.sequence))
@@ -95,7 +94,7 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         backend=self.connect()
         (self.root/'badinput').touch()
         with self.assertRaisesRegex(RuntimeError,'Board PCIe error'):
-            backend.infer(self.tensor())
+            backend.infer_bytes(self.tensor())
         self.assertEqual(backend.last_status['error'],0x42)
         self.assertEqual(struct.unpack('<I',self.read(0x80a20000,4))[0],0)
 
@@ -103,15 +102,15 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         backend=self.connect()
         (self.root/'badresult').touch()
         with self.assertRaisesRegex(ValueError,'CRC/length'):
-            backend.infer(self.tensor())
+            backend.infer_bytes(self.tensor())
         with self.assertRaisesRegex(RuntimeError,'session failed'):
-            backend.infer(self.tensor())
+            backend.infer_bytes(self.tensor())
 
     def test_model_failure_diagnostic(self):
         backend=self.connect()
         self.write(0x80a20004,struct.pack('<I',1))
         with self.assertRaisesRegex(RuntimeError,'Board PCIe error'):
-            backend.infer(self.tensor())
+            backend.infer_bytes(self.tensor())
         self.assertEqual(backend.last_status['detail'],-2)
         self.assertEqual(backend.last_diagnostic['detail'],-77)
 
@@ -119,25 +118,25 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         backend=self.connect()
         self.write(0x80a2000c,struct.pack('<I',1))
         with self.assertRaisesRegex(ValueError,'values/classes'):
-            backend.infer(self.tensor())
+            backend.infer_bytes(self.tensor())
         backend.close(); self.backend=None
         self.write(0x80a2000c,struct.pack('<2I',0,1))
         backend=self.connect()
         with self.assertRaisesRegex(ValueError,'values/classes'):
-            backend.infer(self.tensor())
+            backend.infer_bytes(self.tensor())
 
     def test_timeout_and_reconnect_wait_for_board(self):
         backend=self.connect(infer_timeout=1.5)
         self.write(0x80a20008,struct.pack('<I',1))
         with self.assertRaises(TimeoutError):
-            backend.infer(self.tensor())
+            backend.infer_bytes(self.tensor())
         self.assertTrue(backend.failed)
         backend.close(); self.backend=None
         timer=threading.Timer(.15,lambda:self.write(0x80a20008,struct.pack('<I',0)))
         timer.start()
         try:
             backend=self.connect(infer_timeout=3)
-            self.assertEqual(backend.infer(self.tensor(4))[0,0],4)
+            self.assertEqual(struct.unpack_from('<f',backend.infer_bytes(self.tensor(4)))[0],4)
         finally:
             timer.join()
 
@@ -192,10 +191,10 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
                         struct.pack_into('<I',data,60,zlib.crc32(data[:60]))
             return data
         backend.link.read=read
-        self.assertEqual(backend.infer(self.tensor())[0,0],1)
+        self.assertEqual(struct.unpack_from('<f',backend.infer_bytes(self.tensor()))[0],1)
         inject['wrong']=True
         with self.assertRaisesRegex(ValueError,'session/frame mismatch'):
-            backend.infer(self.tensor())
+            backend.infer_bytes(self.tensor())
 
     def test_single_owner_lock(self):
         self.connect()
@@ -204,7 +203,11 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
 
     def test_video_flow(self):
         # Exercise real CLI, transport, preprocess/postprocess and video recorder.
-        import cv2
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.skipTest('Video regression needs optional NumPy/OpenCV')
         source=self.root/'source.mp4'
         writer=cv2.VideoWriter(str(source),cv2.VideoWriter_fourcc(*'mp4v'),10,(64,64))
         self.assertTrue(writer.isOpened())
@@ -213,7 +216,7 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         script=Path(__file__).with_name('live_demo.py')
         result=subprocess.run([sys.executable,str(script),'--backend','pcie','--pbcopy',str(self.root/'pbcopy'),
             '--pbload',str(self.root/'pbload'),'--source',str(source),'--no-display','--max-results','2',
-            '--infer-timeout','15','--save-frames'],capture_output=True,text=True,timeout=60)
+            '--infer-timeout','15','--save-frames','--board-trace'],capture_output=True,text=True,timeout=60)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         directory=Path(result.stdout.strip().splitlines()[-1])
         import json
@@ -224,6 +227,20 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         self.assertEqual(len(list(directory.glob('detected-*.png'))),2)
         capture=cv2.VideoCapture(str(directory/'demo.mp4'))
         self.assertTrue(capture.read()[0]); capture.release()
+
+    def test_trace_and_finite_options(self):
+        backend=self.connect(trace=True,check_finite=True)
+        backend.infer_bytes(self.tensor())
+        self.assertEqual(struct.unpack_from('<I',self.read(MAILBOX+64,64),32)[0],6)
+        self.assertEqual(backend.last_diagnostic['options'],6)
+
+    def test_unsupported_option_rejected(self):
+        backend=self.connect()
+        backend.options=8
+        with self.assertRaisesRegex(RuntimeError,'Board PCIe error'):
+            backend.infer_bytes(self.tensor())
+        self.assertEqual(backend.last_status['error'],0x40)
+        self.assertEqual(struct.unpack('<I',self.read(0x80a20000,4))[0],0)
 
 
 if __name__=='__main__':

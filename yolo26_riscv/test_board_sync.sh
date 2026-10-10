@@ -62,7 +62,7 @@ for fault in 0 1 2; do
     if [[ $fault != 0 ]]; then sync="$out/fault$fault.c"; fi
     "$tc-gcc" "${flags[@]}" -DTEST_FAULT="$fault" -nostdlib -nostartfiles -Wl,--gc-sections \
         -T "$src/board/ddr.ld" "$src/board/start.S" "$src/board/selftest.c" "$sync" \
-        "$src/board/diagnostics.c" "$src/amu.c" "$out/harness.c" -o "$out/test$fault.elf"
+        "$src/board/diagnostics.c" "$src/board/uart.c" "$src/amu.c" "$out/harness.c" -o "$out/test$fault.elf"
     for vlen in 128 256 512; do
         echo "fault=$fault vlen=$vlen"
         timeout 60s "$qemu" -machine virt \

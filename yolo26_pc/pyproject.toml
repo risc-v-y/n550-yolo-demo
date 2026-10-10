@@ -3,7 +3,6 @@ name = "yolo26-pc-reference"
 version = "0.1.0"
 requires-python = "==3.12.*"
 dependencies = [
-    "pyserial==3.5",
     "ultralytics==8.4.143",
     "torch==2.10.0",
     "torchvision==0.25.0",

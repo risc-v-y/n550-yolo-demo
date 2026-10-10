@@ -1,47 +1,41 @@
-# 板端条件与逐步验收
+# 板端条件
 
-## 固定配置
+操作命令统一见 [README](../README.md)，本页仅定义平台条件和同步边界。
 
-| 项目 | 交付配置 |
+| 项目 | 固定配置 |
 |---|---|
-| CPU | N550，RV64，单hart0，M模式；其他hart停车 |
-| 运算 | RVV+AMU FP16，FP32激活与输出；不改数值计算顺序 |
-| DDR | Memory port，独占0x80000000–0x81FFFFFF，平台已保证可直接读写 |
-| 数据区 | 图工作区7,614,720字节；模型常量9,678,644字节；另有代码、scratch和256 KiB栈 |
-| CLP | 不使用0x10000000→0xF0000000重映射，RVV/标量/AMU均使用DDR同一地址 |
-| DCache | 保持开启；cacheline与本次缓存维护步长64字节；标准Zicbom |
-| UART0 | Synopsys DW_apb_uart，0x20100000，32-bit MMIO、寄存器间距4字节 |
-| 时钟/格式 | pclk=sclk=10 MHz，115200、8N1、无RTS/CTS和XON/XOFF |
-| 中断 | UART中断号16；当前固件采用轮询，不配置中断控制器 |
+| CPU | N550，RV64，单 hart0，M 模式；其他 hart 停车 |
+| 运算 | RVV+AMU FP16，FP32 激活与输出，334 节点 |
+| DDR | Memory port，独占 `0x80000000–0x81FFFFFF` 共 32 MiB |
+| 数据区 | 图工作区 7,614,720 字节，常量 9,678,644 字节，另有代码、scratch、256 KiB 主栈 |
+| CLP | 不使用 `0x10000000→0xF0000000` 重映射；标量/RVV/AMU 使用同一 DDR 地址 |
+| DCache | 保持开启，cacheline 与维护步长均为 64 字节，标准 Zicbom |
+| UART0 | DW_apb_uart，基址 `0x20100000`，32-bit MMIO，寄存器间距 4 字节 |
+| UART 格式 | pclk=sclk=10 MHz，115200、8N1，无软硬流控，仅输出调试文字 |
+| PCIe | CPU 运行期间可访问 DDR，地址为 CPU 地址减 `0x80000000` |
 
-小数分频已确认支持。驱动在UART空闲时保存DLF、写入低6位并读回识别4/5/6位掩码、恢复旧值，再按有效位宽四舍五入计算分频并验证寄存器。4/5位得到约114943 baud，6位约115274 baud。遇到不支持的掩码或忙状态超时，启动失败，不悄悄使用整数分频。
+## 加载与启动
 
-**两套方案共同的平台交接条件**：启动前DCache已开启，DDR已可读写，上述32 MiB没有其他使用者。UART固件及独立自测还要求UART时钟/复位/引脚可用；PCIe固件要求host可在CPU运行期间访问DDR，不初始化UART。代码不包含DDR控制器、时钟树、引脚复用或厂商缓存使能CSR设置。无论通过PCIe写入BIN还是以支持ELF的方式下载UART固件，都应保证已加载代码/数据对CPU可见，避免旧cache内容覆盖下载内容；入口 `_start` 位于CPU地址 `0x80000000`。我们的启动代码关闭中断、设置栈和异常入口、清BSS、启用浮点/RVV状态，不关闭DCache。
+平台方负责 DDR/时钟/引脚/缓存使能及 JTAG 配置。启动前 DCache 已开启，DDR 可访问，下载后的代码/数据对 CPU 可见，旧脏缓存不能覆盖下载内容。UART 时钟、复位和引脚须可访问；MMIO 总线异常会触发 CPU trap。
 
-## 缓存同步
+部署脚本使用现场已提供的 `reset1.sh` 保持 S2C 复位，加载完整 BIN 到 PCIe `0x0`，再用 `reset.sh` 释放复位。平台方须保证该时序有效、释放不清除 DDR、启动入口为 CPU `0x80000000`。我们的启动代码关闭中断，设置栈、异常入口，清 BSS，启用浮点/RVV 状态，不初始化 DDR、不关闭 DCache。
 
-板端构建强制包含 `board/coherent_rvv.h`，QEMU构建不启用。连续/跨步RVV读前clean，写前flush、写后完成内存排序并invalidate；索引源在节点入口clean，标量生成的索引数组在向量读取前clean。Softmax内部标量归约读到的是已同步的RVV结果。
+模型固件只有 `demo-pcie.bin`；对应 ELF 供符号和调试。`selftest.bin`/`selftest.elf` 是独立缓存/RVV/AMU 自测，不接受图像任务。模型也会在启动时自动执行相同自测。
 
-已确认平台支持标准 `cbo.clean/flush/inval` 和 FP16 AMU 指令。AMU输入打包后clean；输出各行在写前flush，矩阵完成等待后invalidate，再允许标量读取。`cbo.*`负责缓存内容，`fence rw,rw`负责DDR访问顺序，矩阵完成等待负责AMU执行完成；三者不能互相替代。当前完成等待采用读取 `xmfflags` 的N550约定，仍须实板确认，不能仅由“支持FP16指令”推断其完成语义。
+UART 动态识别 4/5/6 位 DLF 并计算小数分频，验证寄存器；实际波特率的整数记录约为 114942/115273。空闲检测、分频验证或发送等待失败后禁用文字输出，记录 `board_uart_status` 和 `board_diag.tx_errors`，不阻止 PCIe 模型执行。每个 MMIO 访问本身无法返回或触发异常时，不能靠轮询上限恢复。
 
-缓存维护覆盖首尾完整cacheline，避免部分行旧脏数据回写覆盖新数据。当前固件单hart、禁中断，不允许其他任务并发修改交接缓存行。缓存维护采用保守策略，有性能开销；实际RVV/AMU完成语义与缓存可见性必须经板上自检和模型结果确认。
+## 缓存与执行同步
 
-## 上板顺序与方案选择
+板端构建包含 `board/coherent_rvv.h`：连续/跨步 RVV 读前 clean，写前 flush，写后 fence 并 invalidate；索引数组在向量读取前 clean。AMU 输入打包后 clean，输出写前 flush，矩阵完成等待后 invalidate，再允许标量/RVV 读取。
 
-软件同事按 [根目录操作指南](../README.md) 选择PCIe或UART完整流程，两种模型固件不能同时运行。PCIe加载 `firmware/demo-pcie.bin`（PCIe偏移 `0x0`），对应的ELF仅供符号/调试；[PCIe接口说明](PCIE.md)记录在 `0x81F00000` 保留的256字节状态接口，诊断通过DDR读取。以下仅列UART的板端检查顺序；两套方案共用模型、DDR独占范围和缓存/AMU交接条件。
+`cbo.*` 维护缓存，`fence rw,rw` 保证内存顺序，AMU 完成等待保证矩阵执行结束，三者不能替代。当前 AMU 等待约定为读取 `xmfflags`，仍须实板确认完成语义。
 
-1. **下载 `firmware/selftest.elf`**：验证UART、标量↔RVV部分cacheline写入、AMU 1×1乘法，再运行32轮RVV→AMU→RVV直接依赖和缓冲区复用自测。成功输出 `RVV->AMU->RVV REUSE 32 ROUNDS PASS` 和 `CACHE/RVV/AMU TEST PASS`。这是快速检查，不替代全模型验收。
-2. **下载 `firmware/demo.elf`**：先运行相同自检，再进入二进制协议等待状态。关闭其他占用串口的软件，host执行100次1024字节ping校验。
-3. **单图bus/zidane**：PC预处理、逐包传输、板端执行334节点、PC回传后绘框。记录上传、RUN往返、下载耗时；逐项核对与reference候选框及检测结果的差异，不设经验阈值掩盖错误。
-4. **连续两帧以上**：确认帧号/结果对应，视频窗口等待时响应正常；断线、CRC错误、重复包、取消后重连都应明确处理。相同RUN重试只能推理一次。
-5. **摄像头**：最后接入真实采集，确认预览、检测结果画面和录像。
+维护覆盖首尾完整缓存行，单 hart、禁中断且不得有其他任务并发修改交接缓存行。PCIe 邮箱分离 host/板端写区；输入、输出的所有权转换见 [PCIe 协议](PCIE.md)。
+
+自测覆盖标量↔RVV 部分缓存行、AMU 1×1 乘法，以及 32 轮 RVV→AMU→RVV 依赖和缓冲区复用。QEMU 不模拟 N550 非一致 DCache，不能替代实板自测与完整模型数值验收。
 
 ## 故障定位
 
-优先按 [诊断说明](DIAGNOSTICS.md) 查看 host 的 `diagnostics.jsonl` 或通过调试器读取 `board_diag`。它记录阶段、错误及原始返回码、节点、输入输出形状、AMU flags、异常 CSR 与整数寄存器，并执行缓存同步。
+优先看 UART 文字及 host 日志，随后检查 `board_diag`。保留 `board_error`、`board_current_node`、`board_test_stage`、`board_trap_cause/pc/value` 和 `board_uart_status`；含义见 [诊断说明](DIAGNOSTICS.md)。
 
-兼容符号包括：`board_error`（1权重长度、2图格式、3AMU能力、4自检失败、0x21–0x25 UART初始化失败、0x100异常）；`board_trap_cause/pc/value`；`board_test_stage`（1 RVV缓存、2 AMU、4直接依赖与复用、3全部通过）；`board_current_node`。完整诊断以 `board_diag` 为准。
-
-UART固件不向协议串口写printf文本。没有INFO时先检查固件是否通过自检，再检查端口、接线、分频和时钟。传输异常可能需要等待板端当前RUN完成或由同事重新运行固件；程序不通过串口执行硬件复位。
-
-依据：用户提供的core/NoC地址图、DW_apb_uart 4.02a手册及已确认的板级参数。厂商手册不是实际RTL参数配置的替代品；JTAG链路与调试器配置不属于本次交付范围。
+依据为用户提供的 core/NoC 地址图、DW_apb_uart 4.02a 手册及已确认板级参数；厂商手册不能替代实际 RTL 参数。

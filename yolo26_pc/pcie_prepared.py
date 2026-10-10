@@ -113,6 +113,8 @@ def main():
     parser.add_argument('--pbload', default='pbload')
     parser.add_argument('--infer-timeout', type=float, default=900)
     parser.add_argument('--tool-timeout', type=float, default=30)
+    parser.add_argument('--board-trace', action='store_true', help='Print every node on the debug UART')
+    parser.add_argument('--check-intermediates', action='store_true')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     output = args.output or ROOT / 'yolo26_pc' / 'outputs' / 'board-pcie' / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
@@ -130,7 +132,8 @@ def main():
     report = {'status': 'starting', 'sample': args.sample, 'input_sha256': sample['input_sha256']}
     try:
         backend = PCIeBackend(args.pbcopy, args.pbload, infer_timeout=args.infer_timeout,
-                              tool_timeout=args.tool_timeout, progress=print, diagnostic=log.emit)
+                              tool_timeout=args.tool_timeout, progress=print, diagnostic=log.emit,
+                              trace=args.board_trace, check_finite=args.check_intermediates)
         report['board'] = backend.info
         raw = backend.infer_bytes(prepared)
         found = detections(raw, sample['transform'])

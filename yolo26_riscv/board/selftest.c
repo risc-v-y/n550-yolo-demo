@@ -60,35 +60,31 @@ __attribute__((noreturn)) void platform_trap(uintptr_t cause,uintptr_t pc,uintpt
     board_diag_trap(cause,pc,value,registers);
     platform_exit(0x100);
 }
-static void message(const char *p) { while(*p) if(board_uart_put((unsigned char)*p++)) break; }
-static void hex_value(uint64_t value) {
-    const char digits[]="0123456789abcdef";
-    for(int shift=60;shift>=0;shift-=4)
-        if(board_uart_put((unsigned char)digits[(value>>shift)&15])) break;
-}
+static void message(const char *p) { (void)board_uart_text(p); }
+static void hex_value(uint64_t value) { (void)board_uart_hex(value); }
 int main(void) {
     board_diag_init();
     board_diag_stage(DIAG_UART);
     int status=board_uart_init();
-    if(status) platform_exit((uintptr_t)(0x20-status));
-    message("UART OK\r\n");
+    /* Debug output failure must not prevent cache/AMU validation. */
+    if(!status) message("[YOLO] UART OK\n");
     board_diag_stage(DIAG_AMU_INIT);
     int result=amu_init();
-    if(result) { board_diag_error(3,result); message("AMU INIT FAIL\r\n"); platform_exit(3); }
+    if(result) { board_diag_error(3,result); message("AMU INIT FAIL\n"); platform_exit(3); }
     board_diag_stage(DIAG_SELFTEST);
     result=board_selftest();
     if(result) {
         board_diag_error(4,result);
-        message("CACHE/AMU TEST FAIL stage=0x"); hex_value(board_test_stage);
-        message(" round=0x"); hex_value(board_diag.frame);
-        message(" buffer=0x"); hex_value(board_diag.tensor);
-        message(" element=0x"); hex_value(board_diag.element);
-        message(" got=0x"); hex_value(board_diag.observed);
-        message(" expected=0x"); hex_value(board_diag.expected);
-        message("\r\n"); platform_exit(4);
+        message("CACHE/AMU TEST FAIL stage="); hex_value(board_test_stage);
+        message(" round="); hex_value(board_diag.frame);
+        message(" buffer="); hex_value(board_diag.tensor);
+        message(" element="); hex_value(board_diag.element);
+        message(" got="); hex_value(board_diag.observed);
+        message(" expected="); hex_value(board_diag.expected);
+        message("\n"); platform_exit(4);
     }
     board_diag_stage(DIAG_DONE);
-    message("RVV->AMU->RVV REUSE 32 ROUNDS PASS\r\nCACHE/RVV/AMU TEST PASS\r\n");
+    message("RVV->AMU->RVV REUSE 32 ROUNDS PASS\nCACHE/RVV/AMU TEST PASS\n");
     platform_exit(0);
 }
 #endif

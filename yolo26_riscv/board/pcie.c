@@ -1,8 +1,9 @@
 #include "pcie.h"
-#include "protocol.h"
+#include "model_io.h"
 #include "diagnostics.h"
 #ifdef YOLO_N550_BOARD
 #include "cache.h"
+#include "uart.h"
 #else
 /* Native protocol regression only; physical cache behaviour is not emulated. */
 #define board_clean(p,n) ((void)(p),(void)(n))
@@ -24,6 +25,18 @@ static void publish(unsigned state,unsigned error,int detail) {
     status.crc=board_crc32(&status,60);
     copy_to(&board_pcie_mailbox.status,&status,sizeof(status));
     board_clean((const void *)&board_pcie_mailbox.status,sizeof(status));
+#ifdef YOLO_N550_BOARD
+    if(state==PCIE_READY || state==PCIE_DONE || state==PCIE_ERROR) {
+        board_uart_text("[YOLO] PCIE state="); board_uart_u64(state);
+        board_uart_text(" session="); board_uart_u64(status.session);
+        board_uart_text(" sequence="); board_uart_u64(status.sequence);
+        board_uart_text(" frame="); board_uart_u64(status.frame);
+        board_uart_text(" output_bytes="); board_uart_u64(status.output_bytes);
+        board_uart_text(" error="); board_uart_hex(error);
+        board_uart_text(" detail="); board_uart_i64(detail);
+        board_uart_text("\n");
+    }
+#endif
 }
 void board_pcie_init(void) {
     volatile unsigned char *p=(volatile unsigned char *)&board_pcie_mailbox;
@@ -63,7 +76,7 @@ void board_pcie_poll(void) {
     last_sequence=sequence; /* Never repeat a command, including a failed one. */
     status.sequence=sequence; status.output_bytes=status.output_crc=0;
     if(request.sequence!=sequence || request.crc!=board_crc32(&request,60) ||
-       !request.session || (request.options&~4u)) {
+       !request.session || (request.options&~(DIAG_TRACE|DIAG_FINITE))) {
         publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;
     }
     if(request.command==PCIE_OPEN) {

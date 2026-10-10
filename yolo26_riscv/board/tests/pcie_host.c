@@ -2,7 +2,7 @@
  * Does not test the model, RISC-V instructions, caches or physical PCIe. */
 #define _DEFAULT_SOURCE
 #include "../pcie.h"
-#include "../protocol.h"
+#include "../model_io.h"
 #include "../diagnostics.h"
 #include <fcntl.h>
 #include <stdio.h>

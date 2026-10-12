@@ -24,6 +24,7 @@ from board_diagnostics import decode_snapshot
 import serial_probe
 
 BASE, END = 0x80000000, 0x82000000
+CLP_BASE, CLP_END = 0xF0000000, 0xF0001000
 PREFIX_BYTES = 256
 SYMBOLS = {
     'board_uart_status': '<i', 'board_uart_baud': '<I', 'board_uart_dlf_bits': '<I',
@@ -41,10 +42,29 @@ def size_of(name):
     return struct.calcsize(SYMBOLS[name]) if SYMBOLS[name] else 816
 
 
-def offset(address, size):
-    if size <= 0 or address < BASE or address + size > END:
+def offset(address, size, *, clp_test=False):
+    normal = BASE <= address and address + size <= END
+    clp = clp_test and CLP_BASE <= address and address + size <= CLP_END
+    if size <= 0 or not (normal or clp):
         raise ValueError(f'Read outside reserved DDR: 0x{address:x}, {size} bytes')
     return address - BASE
+
+
+def verify_clp_blob(blob):
+    """Final state of the 32-round CLP probe, including all guard words."""
+    if len(blob) != CLP_END - CLP_BASE:
+        raise ValueError('CLP result must contain exactly 4096 bytes')
+    expected = [0x35553555] * 1024
+    expected[0] = expected[16] = 0x35554200  # A=B=FP16 3, high half is guard.
+    expected[32:64] = [0xc49a4000] * 32
+    expected[32], expected[48] = 0x41100000, 0x42240000  # C=9, D=9+32=41.
+    wrong = [(index, actual, want) for index, (actual, want) in
+             enumerate(zip(struct.unpack('<1024I', blob), expected)) if actual != want]
+    return {'data_match': not wrong, 'checked_words': 1024, 'mismatch_count': len(wrong),
+            'first_mismatches': [{'ddr_address': f'0x{CLP_BASE + index * 4:x}',
+                                  'rvv_address': f'0x{0x10000000 + index * 4:x}',
+                                  'got': f'0x{actual:08x}', 'expected': f'0x{want:08x}'}
+                                 for index, actual, want in wrong[:16]]}
 
 
 def elf_symbols(data):
@@ -146,16 +166,17 @@ def link_lock():
 
 
 class Reader:
-    def __init__(self, command, cwd, timeout, log):
+    def __init__(self, command, cwd, timeout, log, *, clp_test=False):
         command = shutil.which(command)
         if command is None:
             raise FileNotFoundError('pbload executable not found; use --pbload /absolute/path/pbload')
         self.command = str(Path(command).resolve())
         self.cwd, self.timeout, self.log = cwd, timeout, log
         self.number = 0
+        self.clp_test = clp_test
 
     def read(self, address, size, label):
-        relative = offset(address, size)
+        relative = offset(address, size, clp_test=self.clp_test)
         self.number += 1
         prefix = f'{self.number:03d}-{label}'
         destination = self.log.directory / (prefix + '.bin')
@@ -254,7 +275,7 @@ def git_metadata(root):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--firmware', required=True, choices=('selftest', 'demo-pcie'),
+    parser.add_argument('--firmware', required=True, choices=('selftest', 'demo-pcie', 'clp-selftest'),
                         help='Must match the BIN currently loaded; never resets or reloads the board')
     parser.add_argument('--pbload', default='pbload')
     parser.add_argument('--tool-cwd', type=Path, default=Path.cwd(),
@@ -302,12 +323,41 @@ def main(argv=None):
         except OSError as exc:
             report['warnings'].append(f'Serial enumeration failed: {exc}')
         report['firmware'], symbols, expected_prefix = firmware_info(ROOT, args.firmware)
-        reader = Reader(args.pbload, args.tool_cwd.resolve(), args.tool_timeout, log)
+        clp_test = args.firmware == 'clp-selftest'
+        reader = Reader(args.pbload, args.tool_cwd.resolve(), args.tool_timeout, log, clp_test=clp_test)
         report['pbload'] = reader.command
         with link_lock():
             report['snapshots'] = collect(reader, symbols, expected_prefix, args.samples, args.interval, log)
+            if clp_test and not any(item['read_errors'] for item in report['snapshots']):
+                raw = reader.read(CLP_BASE, CLP_END - CLP_BASE, 'clp-ddr')
+                check = verify_clp_blob(raw)
+                last = report['snapshots'][-1]
+                values, state = last['values'], last.get('diagnostic', {})
+                finished = (values.get('board_test_stage') == 3 and values.get('board_error') == 0
+                            and state.get('stage') == 8 and state.get('error') == 0
+                            and state.get('frame') == 31)
+                failed = (values.get('board_error', 0) != 0 or state.get('error', 0) != 0
+                          or state.get('stage') in (9, 10))
+                check['status'] = ('passed' if check['data_match'] else 'failed') if finished else (
+                    'failed' if failed else 'incomplete')
+                check['completed_32_rounds'] = finished
+                check['raw_file'] = f'{reader.number:03d}-clp-ddr.bin'
+                report['clp_result'] = check
+                log.emit({'type': 'clp_result', **check})
+                print(f"CLP validation {check['status']}: completed_32_rounds={finished}, "
+                      f"DDR_match={check['data_match']}, mismatches={check['mismatch_count']}", flush=True)
+                if check['first_mismatches']:
+                    first = check['first_mismatches'][0]
+                    print(f"First mismatch {first['ddr_address']}: got={first['got']} "
+                          f"expected={first['expected']}", flush=True)
+                if not finished:
+                    print('CLP board: ' + ', '.join(f'{key}={state.get(key, "unavailable")}'
+                          for key in ('frame', 'phase', 'error', 'detail', 'tensor', 'element',
+                                      'observed', 'expected', 'amu_flags')), flush=True)
         errors = any(item['read_errors'] for item in report['snapshots'])
         report['status'], code = ('partial', 1) if errors else ('collected', 0)
+        if clp_test and report.get('clp_result', {}).get('status') != 'passed':
+            code = 1
     except BaseException as exc:
         report.update(status='failed', error=str(exc), exception=type(exc).__name__)
         log.emit({'type': 'collector_error', 'error': str(exc), 'exception': type(exc).__name__,

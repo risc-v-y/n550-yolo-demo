@@ -2,8 +2,11 @@
 #include "diagnostics.h"
 #include <xewmatrix_intrinsic.h>
 
-/* Direct bypass-to-bypass handoffs: no scalar repacking or diagnostic calls
- * between producer and consumer. All reference values are exact integers. */
+/* Legacy cached-RVV test, NOT a bypass-to-bypass handoff on this platform.
+ * It is known to fail on the physical board: RVV stores need clean before
+ * AMU reads, and must not be invalidated while dirty. Keep for historical
+ * diagnosis; use clp_selftest.c to validate the isolated uncached path first.
+ * All reference values are exact integers. */
 enum { HALF_COUNT=7*32, FLOAT_COUNT=7*16, ROUNDS=32 };
 static uint16_t seed_a[HALF_COUNT] __attribute__((aligned(64)));
 static uint16_t seed_b[HALF_COUNT] __attribute__((aligned(64)));
@@ -48,8 +51,8 @@ static int mismatch(unsigned buffer,unsigned index,uint32_t got,uint32_t want) {
 }
 
 int board_sync_selftest(void) {
-    /* Keep control metadata in read-only storage. A stack initializer can
-     * become an implicit RVV copy without the required cache handoff. */
+    /* Read-only control metadata simplifies disassembly. A cached RVV stack
+     * copy shares DCache with scalar accesses; its removal is not a cache fix. */
     static const unsigned shapes[][3]={{3,5,17},{1,1,1},{2,3,32},{3,5,31}};
     for(unsigned round=0;round<ROUNDS;++round) {
         unsigned m=shapes[round%4][0],n=shapes[round%4][1],k=shapes[round%4][2];

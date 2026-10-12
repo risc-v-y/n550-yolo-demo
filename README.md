@@ -4,6 +4,8 @@
 
 仓库提供源码、预编译固件、样例和数值基准。本机检查不代表实板通过；加载、缓存可见性、模型数值及吞吐仍须现场验收。以下命令均在 host 的仓库根目录执行。
 
+**当前先验证独立 CLP 通路。平台已确认 Memory port 上的 RVV 使用 DCache，旧自测/模型中的缓存交接需修正；`demo-pcie` 尚未迁移到 CLP，不能据新最小测试声称模型已跑通。**
+
 ## 1. 准备与查看调试串口
 
 ```bash
@@ -21,7 +23,7 @@ python3 yolo26_pc/serial_probe.py
 **先打开串口终端，再加载固件**，才能看到启动信息。例如另一终端执行：
 
 ```bash
-minicom -D /dev/ttyUSB0 -b 115200
+minicom -D /dev/ttyUSB2 -b 115200
 ```
 
 按实际接线替换端口，在 minicom/PuTTY 设置 **115200、8N1、关闭硬件及软件流控**。它可以与 PCIe 演示同时运行；UART 不响应 HELLO/ping，也不接收模型任务。端口排查见 [串口说明](docs/SERIAL_PROBE.md)。
@@ -42,24 +44,68 @@ git pull --ff-only
 将参数指向 **现场已有 `reset1.sh` 和 `reset.sh` 的目录**：
 
 ```bash
-bash tools/load_board.sh --reset-dir /实际路径/s2c
+# 加载本轮独立 CLP 测试；按实际复位脚本目录修改
+bash tools/load_board.sh --reset-dir /实际路径/s2c --clp-selftest
 ```
 
 脚本核对 BIN 哈希并获取 PCIe 互斥锁，然后执行 **`reset1.sh` 保持复位 → `pbcopy -d 完整BIN路径:0x0` → `reset.sh` 释放复位**。在复位脚本所在目录调用它们，保留相对路径依赖。每步检查退出码和失败文字，日志在 `yolo26_pc/outputs/deploy-*/load.log`。加载失败不会调用 `reset.sh`；释放失败报错，由平台方确认板卡状态。脚本成功只表示部署命令完成，启动与推理还需验证。
 
 默认加载 `firmware/demo-pcie.bin`，包含程序、模型图及权重，不用单独上传 `.pt`。PCIe 偏移 `0x0` 对应 CPU `0x80000000`；`demo-pcie.elf` 供符号和 JTAG 调试，不能改名为 BIN 加载。
 
-可先独立自测，再重新加载模型：
+### 当前先运行 CLP 最小测试
+
+平台已确认独占 NoC DDR `0xF0000000–0xF0000FFF` 的 4 KiB。RVV 经 CLP 别名 `0x10000000–0x10000FFF` 无缓存访问，AMU 使用全局 DDR 地址，PCIe 偏移从 `0x70000000` 开始。代码、栈和诊断仍在原 32 MiB 区；不允许标量访问这段共享数据。
 
 ```bash
-bash tools/load_board.sh --reset-dir /实际路径/s2c --selftest
-# UART 应出现 CACHE/RVV/AMU TEST PASS
-bash tools/load_board.sh --reset-dir /实际路径/s2c
+# 拉取已发布的 CLP 固件和脚本，更新本地工作区
+git pull --ff-only
+
+# 校验交付文件完整性
+sha256sum -c firmware/SHA256SUMS
+
+# 保持复位、加载 CLP 测试程序到 DDR 入口、释放复位；按现场路径修改目录
+bash tools/load_board.sh --reset-dir /rv/fpga/bin --clp-selftest
+
+# 只读采集诊断和完整 4 KiB 测试区，自动核对最终数据及保护值
+python3 tools/collect_board_diag.py --firmware clp-selftest --samples 1 \
+  --tool-cwd "$PWD"
+
+# 可选：只查看前 256 字节；这条读取命令本身不判断测试通过
+python3 tools/read_ddr.py 0xf0000000 0x100 --width 32 --clp-test
 ```
 
-2026-10-12 本轮仅替换独立 `selftest.bin/elf`：尺寸表改为静态只读，构建增加 `-mstringop-strategy=scalar`，消除编译器隐式生成的 RVV 栈拷贝。现有 `demo-pcie` 交付固件尚未更新，待独立自测实板验证后再同步模型固件。
+测试连续运行 32 轮 `C=A×B，D=C+(round+1)`，每轮 M=N=K=1。A 循环取 FP16 `2、−1、1、3`，B 为 FP16 3，C/D 为 FP32，均可精确表示，逐位比较、不设误差阈值。每轮检查四个 64 字节块的有效数据和保护值，最后检查剩余区。共享数据交接只用 `fence iorw,iorw` 和读取 `xmfflags` 等待，不对共享区执行 CBO；低地址诊断信息仍需 clean 后供 PCIe 读取。
 
-独立自测还提供 `firmware/selftest.elf` 供已有调试器使用。模型启动自动执行相同自测，然后打印 READY。**复位、加载只在部署时执行一次，逐帧运行不复位、不重载权重。** 仅运行一个 PCIe 控制程序，其他工具不得并发修改本演示 DDR。工具不在 PATH 时给加载脚本加 `--pbcopy /绝对路径/pbcopy`，给 Python 命令加 `--pbcopy /绝对路径/pbcopy --pbload /绝对路径/pbload`。
+UART 最终应出现 `CLP RVV->AMU->RVV REUSE 32 ROUNDS PASS`。采集终端须同时显示 `CLP validation passed`、`completed_32_rounds=True`、`DDR_match=True`。最后一轮 A/B 为 3，C 为 9（`41100000`），D 为 41（`42240000`）；A/B 首字为 `35554200`，输出块其余字为 `c49a4000`，其他保护字为 `35553555`。完整原始数据和逐项差异保存到采集目录。
+
+成功或失败后固件自动进入 `clp_probe_halt` 停车，保留诊断，不需要赶在 UART 打印时手动停核。如需用现有 GDB 连续重跑并停在最终结论处：
+
+```gdb
+# 在已连接并停核的启动 hart 上切到仓库根目录
+cd /rv/fpga/yhb/n550-yolo-demo
+
+# 加载本次 CLP 固件的调试符号，不下载程序
+symbol-file firmware/clp-selftest.elf
+
+# 查看旧断点；确认不用后删除，释放有限硬件槽位
+info breakpoints
+delete breakpoints
+
+# 只设一个最终临时硬件断点，从入口连续重跑，中间不暂停
+thbreak clp_probe_halt
+set $pc = 0x80000000
+continue
+
+# 查看结论；通过时阶段为3、退出码为0、最后轮次为31
+p board_test_stage
+p board_error
+p board_diag.frame
+
+# 查看失败位置及原始数据；测试失败时保留这些字段
+p board_diag
+```
+
+若停点未到达，按 Ctrl+C 停核并记录 PC/trap；不要不断增加断点。CLP 最小测试通过后再迁移模型数据布局及标量交接。现有 `selftest.bin/elf` 和 `demo-pcie.bin/elf` 保留作历史定位，未按新硬件信息修正；下面图片/视频入口留待模型修正后验收。
 
 ## 3. 固定图片：免安装验证
 
@@ -124,105 +170,17 @@ python3 tools/read_ddr.py 0x80000000 0x1000 --width 32
 
 比较自测的不同阶段时先用已有 GDB 停住 CPU，再读取 DDR；CPU 运行中的读回不是原子快照。硬件断点每次只占用一个，`thbreak` 命中后自动删除；失败定位用断点自动停核，不依赖人工赶上 UART 输出。
 
-### 独立自测：先验证连续运行
+### 旧缓存定位入口
 
-先加载更新后的 `selftest.bin`，记录 UART 最终 PASS/FAIL。新自测的尺寸表位于只读区，反汇编中原来的 `vle64.v/vse64.v` 栈拷贝已消失；明确编写的 RVV/AMU 运算、缓存交接和 32 轮测试保持不变。QEMU 在 VLEN 128/256/512 下的正常运行和两类故障注入共 9 组通过，仍须实板验证缓存可见性及完成顺序。
-
-需要 GDB 留住结论时，在已连接并停核的启动 hart 上执行以下命令；全程仅最终退出处占用一个临时硬件断点，测试中间不暂停：
-
-```gdb
-# 切换到 host 仓库根目录，加载与新 BIN 对应的调试符号
-cd /rv/fpga/yhb/n550-yolo-demo
-symbol-file firmware/selftest.elf
-
-# 补充源码搜索路径，解决 board/selftest.c 找不到的显示警告
-directory yolo26_riscv
-
-# 查看并清理不再需要的旧断点，避免旧地址干扰
-info breakpoints
-delete breakpoints
-
-# 设置唯一的最终停点，从入口连续重跑自测；这会清空旧自测记录
-thbreak *0x80000422
-set $pc = 0x80000000
-continue
-
-# 查看测试阶段与退出码；全部通过应分别为3和0
-x/wd 0x800033a0
-x/gd 0x80003398
-
-# 查看保留的轮次和错误码；成功时两者均为0，失败时轮次从0开始
-x/gd 0x80003f90
-x/gd 0x80003fb8
-
-# 依次查看 buffer、element、got、expected，提供原始十六进制值
-x/4gx 0x80004000
-```
-
-预期 UART 出现 `RVV->AMU->RVV REUSE 32 ROUNDS PASS` 和 `CACHE/RVV/AMU TEST PASS`。失败时保留上述输出及 UART 日志；后面的分段停点只用于定位，不能代替连续运行验收。如果最终停点一直未到达，按 Ctrl+C 停核，先记录实际 PC，再删除未命中的临时断点。
-
-### RVV 写回定位：缓存失效前后对照
-
-仅用于当前交付的独立 `firmware/selftest.bin`。先按第 2 节加载它，用现有 GDB/OpenOCD 连接并停住启动 hart；GDB 必须支持 Python，并使用默认的 all-stop 模式。脚本核对本地 BIN/ELF 哈希及板上入口、各停点的代码；这些局部检查不代表完整 DDR 镜像校验。**不下载程序、不调用复位、不修改固件。**
-
-在已连接的 GDB 中执行：
-
-```gdb
-# 查看现有断点；确认不再需要后删除，避免占用有限的硬件槽位
-info breakpoints
-delete breakpoints
-
-# 将 GDB 工作目录切到 host 仓库根目录；按实际路径修改
-cd /rv/fpga/yhb/n550-yolo-demo
-
-# 注册/更新定位命令，此时不会运行 CPU；新版脚本会清除旧版本的定位会话
-source tools/rvv_store_probe.gdb
-
-# 从入口重跑自测，依次暂停准备步骤，最终停在缓存失效前 0x80000afe
-yolo-rvv-before
-```
-
-脚本依次经过 `0x800001dc → 0x800001ec → 0x80000a56 → 0x80000afe`，每次只设置一个临时硬件断点，命中或中断后清理；已有启用的断点/观察点会使脚本拒绝启动。重跑会清空 BSS 和旧自测记录，保留板卡硬件状态。新固件的失效后停点为 `0x80000c02`；旧地址 `0x80000a8e/0x80000b26/0x80000c2a` 不再适用。DDR 缓冲区及诊断变量地址保持不变。
-
-保持 GDB 停核，在另一个 host 终端的仓库根目录执行：
-
-```bash
-# 读取缓存失效前的三行 RVV 输出，共192字节，保存数据和日志
-python3 tools/read_ddr.py 0x80003500 0xc0 --width 32
-```
-
-读取完成后回到 GDB：
-
-```gdb
-# 继续到 0x80000c02：缓存失效及 fence 已执行，尚未比较结果
-yolo-rvv-after
-```
-
-再次保持停核，在 host 终端执行同一条读取命令：
-
-```bash
-# 读取缓存失效后的同一范围；另存一份数据，用于与前一次对照
-python3 tools/read_ddr.py 0x80003500 0xc0 --width 32
-```
-
-三个输出行从 `0x80003500 / 0x80003540 / 0x80003580` 开始，每行 16 个 FP32，其中前 5 个有效、后 11 个为保护值 `0xc49a4000`（−1234）。有效值应分别为 `[3,−33,15,28,27]`、`[11,36,26,−33,−8]`、`[26,−35,−5,11,−36]`；首元素的十六进制值为 `40400000 / 41300000 / 41d00000`。
-
-提交两次读取的 `data.txt` 或终端输出及各自结果目录。失效前正确、失效后改变时，应进一步查缓存维护/覆盖；两次均错误时，继续查存储路径、地址及完成顺序。**断点暂停会改变时序，暂停后正确不等于连续运行通过。**
-
-若预期断点未命中，CPU 可能已经进入退出的 WFI 循环，脚本不会自动超时；按 **Ctrl+C** 停核，脚本报告实际 PC、保留的错误字段并清理自己的断点，不自动重试。地址、固件或其他前置条件不符会明确中止。两次采集完成后可执行：
-
-```gdb
-# 查看没有遗留定位断点，然后继续到自测结论；退出 WFI 循环需 Ctrl+C
-info breakpoints
-continue
-```
+`tools/rvv_store_probe.gdb` 仅对应旧 `selftest.bin/elf`，不能用于 CLP 固件。原方案将缓存 RVV 写入后直接 invalidate，可能丢弃脏数据，RVV→AMU 也缺少 clean；之前取消隐式 RVV 栈拷贝并不证明故障修复。当前按第 2 节运行 CLP 测试，不再使用旧固定地址作新停点。
 
 ### UART 无输出：只读采集 DDR
 
-保留当前板端状态，停止其他 PCIe 控制程序，minicom 可以继续打开。`--firmware` 必须对应**当前已加载的 BIN**：独立自测选 `selftest`，模型选 `demo-pcie`。
+保留当前板端状态，停止其他 PCIe 控制程序，minicom 可以继续打开。`--firmware` 必须对应**当前已加载的 BIN**：CLP 测试选 `clp-selftest`，旧独立自测选 `selftest`，模型选 `demo-pcie`。
 
 ```bash
-python3 tools/collect_board_diag.py --firmware selftest \
+# 只读采集当前 CLP 固件状态；加载日志路径替换为本次实际目录
+python3 tools/collect_board_diag.py --firmware clp-selftest --samples 1 \
   --tool-cwd "$PWD" \
   --load-log yolo26_pc/outputs/deploy-实际目录/load.log
 ```
@@ -233,7 +191,7 @@ python3 tools/collect_board_diag.py --firmware selftest \
 
 默认采集 3 次，间隔 1 秒，单次工具超时 30 秒；可用 `--samples`、`--interval`、`--tool-timeout` 调整。仅调用 `pbload`，不写 DDR、不提交推理任务、不复位。先校验 BIN/ELF 哈希及 DDR 中的 256 字节程序前缀，再从对应 ELF 解析 UART、自测、异常和 816 字节诊断结构地址；该前缀检查不代表全固件/权重核验。各变量是顺序读取的现场观察，不是原子快照。
 
-终端打印结果目录 `yolo26_pc/outputs/host-diagnostics/run-随机编号/`，内含 `report.json`、`diagnostics.jsonl`、每次 `pbload` 的输出和原始 `.bin`，以及指定的加载/串口日志。`collected` 只表示采集完整，**不表示板端通过**；`partial`/`failed` 仍保留日志，应一并提交。重点看 `uart_status_name`、`test_stage_name`、诊断 `stage_name/error/trap_pc/trap_cause/trap_value`；启动太早失败或缓存不可见时，DDR 记录也可能未初始化，需结合平台调试器确认。
+终端打印结果目录 `yolo26_pc/outputs/host-diagnostics/run-随机编号/`，内含 `report.json`、`diagnostics.jsonl`、每次 `pbload` 的输出和原始 `.bin`，以及指定的加载/串口日志。`collected` 只表示采集完整，**不表示板端通过**；`partial`/`failed` 仍保留日志，应一并提交。CLP 固件还会归档完整测试区，单独报告 `clp_result.status`；只有 `passed` 才表示本最小测试及 PCIe 最终数据一致，失败或未完成返回非零退出码。重点看 `uart_status_name`、`test_stage_name`、诊断 `stage_name/error/trap_pc/trap_cause/trap_value`；启动太早失败或缓存不可见时，DDR 记录也可能未初始化，需结合平台调试器确认。
 
 ### 通过 SSH 上传诊断
 
@@ -273,3 +231,5 @@ UPLOAD_DIR="$(mktemp -d)"
 | [VALIDATION.md](docs/VALIDATION.md) | 已检查范围和实板待验收事项 |
 
 修改源码后，在现有 ESWIN 工具链的 Linux/WSL 构建机执行 `bash yolo26_riscv/build_board.sh`，可用 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定工具链。结果在 `yolo26_riscv/build/n550-board/`，不会自动替换交付目录 `firmware/`。
+
+CLP 独立固件的构建命令为 `bash yolo26_riscv/build_clp_selftest.sh`，输出在 `yolo26_riscv/build/clp-selftest/`；QEMU 回归命令为 `python3 yolo26_riscv/board/tests/test_clp.py`。均在配置现有 ESWIN 工具链/QEMU 的 Linux/WSL 构建机执行；QEMU 使用统一 RAM，只检查运算与故障报告，不验证真实 CLP 路由。

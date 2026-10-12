@@ -6,8 +6,9 @@ reset_dir=''
 pbcopy='pbcopy'
 firmware='demo-pcie.bin'
 usage() {
-    echo 'Usage: bash tools/load_board.sh --reset-dir /path/to/s2c [--pbcopy /path/to/pbcopy] [--selftest]'
+    echo 'Usage: bash tools/load_board.sh --reset-dir /path/to/s2c [--pbcopy /path/to/pbcopy] [--selftest | --clp-selftest]'
     echo 'reset1.sh holds reset; reset.sh releases reset. Upload failure keeps reset asserted.'
+    echo 'CLP probe uses exclusive DDR 0xf0000000..0xf0000fff (RVV 0x10000000..0x10000fff).'
 }
 while (( $# )); do
     case "$1" in
@@ -15,7 +16,10 @@ while (( $# )); do
             if (( $# < 2 )); then usage >&2; exit 2; fi
             if [[ "$1" == --reset-dir ]]; then reset_dir="$2"; else pbcopy="$2"; fi
             shift 2 ;;
-        --selftest) firmware='selftest.bin'; shift ;;
+        --selftest|--clp-selftest)
+            if [[ "$firmware" != demo-pcie.bin ]]; then echo 'Select only one selftest image' >&2; exit 2; fi
+            if [[ "$1" == --selftest ]]; then firmware='selftest.bin'; else firmware='clp-selftest.bin'; fi
+            shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -61,6 +65,9 @@ run_step() {
 }
 reset_script() { (cd -- "$reset_dir" && bash "./$1"); }
 printf 'Firmware: %s\nCPU address: 0x80000000; PCIe offset: 0x0\n' "$bin" | tee -a "$log"
+if [[ "$firmware" == clp-selftest.bin ]]; then
+    echo 'CLP data: DDR 0xf0000000..0xf0000fff; RVV alias 0x10000000; PCIe offset 0x70000000' | tee -a "$log"
+fi
 if ! run_step 'HOLD RESET: reset1.sh' reset_script reset1.sh; then
     echo 'Reset assertion failed; firmware was not uploaded or released.' >&2; exit 1
 fi
@@ -73,4 +80,10 @@ if ! run_step 'RELEASE RESET: reset.sh' reset_script reset.sh; then
 fi
 held=0
 echo "Deployment completed. Log: $log" | tee -a "$log"
-echo 'Check UART startup/selftest text, then use the PCIe client to verify READY and inference.'
+if [[ "$firmware" == clp-selftest.bin ]]; then
+    echo 'Check CLP PASS/FAIL on UART; collect with tools/collect_board_diag.py --firmware clp-selftest --samples 1.'
+elif [[ "$firmware" == selftest.bin ]]; then
+    echo 'Check CACHE/RVV/AMU PASS/FAIL on UART; this legacy cached-RVV selftest needs correction for the current platform.'
+else
+    echo 'Check UART startup/selftest text, then use the PCIe client to verify READY and inference.'
+fi

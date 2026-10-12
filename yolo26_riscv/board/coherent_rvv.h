@@ -2,7 +2,11 @@
 #define YOLO_BOARD_COHERENT_RVV_H
 #include <riscv_vector.h>
 #include "cache.h"
-/* Included ONLY by the board build, after the intrinsic declarations.
+/* Legacy wrappers: Memory-port RVV actually uses DCache on this platform.
+ * Store -> invalidate can discard dirty RVV data. These wrappers remain for
+ * historical model bringup and must be corrected before model acceptance.
+ * The independent CLP probe does not include or call them.
+ * Included ONLY by the board build, after the intrinsic declarations.
  * Indexed source tensors are cleaned by the graph boundary; index arrays
  * are scalar-produced and use the u32 contiguous-load wrapper below. */
 BOARD_INLINE vfloat32m1_t board_vle32(const float *p, size_t n) {

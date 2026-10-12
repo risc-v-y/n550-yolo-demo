@@ -39,6 +39,8 @@ def main(argv=None):
     parser.add_argument('size', type=number, help='Number of bytes to read, e.g. 16 or 0x10')
     parser.add_argument('--width', type=int, choices=(8, 16, 32, 64), default=32,
                         help='Display word width in bits (default: 32)')
+    parser.add_argument('--clp-test', action='store_true',
+                        help='Also allow the reserved CLP probe DDR 0xf0000000..0xf0000fff')
     parser.add_argument('--max-print', type=number, default=256,
                         help='Maximum bytes shown on screen and in data.txt (default: 256)')
     parser.add_argument('--pbload', help='PCIe reader executable; PATH then /rv/fpga/bin/pbload by default')
@@ -51,7 +53,7 @@ def main(argv=None):
     if sys.platform != 'linux':
         parser.error('Run on the Linux host physically connected to S2C.')
     try:
-        relative = diag.offset(args.address, args.size)
+        relative = diag.offset(args.address, args.size, clp_test=args.clp_test)
     except ValueError as exc:
         parser.error(str(exc))
     word_bytes = args.width // 8
@@ -71,6 +73,7 @@ def main(argv=None):
               'host_time_utc': datetime.now(timezone.utc).isoformat(),
               'cpu_address': f'0x{args.address:x}', 'pcie_offset': f'0x{relative:x}',
               'requested_bytes': args.size, 'width_bits': args.width, 'tool_cwd': str(cwd),
+              'clp_test_region_enabled': args.clp_test,
               'raw_file': '001-ddr.bin', 'tool_log': '001-ddr.log',
               'notes': ['A successful read is not a board selftest pass.',
                         'Live DDR reads are not atomic; halt the CPU when comparing test stages.',
@@ -80,7 +83,7 @@ def main(argv=None):
         command = args.pbload or shutil.which('pbload')
         if command is None:
             command = '/rv/fpga/bin/pbload' if Path('/rv/fpga/bin/pbload').is_file() else 'pbload'
-        reader = diag.Reader(command, cwd, args.tool_timeout, log)
+        reader = diag.Reader(command, cwd, args.tool_timeout, log, clp_test=args.clp_test)
         report['pbload'] = reader.command
         with diag.link_lock():
             data = reader.read(args.address, args.size, 'ddr')

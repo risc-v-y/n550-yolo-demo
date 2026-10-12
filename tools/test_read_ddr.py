@@ -16,6 +16,17 @@ import read_ddr
 
 
 class FormatTests(unittest.TestCase):
+    def test_clp_mapping_and_exclusive_bounds(self):
+        offset = read_ddr.diag.offset
+        self.assertEqual(offset(0xf0000000, 4096, clp_test=True), 0x70000000)
+        self.assertEqual(offset(0xf0000ffc, 4, clp_test=True), 0x70000ffc)
+        for address, size, enabled in ((0xf0000000, 4, False), (0x10000000, 4, True),
+                                       (0xf0000ffc, 8, True), (0xeffffffc, 8, True),
+                                       (0xf0001000, 4, True), (0xf0000000, 0, True)):
+            with self.subTest(address=address, size=size, enabled=enabled):
+                with self.assertRaises(ValueError):
+                    offset(address, size, clp_test=enabled)
+
     def test_little_endian_halfwords_and_cpu_addresses(self):
         data = struct.pack('<8H', 0xc200, 0xbc00, 0x3c00, 0x4200, 0xc000, 0, 0x4000, 0xc200)
         self.assertEqual(list(read_ddr.hex_lines(data, 0x80003a40, 16)),
@@ -118,6 +129,19 @@ Path(destination).write_bytes(data[:-1] if config['mode'] == 'short' else data)
         self.assertEqual(self.run_read(width='32'), 0)
         self.assertTrue(self.report()['all_zero'])
         self.assertIn('All bytes zero: True', self.stdout.getvalue())
+
+    def test_clp_read_uses_global_ddr_to_pcie_offset(self):
+        self.assertEqual(self.run_read('--clp-test', address='0xf0000000'), 0)
+        self.assertEqual(self.report()['pcie_offset'], '0x70000000')
+        self.assertTrue(self.events()[0][1].endswith(':0x70000000:0x10'))
+        self.assertEqual((self.out / '001-ddr.bin').read_bytes(), self.data)
+
+    def test_clp_read_without_region_selection_never_calls_tool(self):
+        with self.assertRaises(SystemExit) as stopped:
+            self.run_read(address='0xf0000000')
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertEqual(self.events(), [])
+        self.assertFalse(self.out.exists())
 
     def test_preview_limit_preserves_full_raw_data(self):
         self.data = bytes(300) + b'\x01\x00' + bytes(210)

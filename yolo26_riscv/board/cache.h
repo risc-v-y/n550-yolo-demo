@@ -5,9 +5,11 @@
 #define BOARD_CACHE_LINE 64u
 #define BOARD_INLINE static inline __attribute__((always_inline))
 
-/* Single hart, M-mode, interrupts disabled. RVV/AMU bypass DCache.
- * Ownership is transferred over complete cache lines. No scalar writes to
- * those lines are permitted between prepare_write and finish_write. */
+/* Single hart, M-mode, interrupts disabled. Memory-port RVV uses DCache;
+ * only RVV CLP-window accesses bypass it. AMU/PCIe are external writers.
+ * prepare/finish apply to external writes, NOT cached RVV stores: invalidating
+ * a dirty RVV destination can discard its data. No scalar writes to a shared
+ * line are allowed while an external writer owns it. */
 BOARD_INLINE void board_fence(void) { __asm__ volatile("fence rw,rw" ::: "memory"); }
 BOARD_INLINE void board_clean(const void *address, size_t bytes) {
     if (!bytes) return;

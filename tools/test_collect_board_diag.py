@@ -17,7 +17,32 @@ from unittest.mock import patch
 import collect_board_diag as diag
 
 
+def clp_final_blob():
+    words = [0x35553555] * 1024
+    words[0] = words[16] = 0x35554200
+    words[32:64] = [0xc49a4000] * 32
+    words[32], words[48] = 0x41100000, 0x42240000
+    return struct.pack('<1024I', *words)
+
+
 class FirmwareTests(unittest.TestCase):
+    def test_clp_elf_stays_in_normal_ddr_and_bin_is_small(self):
+        info, symbols, prefix = diag.firmware_info(diag.ROOT, 'clp-selftest')
+        self.assertEqual(set(symbols), set(diag.SYMBOLS))
+        self.assertTrue(all(diag.BASE <= address < diag.END for address in symbols.values()))
+        self.assertLess((diag.ROOT / 'firmware/clp-selftest.bin').stat().st_size, 1048576)
+
+    def test_clp_guard_mismatch_is_detected_outside_active_payload(self):
+        data = bytearray(clp_final_blob())
+        self.assertTrue(diag.verify_clp_blob(data)['data_match'])
+        struct.pack_into('<I', data, 4092, 0)
+        result = diag.verify_clp_blob(data)
+        self.assertFalse(result['data_match'])
+        self.assertEqual(result['mismatch_count'], 1)
+        self.assertEqual(result['first_mismatches'][0]['ddr_address'], '0xf0000ffc')
+        with self.assertRaises(ValueError):
+            diag.verify_clp_blob(data[:-1])
+
     def test_shipped_firmware_addresses_and_distinct_prefixes(self):
         prefixes = []
         for name in ('selftest', 'demo-pcie'):
@@ -58,11 +83,12 @@ class CollectorTests(unittest.TestCase):
         firmware = self.root / 'firmware'
         firmware.mkdir(parents=True)
         entries = []
-        for suffix in ('elf', 'bin'):
-            relative = f'firmware/selftest.{suffix}'
-            blob = (diag.ROOT / relative).read_bytes()
-            (self.root / relative).write_bytes(blob)
-            entries.append(f'{hashlib.sha256(blob).hexdigest()}  {relative}\n')
+        for name in ('selftest', 'clp-selftest'):
+            for suffix in ('elf', 'bin'):
+                relative = f'firmware/{name}.{suffix}'
+                blob = (diag.ROOT / relative).read_bytes()
+                (self.root / relative).write_bytes(blob)
+                entries.append(f'{hashlib.sha256(blob).hexdigest()}  {relative}\n')
         (firmware / 'SHA256SUMS').write_text(''.join(entries))
         info, self.symbols, prefix = diag.firmware_info(self.root, 'selftest')
         values = {'board_uart_status': 0, 'board_uart_baud': 114942, 'board_uart_dlf_bits': 4,
@@ -138,6 +164,48 @@ Path(destination).write_bytes(data)
     def events(self):
         path = self.cwd / 'events.jsonl'
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def select_clp(self, stage=8, frame=31, error=0, test_stage=3):
+        info, self.symbols, prefix = diag.firmware_info(self.root, 'clp-selftest')
+        values = {'board_uart_status': 0, 'board_uart_baud': 115273, 'board_uart_dlf_bits': 5,
+                  'board_test_stage': test_stage, 'board_error': error, 'board_trap_cause': 0,
+                  'board_trap_pc': 0, 'board_trap_value': 0}
+        snapshot = [0] * 102
+        snapshot[0], snapshot[1], snapshot[2], snapshot[6] = 1, stage, frame, error
+        self.config['data'] = {'0': prefix.hex(), str(0x70000000): clp_final_blob().hex()}
+        for name, fmt in diag.SYMBOLS.items():
+            blob = struct.pack(fmt, values[name]) if fmt else struct.pack('<102Q', *snapshot)
+            self.config['data'][str(self.symbols[name] - diag.BASE)] = blob.hex()
+
+    def test_clp_pass_requires_finished_metadata_and_exact_ddr(self):
+        self.select_clp()
+        self.assertEqual(self.run_collect('--firmware', 'clp-selftest', '--samples', '1'), 0)
+        result = self.report()['clp_result']
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['checked_words'], 1024)
+        self.assertEqual((self.out / result['raw_file']).read_bytes(), clp_final_blob())
+        self.assertTrue(self.events()[-1][1].endswith(':0x70000000:0x1000'))
+
+    def test_clp_wrong_ddr_returns_failure_and_archives_data(self):
+        self.select_clp()
+        data = bytearray(clp_final_blob())
+        struct.pack_into('<I', data, 192, 0)
+        self.config['data'][str(0x70000000)] = data.hex()
+        self.assertEqual(self.run_collect('--firmware', 'clp-selftest', '--samples', '1'), 1)
+        self.assertEqual(self.report()['clp_result']['status'], 'failed')
+        self.assertEqual(self.report()['clp_result']['mismatch_count'], 1)
+
+    def test_clp_board_failure_cannot_pass_with_matching_ddr(self):
+        self.select_clp(stage=9, frame=7, error=4, test_stage=4)
+        self.assertEqual(self.run_collect('--firmware', 'clp-selftest', '--samples', '1'), 1)
+        result = self.report()['clp_result']
+        self.assertTrue(result['data_match'])
+        self.assertEqual(result['status'], 'failed')
+
+    def test_clp_incomplete_cannot_pass_with_matching_ddr(self):
+        self.select_clp(stage=4, frame=30, test_stage=4)
+        self.assertEqual(self.run_collect('--firmware', 'clp-selftest', '--samples', '1'), 1)
+        self.assertEqual(self.report()['clp_result']['status'], 'incomplete')
 
     def test_read_only_success_and_address_conversion(self):
         load = self.base / 'load.log'

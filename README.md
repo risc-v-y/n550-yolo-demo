@@ -98,6 +98,30 @@ UART 默认打印启动配置、AMU 初始化、自测、READY、每帧开始/�
 
 UART 忙或发送超时后关闭文字输出，PCIe 模型继续运行；总线异常不属于可继续的超时。host 核对长度、CRC、会话和帧号，异常保存日志和 DDR 诊断。`--infer-timeout 900` 限制一帧，`--tool-timeout 30` 限制单次工具调用；退出或超时不复位板卡，也不能中断已开始的推理。
 
+### 单命令读取 DDR
+
+在 host 仓库根目录运行，Python 3.10 标准库即可。地址参数是 **CPU 地址**，脚本自动减去 `0x80000000` 得到 PCIe 偏移；读取范围限制在本演示预留的 `0x80000000–0x81FFFFFF`。
+
+```bash
+# 读取目标区的16字节，按16位十六进制显示，保存原始数据和日志
+python3 tools/read_ddr.py 0x80003a40 16 --width 16
+
+# 读取源区的16字节，按16位十六进制显示，用于与目标区比较
+python3 tools/read_ddr.py 0x80003dc0 16 --width 16
+
+# 检查程序入口的16字节，按32位十六进制显示
+python3 tools/read_ddr.py 0x80000000 16 --width 32
+
+# 检查起始4KiB是否全零；屏幕默认只预览前256字节
+python3 tools/read_ddr.py 0x80000000 0x1000 --width 32
+```
+
+`0x80003a40`、`0x80003dc0` 是当前独立 `selftest` 固件的 FP16 目标/源区；模型固件或新编译固件须按对应 ELF 确认地址。结果保存在终端打印的 `yolo26_pc/outputs/ddr-read/run-随机编号/`：`001-ddr.bin` 是完整读回数据，`001-ddr.log` 是平台工具输出，`data.txt` 是显示的预览，`report.json` 和 `diagnostics.jsonl` 记录地址、长度、哈希、耗时及失败原因。
+
+`All bytes zero: True` 仅在完整读取且所有字节为零时出现，覆盖整段请求范围，不仅是预览；读取失败返回非零退出码并保留日志/已有数据。脚本复用现有 PCIe 互斥锁、短临时文件名、错误文字及长度检查，只读 DDR。需要改变显示长度时加 `--max-print 字节数`。工具从 PATH 查找，找不到时尝试 `/rv/fpga/bin/pbload`；也可加 `--pbload /绝对路径/pbload`。许可工作目录默认是当前目录，修改时加 `--tool-cwd /许可工作目录`。
+
+比较自测的不同阶段时先用已有 GDB 停住 CPU，再读取 DDR；CPU 运行中的读回不是原子快照。硬件断点每次只占用一个，`thbreak` 命中后自动删除；失败定位用断点自动停核，不依赖人工赶上 UART 输出。
+
 ### UART 无输出：只读采集 DDR
 
 保留当前板端状态，停止其他 PCIe 控制程序，minicom 可以继续打开。`--firmware` 必须对应**当前已加载的 BIN**：独立自测选 `selftest`，模型选 `demo-pcie`。

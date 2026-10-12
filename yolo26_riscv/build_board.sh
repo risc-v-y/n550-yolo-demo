@@ -12,9 +12,11 @@ if [[ $# != 0 ]]; then exit 2; fi
 python3 "$root/tools/check_assets.py"
 mkdir -p "$out"
 cd "$src"
+# Tree vectorization flags do not disable the backend's RVV aggregate copies.
+# Keep compiler-generated copies scalar; explicit RVV asm/intrinsics remain.
 flags=(-march=rv64gcv_zicbom_zifencei_xewmatrix1p0 -mabi=lp64d -mcmodel=medany -mno-relax
        -O2 -g -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-strict-aliasing
-       -fno-tree-vectorize -ffp-contract=off -fno-stack-protector -fno-pic -fno-pie
+       -fno-tree-vectorize -mstringop-strategy=scalar -ffp-contract=off -fno-stack-protector -fno-pic -fno-pie
        -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables
        -DYOLO_N550_BOARD=1 -DMODEL_PRECISION=1 -DMODEL_PROFILE=0
        -I "$src" -I "$root/model")
@@ -52,6 +54,11 @@ sha256sum "$out/demo-pcie.elf" "$out/demo-pcie.bin" "$root/model/constants.bin" 
     -Wl,--gc-sections -T board/ddr.ld "$out/start.o" board/selftest.c board/sync_selftest.c board/uart.c board/diagnostics.c amu.c \
     -o "$out/selftest.elf"
 "$tc-objdump" -d "$out/selftest.elf" > "$out/selftest.disasm"
+# The selftest intentionally uses only e16/e32 transfers. e64 would indicate
+# an unwrapped compiler-generated copy, as previously seen in shapes setup.
+if grep -Eq '\b(vle64\.v|vse64\.v)\b' "$out/selftest.disasm"; then
+    echo 'Unexpected compiler-generated e64 RVV copy in selftest ELF' >&2; exit 1
+fi
 sha256sum "$out/selftest.elf" >> "$out/sha256.txt"
 "$tc-objcopy" -O binary "$out/selftest.elf" "$out/selftest.bin"
 sha256sum "$out/selftest.bin" >> "$out/sha256.txt"

@@ -48,7 +48,9 @@ static int mismatch(unsigned buffer,unsigned index,uint32_t got,uint32_t want) {
 }
 
 int board_sync_selftest(void) {
-    const unsigned shapes[][3]={{3,5,17},{1,1,1},{2,3,32},{3,5,31}};
+    /* Keep control metadata in read-only storage. A stack initializer can
+     * become an implicit RVV copy without the required cache handoff. */
+    static const unsigned shapes[][3]={{3,5,17},{1,1,1},{2,3,32},{3,5,31}};
     for(unsigned round=0;round<ROUNDS;++round) {
         unsigned m=shapes[round%4][0],n=shapes[round%4][1],k=shapes[round%4][2];
         board_diag.frame=round;

@@ -57,6 +57,8 @@ bash tools/load_board.sh --reset-dir /实际路径/s2c --selftest
 bash tools/load_board.sh --reset-dir /实际路径/s2c
 ```
 
+2026-10-12 本轮仅替换独立 `selftest.bin/elf`：尺寸表改为静态只读，构建增加 `-mstringop-strategy=scalar`，消除编译器隐式生成的 RVV 栈拷贝。现有 `demo-pcie` 交付固件尚未更新，待独立自测实板验证后再同步模型固件。
+
 独立自测还提供 `firmware/selftest.elf` 供已有调试器使用。模型启动自动执行相同自测，然后打印 READY。**复位、加载只在部署时执行一次，逐帧运行不复位、不重载权重。** 仅运行一个 PCIe 控制程序，其他工具不得并发修改本演示 DDR。工具不在 PATH 时给加载脚本加 `--pbcopy /绝对路径/pbcopy`，给 Python 命令加 `--pbcopy /绝对路径/pbcopy --pbload /绝对路径/pbload`。
 
 ## 3. 固定图片：免安装验证
@@ -122,6 +124,43 @@ python3 tools/read_ddr.py 0x80000000 0x1000 --width 32
 
 比较自测的不同阶段时先用已有 GDB 停住 CPU，再读取 DDR；CPU 运行中的读回不是原子快照。硬件断点每次只占用一个，`thbreak` 命中后自动删除；失败定位用断点自动停核，不依赖人工赶上 UART 输出。
 
+### 独立自测：先验证连续运行
+
+先加载更新后的 `selftest.bin`，记录 UART 最终 PASS/FAIL。新自测的尺寸表位于只读区，反汇编中原来的 `vle64.v/vse64.v` 栈拷贝已消失；明确编写的 RVV/AMU 运算、缓存交接和 32 轮测试保持不变。QEMU 在 VLEN 128/256/512 下的正常运行和两类故障注入共 9 组通过，仍须实板验证缓存可见性及完成顺序。
+
+需要 GDB 留住结论时，在已连接并停核的启动 hart 上执行以下命令；全程仅最终退出处占用一个临时硬件断点，测试中间不暂停：
+
+```gdb
+# 切换到 host 仓库根目录，加载与新 BIN 对应的调试符号
+cd /rv/fpga/yhb/n550-yolo-demo
+symbol-file firmware/selftest.elf
+
+# 补充源码搜索路径，解决 board/selftest.c 找不到的显示警告
+directory yolo26_riscv
+
+# 查看并清理不再需要的旧断点，避免旧地址干扰
+info breakpoints
+delete breakpoints
+
+# 设置唯一的最终停点，从入口连续重跑自测；这会清空旧自测记录
+thbreak *0x80000422
+set $pc = 0x80000000
+continue
+
+# 查看测试阶段与退出码；全部通过应分别为3和0
+x/wd 0x800033a0
+x/gd 0x80003398
+
+# 查看保留的轮次和错误码；成功时两者均为0，失败时轮次从0开始
+x/gd 0x80003f90
+x/gd 0x80003fb8
+
+# 依次查看 buffer、element、got、expected，提供原始十六进制值
+x/4gx 0x80004000
+```
+
+预期 UART 出现 `RVV->AMU->RVV REUSE 32 ROUNDS PASS` 和 `CACHE/RVV/AMU TEST PASS`。失败时保留上述输出及 UART 日志；后面的分段停点只用于定位，不能代替连续运行验收。如果最终停点一直未到达，按 Ctrl+C 停核，先记录实际 PC，再删除未命中的临时断点。
+
 ### RVV 写回定位：缓存失效前后对照
 
 仅用于当前交付的独立 `firmware/selftest.bin`。先按第 2 节加载它，用现有 GDB/OpenOCD 连接并停住启动 hart；GDB 必须支持 Python，并使用默认的 all-stop 模式。脚本核对本地 BIN/ELF 哈希及板上入口、各停点的代码；这些局部检查不代表完整 DDR 镜像校验。**不下载程序、不调用复位、不修改固件。**
@@ -136,14 +175,14 @@ delete breakpoints
 # 将 GDB 工作目录切到 host 仓库根目录；按实际路径修改
 cd /rv/fpga/yhb/n550-yolo-demo
 
-# 注册定位命令，此时不会运行 CPU
+# 注册/更新定位命令，此时不会运行 CPU；新版脚本会清除旧版本的定位会话
 source tools/rvv_store_probe.gdb
 
-# 从入口重跑自测，依次暂停准备步骤，最终停在缓存失效前 0x80000b26
+# 从入口重跑自测，依次暂停准备步骤，最终停在缓存失效前 0x80000afe
 yolo-rvv-before
 ```
 
-脚本依次经过 `0x800001dc → 0x800001ec → 0x80000a8e → 0x80000b26`，每次只设置一个临时硬件断点，命中或中断后清理；已有启用的断点/观察点会使脚本拒绝启动。重跑会清空 BSS 和旧自测记录，保留板卡硬件状态。
+脚本依次经过 `0x800001dc → 0x800001ec → 0x80000a56 → 0x80000afe`，每次只设置一个临时硬件断点，命中或中断后清理；已有启用的断点/观察点会使脚本拒绝启动。重跑会清空 BSS 和旧自测记录，保留板卡硬件状态。新固件的失效后停点为 `0x80000c02`；旧地址 `0x80000a8e/0x80000b26/0x80000c2a` 不再适用。DDR 缓冲区及诊断变量地址保持不变。
 
 保持 GDB 停核，在另一个 host 终端的仓库根目录执行：
 
@@ -155,7 +194,7 @@ python3 tools/read_ddr.py 0x80003500 0xc0 --width 32
 读取完成后回到 GDB：
 
 ```gdb
-# 继续到 0x80000c2a：缓存失效及 fence 已执行，尚未比较结果
+# 继续到 0x80000c02：缓存失效及 fence 已执行，尚未比较结果
 yolo-rvv-after
 ```
 

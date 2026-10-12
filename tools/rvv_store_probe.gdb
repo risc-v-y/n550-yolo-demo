@@ -8,12 +8,12 @@ import gdb
 
 class _YoloRvvStoreProbe:
     ENTRY = 0x80000000
-    BEFORE = 0x80000b26
-    AFTER = 0x80000c2a
-    PREPARE = (0x800001dc, 0x800001ec, 0x80000a8e)
+    BEFORE = 0x80000afe
+    AFTER = 0x80000c02
+    PREPARE = (0x800001dc, 0x800001ec, 0x80000a56)
     HASHES = {
-        "selftest.elf": "98113263f62b1dfea37aeeb9ea40af2e9815819ae7d2111129889129de5d23f4",
-        "selftest.bin": "a55a99f26466bf9e4d5125fc7eb106b6734a047aa869797489eb6bb799a1025d",
+        "selftest.elf": "5d363bc975fd0167f9c955dd2dbfd85a8f716d7b11d557c1d42062d05ea560be",
+        "selftest.bin": "56303d4aea8825c966aeafc586c65334441a325d0aa512c5d497d72e32730560",
     }
 
     def __init__(self):
@@ -153,10 +153,14 @@ class _YoloRvvProbeCommand(gdb.Command):
         self.probe.run(self.after)
 
 
-# Re-sourcing the script preserves the current BEFORE/AFTER session.
+# Preserve same-version sessions; refresh existing commands after a firmware update.
 if "_yolo_rvv_store_probe" not in globals():
     _yolo_rvv_store_probe = _YoloRvvStoreProbe()
     _YoloRvvProbeCommand("yolo-rvv-before", _yolo_rvv_store_probe, False)
     _YoloRvvProbeCommand("yolo-rvv-after", _yolo_rvv_store_probe, True)
+elif _yolo_rvv_store_probe.HASHES != _YoloRvvStoreProbe.HASHES:
+    _yolo_rvv_store_probe.__class__ = _YoloRvvStoreProbe
+    _yolo_rvv_store_probe.ready = None
+    gdb.write("[YOLO RVV probe] Firmware definition updated; old probe session cleared.\n")
 gdb.write("[YOLO RVV probe] Commands ready: yolo-rvv-before, yolo-rvv-after. Target has not been resumed.\n")
 end

@@ -46,9 +46,11 @@ AMU 等待前记录阶段，返回后记录原始 `xmfflags`，不将所有非�
 
 ## 自测定位
 
-当前 `clp-selftest` 使用可精确表示的整数，M=N=K=1，连续 32 轮，逐位比较，不设浮点误差阈值。`frame` 是轮次 0–31，不是视频帧；`tensor` 是 64 字节块编号，0/1/2/3 对应 A/B/AMU 输出/RVV 输出，4–63 对应其余保护区；`element` 是块内 32 位字下标。失败全局 DDR 地址为 `0xF0000000 + tensor×64 + element×4`，RVV 别名为 `0x10000000 + tensor×64 + element×4`。
+当前 `clp-selftest` 使用可精确表示的整数，连续32轮循环 `(M,N,K)=(3,5,17)/(1,1,1)/(2,3,32)/(3,5,31)`，逐位比较、不设误差阈值。`frame` 是轮次0–31，不是视频帧；轮次除以4的余数对应上述形状。UART 失败行也直接打印 M/N/K。
 
-CLP 失败 `error=4`，`detail=-200-tensor`，`observed/expected` 是原始 32 位字。A/B 的有效 FP16 位于首字低 16 位，高 16 位为保护值。`board_test_stage`：1 CLP 全区写读检查，4 依赖及复用，3 全部通过；最终错误码 `board_error=0` 表示通过，4 表示数据不符，3 表示 AMU 初始化失败，0x100 表示 trap。成功/失败均停车于 `clp_probe_halt`，只需一个最终临时硬件断点，见 README。
+`tensor`（UART 的 `buffer`）是64字节块编号：0–7为A、8–15为B、16–23为AMU输出C、24–31为RVV输出D、32–63为额外保护区；`element` 是块内32位字下标。每个缓冲区首块为保护行，随后才是有效行。失败全局DDR地址为 `0xF0000000 + tensor×64 + element×4`，RVV别名为 `0x10000000 + tensor×64 + element×4`。
+
+CLP 失败 `error=4`，`detail=-200-tensor`，`observed/expected` 是原始32位字。A/B 每字包含低/高两个FP16；K为奇数时末字高半字为保护值 `3555`，其他未使用半字也必须保留。C/D 行内前N字有效，其余为 `c49a4000`。`board_test_stage`：1全区写读检查，4依赖及复用，3全部通过；`board_error=0/4/3/0x100` 分别表示通过/数据不符/AMU初始化失败/trap。成功/失败均停车于 `clp_probe_halt`，只需一个最终临时硬件断点，见README。
 
 旧 `selftest` 保留原尺寸和错误码：32 轮 `(3,5,17)/(1,1,1)/(2,3,32)/(3,5,31)`，`detail=-100/-101/-102/-103` 对应 A/B/AMU/RVV 输出；stage 1 RVV 缓存、2 AMU、4 复用、3 通过。它和模型启动自测尚未修正缓存 RVV 的错误交接，不能与新 CLP 固件混用符号或停点。
 

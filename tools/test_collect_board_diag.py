@@ -18,11 +18,23 @@ import collect_board_diag as diag
 
 
 def clp_final_blob():
-    words = [0x35553555] * 1024
-    words[0] = words[16] = 0x35554200
-    words[32:64] = [0xc49a4000] * 32
-    words[32], words[48] = 0x41100000, 0x42240000
-    return struct.pack('<1024I', *words)
+    # Explicit final-round patterns/results, independent of the verifier's
+    # procedural integer reference. All other words are guards.
+    blob = bytearray(struct.pack('<I', 0x35553555) * 1024)
+    left = [[-1, 1, 3, -2, 0, 2, -3], [-3, -1, 1, 3, -2, 0, 2], [2, -3, -1, 1, 3, -2, 0]]
+    right = [[0, 3, -1, 2, -2, 1, -3], [-2, 1, -3, 0, 3, -1, 2],
+             [3, -1, 2, -2, 1, -3, 0], [1, -3, 0, 3, -1, 2, -2], [-1, 2, -2, 1, -3, 0, 3]]
+    for base, matrix in ((0, left), (512, right)):
+        for row, cycle in enumerate(matrix):
+            for col, value in enumerate((cycle * 5)[:31]):
+                struct.pack_into('<e', blob, base + (row + 1) * 64 + col * 2, value)
+    blob[1024:2048] = struct.pack('<I', 0xc49a4000) * 256
+    products = [[28, -62, 2, -4, -59], [-4, 2, -62, 28, 55], [-64, 24, 63, 39, -62]]
+    for row, entries in enumerate(products):
+        for col, value in enumerate(entries):
+            struct.pack_into('<f', blob, 1024 + (row + 1) * 64 + col * 4, value)
+            struct.pack_into('<f', blob, 1536 + (row + 1) * 64 + col * 4, value + 32)
+    return blob
 
 
 class FirmwareTests(unittest.TestCase):
@@ -42,6 +54,18 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(result['first_mismatches'][0]['ddr_address'], '0xf0000ffc')
         with self.assertRaises(ValueError):
             diag.verify_clp_blob(data[:-1])
+
+    def test_clp_odd_k_input_and_output_padding_are_guards(self):
+        for offset in (64 + 31 * 2, 512 + 5 * 64 + 31 * 2, 1024 + 64 + 5 * 4,
+                       1536 + 3 * 64 + 5 * 4):
+            with self.subTest(offset=offset):
+                blob = bytearray(clp_final_blob())
+                struct.pack_into('<H', blob, offset, 0)
+                result = diag.verify_clp_blob(blob)
+                self.assertFalse(result['data_match'])
+                self.assertEqual(result['mismatch_count'], 1)
+                self.assertEqual(result['first_mismatches'][0]['ddr_address'],
+                                 f'0x{diag.CLP_BASE + offset // 4 * 4:x}')
 
     def test_shipped_firmware_addresses_and_distinct_prefixes(self):
         prefixes = []
@@ -183,13 +207,14 @@ Path(destination).write_bytes(data)
         result = self.report()['clp_result']
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(result['checked_words'], 1024)
+        self.assertEqual(result['final_shape'], [3, 5, 31])
         self.assertEqual((self.out / result['raw_file']).read_bytes(), clp_final_blob())
         self.assertTrue(self.events()[-1][1].endswith(':0x70000000:0x1000'))
 
     def test_clp_wrong_ddr_returns_failure_and_archives_data(self):
         self.select_clp()
         data = bytearray(clp_final_blob())
-        struct.pack_into('<I', data, 192, 0)
+        struct.pack_into('<I', data, 1536 + 64, 0)
         self.config['data'][str(0x70000000)] = data.hex()
         self.assertEqual(self.run_collect('--firmware', 'clp-selftest', '--samples', '1'), 1)
         self.assertEqual(self.report()['clp_result']['status'], 'failed')

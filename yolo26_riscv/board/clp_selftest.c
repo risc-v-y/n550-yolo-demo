@@ -15,7 +15,12 @@
 #define CLP_RVV_BASE ((uintptr_t)0x80100000u)
 #define CLP_DDR_BASE ((uintptr_t)0x80100000u)
 #endif
-enum { REGION_BYTES=4096, A=0, B=64, C=128, D=192, ROUNDS=32 };
+enum { REGION_BYTES=4096, BLOCK_BYTES=512, ROW_BYTES=64,
+       A=0, B=512, C=1024, D=1536, ROUNDS=32 };
+/* One guard row before/after the active rows; remaining rows are guards too.
+ * A is M x K, B stores N x K (transposed GEMM right operand), C/D are M x N. */
+static const unsigned shapes[][3]={{3,5,17},{1,1,1},{2,3,32},{3,5,31}};
+_Static_assert(D+BLOCK_BYTES<=REGION_BYTES,"CLP buffers fit reserved DDR");
 #define GUARD 0x35553555u
 #define OUTPUT_GUARD 0xc49a4000u
 volatile uint32_t board_test_stage;
@@ -50,11 +55,16 @@ static uint32_t read32(unsigned offset) {
                      : "=r"(bits) : "r"(address) : "v8","memory");
     return (uint32_t)bits;
 }
-static void add_tag(float tag) {
-    uintptr_t source=CLP_RVV_BASE+C,destination=CLP_RVV_BASE+D;
-    __asm__ volatile("vsetivli zero,1,e32,m1,ta,ma\n"
-                     "vle32.v v8,(%0)\nvfadd.vf v8,v8,%2\nvse32.v v8,(%1)"
-                     :: "r"(source),"r"(destination),"f"(tag) : "v8","memory");
+static void add_tag(unsigned offset,unsigned count,float tag) {
+    uintptr_t source=CLP_RVV_BASE+C+offset,destination=CLP_RVV_BASE+D+offset;
+    while(count) {
+        uintptr_t vl;
+        __asm__ volatile("vsetvli %0,%3,e32,m1,ta,ma\n"
+                         "vle32.v v8,(%1)\nvfadd.vf v8,v8,%4\nvse32.v v8,(%2)"
+                         : "=&r"(vl) : "r"(source),"r"(destination),"r"((uintptr_t)count),"f"(tag)
+                         : "v8","memory");
+        source+=vl*4; destination+=vl*4; count-=(unsigned)vl;
+    }
 }
 static uint32_t float_bits(float value) {
     union { float f; uint32_t u; } number={.f=value};
@@ -70,9 +80,22 @@ static int compare(unsigned offset,uint32_t expected) {
     board_diag_error(4,-200-(int)(offset/64));
     return -1;
 }
+static int value(unsigned round,unsigned row,unsigned k,unsigned side) {
+    return (int)((round*3+row*5+k*(side ? 3 : 2)+side)%7)-3;
+}
+static uint16_t half_integer(int number) {
+    static const uint16_t magnitude[]={0,0x3c00,0x4000,0x4200};
+    return magnitude[number<0 ? -number : number] | (number<0 ? 0x8000 : 0);
+}
+static uint16_t expected_half(unsigned round,unsigned row,unsigned col,unsigned rows,unsigned k,unsigned side) {
+    return row>=1 && row<=rows && col<k ? half_integer(value(round,row-1,col,side)) : 0x3555;
+}
+static int expected_product(unsigned round,unsigned row,unsigned col,unsigned k) {
+    int sum=0;
+    for(unsigned at=0;at<k;++at) sum+=value(round,row,at,0)*value(round,col,at,1);
+    return sum;
+}
 static int run_clp(void) {
-    static const uint16_t half[4]={0x4000,0xbc00,0x3c00,0x4200};
-    static const int integer[4]={2,-1,1,3};
     board_test_stage=1;
     board_clean((const void *)&board_test_stage,sizeof(board_test_stage));
     fill32(0,REGION_BYTES/4,GUARD);
@@ -82,44 +105,56 @@ static int run_clp(void) {
     board_test_stage=4;
     board_clean((const void *)&board_test_stage,sizeof(board_test_stage));
     for(unsigned round=0;round<ROUNDS;++round) {
+        unsigned m=shapes[round%4][0],n=shapes[round%4][1],k=shapes[round%4][2];
         board_diag.frame=round;
         board_diag.phase=PHASE_AMU_SUBMIT;
         board_diag_commit();
-        fill32(C,16,OUTPUT_GUARD);
-        fill32(D,16,OUTPUT_GUARD);
-        write16(A,half[round%4]);
-        write16(B,0x4200); /* FP16 3 */
+        fill32(A,BLOCK_BYTES/4,GUARD);
+        fill32(B,BLOCK_BYTES/4,GUARD);
+        fill32(C,BLOCK_BYTES/4,OUTPUT_GUARD);
+        fill32(D,BLOCK_BYTES/4,OUTPUT_GUARD);
+        for(unsigned row=0;row<m;++row)
+            for(unsigned col=0;col<k;++col)
+                write16(A+(row+1)*ROW_BYTES+col*2,half_integer(value(round,row,col,0)));
+        for(unsigned row=0;row<n;++row)
+            for(unsigned col=0;col<k;++col)
+                write16(B+(row+1)*ROW_BYTES+col*2,half_integer(value(round,row,col,1)));
         clp_fence(); /* RVV CLP store -> AMU DDR load, no cache operations. */
         uintptr_t old,flags;
-        __riscv_msettilem(old,1,w);
-        __riscv_msettilen(old,1,w);
-        __riscv_msettilek(old,1,w);
+        __riscv_msettilem(old,m,w);
+        __riscv_msettilen(old,n,w);
+        __riscv_msettilek(old,k,w);
         __riscv_mzero("acc0");
-        __riscv_mlae16("tr0",(const void *)(CLP_DDR_BASE+A),64);
-        __riscv_mlbe16("tr1",(const void *)(CLP_DDR_BASE+B),64);
+        __riscv_mlae16("tr0",(const void *)(CLP_DDR_BASE+A+ROW_BYTES),ROW_BYTES);
+        __riscv_mlbe16("tr1",(const void *)(CLP_DDR_BASE+B+ROW_BYTES),ROW_BYTES);
         __riscv_mfmacc_s_h("acc0","tr1","tr0");
-        __riscv_msce32("acc0",(void *)(CLP_DDR_BASE+C),64);
+        __riscv_msce32("acc0",(void *)(CLP_DDR_BASE+C+ROW_BYTES),ROW_BYTES);
         __asm__ volatile("csrr %0,xmfflags" : "=r"(flags) : : "memory");
         clp_fence(); /* Completed AMU DDR store -> RVV CLP load. */
-        add_tag((float)(round+1));
+        for(unsigned row=1;row<=m;++row) add_tag(row*ROW_BYTES,n,(float)(round+1));
         clp_fence(); /* Finish RVV stores before validation and next reuse. */
         (void)old;
         board_diag.amu_flags=flags;
         board_diag.phase=PHASE_CHECK;
         board_diag_commit();
-        int product=integer[round%4]*3;
-        /* Active data plus untouched neighbours, exact integer FP values. */
-        for(unsigned at=0;at<256;at+=4) {
-            uint32_t expected=GUARD;
-            if(at==A) expected=(GUARD&0xffff0000u)|half[round%4];
-            else if(at==B) expected=(GUARD&0xffff0000u)|0x4200;
-            else if(at>=C && at<D+64) expected=OUTPUT_GUARD;
-            if(at==C) expected=float_bits((float)product);
-            else if(at==D) expected=float_bits((float)(product+(int)round+1));
-            if(compare(at,expected)) return -1;
+        /* Check inputs (including the odd-K high half), inactive rows,
+         * output column padding, and guard rows after every round. */
+        for(unsigned at=0;at<BLOCK_BYTES;at+=4) {
+            unsigned row=at/ROW_BYTES,col=(at%ROW_BYTES)/2;
+            uint32_t a=expected_half(round,row,col,m,k,0) |
+                       ((uint32_t)expected_half(round,row,col+1,m,k,0)<<16);
+            uint32_t b=expected_half(round,row,col,n,k,1) |
+                       ((uint32_t)expected_half(round,row,col+1,n,k,1)<<16);
+            if(compare(A+at,a) || compare(B+at,b)) return -1;
+            col=(at%ROW_BYTES)/4;
+            int active=row>=1 && row<=m && col<n;
+            int product=active ? expected_product(round,row-1,col,k) : 0;
+            uint32_t c=active ? float_bits((float)product) : OUTPUT_GUARD;
+            uint32_t d=active ? float_bits((float)(product+(int)round+1)) : OUTPUT_GUARD;
+            if(compare(C+at,c) || compare(D+at,d)) return -1;
         }
     }
-    for(unsigned at=256;at<REGION_BYTES;at+=4)
+    for(unsigned at=D+BLOCK_BYTES;at<REGION_BYTES;at+=4)
         if(compare(at,GUARD)) return -1;
     board_test_stage=3;
     board_clean((const void *)&board_test_stage,sizeof(board_test_stage));
@@ -159,6 +194,7 @@ int main(void) {
 #else
     message("CLP TEST RVV=10000000 AMU=f0000000 bytes=4096 rounds=32\n");
 #endif
+    message("CLP SHAPES (M,N,K)=(3,5,17)/(1,1,1)/(2,3,32)/(3,5,31)\n");
     board_diag_stage(DIAG_AMU_INIT);
     int status=amu_init();
     if(status) { board_diag_error(3,status); message("CLP AMU INIT FAIL\n"); platform_exit(3); }
@@ -170,6 +206,9 @@ int main(void) {
         message(" element="); hex(board_diag.element);
         message(" got="); hex(board_diag.observed);
         message(" expected="); hex(board_diag.expected);
+        message(" M="); (void)board_uart_u64(shapes[board_diag.frame%4][0]);
+        message(" N="); (void)board_uart_u64(shapes[board_diag.frame%4][1]);
+        message(" K="); (void)board_uart_u64(shapes[board_diag.frame%4][2]);
         message("\n"); platform_exit(4);
     }
     board_diag_stage(DIAG_DONE);

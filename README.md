@@ -70,13 +70,24 @@ bash tools/load_board.sh --reset-dir /rv/fpga/bin --clp-selftest
 python3 tools/collect_board_diag.py --firmware clp-selftest --samples 1 \
   --tool-cwd "$PWD"
 
-# 可选：只查看前 256 字节；这条读取命令本身不判断测试通过
-python3 tools/read_ddr.py 0xf0000000 0x100 --width 32 --clp-test
+# 可选：查看 RVV 输出的三行，每行16个 FP32；前5个有效，其余为保护值
+python3 tools/read_ddr.py 0xf0000640 0xc0 --width 32 --clp-test
 ```
 
-测试连续运行 32 轮 `C=A×B，D=C+(round+1)`，每轮 M=N=K=1。A 循环取 FP16 `2、−1、1、3`，B 为 FP16 3，C/D 为 FP32，均可精确表示，逐位比较、不设误差阈值。每轮检查四个 64 字节块的有效数据和保护值，最后检查剩余区。共享数据交接只用 `fence iorw,iorw` 和读取 `xmfflags` 等待，不对共享区执行 CBO；低地址诊断信息仍需 clean 后供 PCIe 读取。
+上一版 1×1 CLP 测试已由现场报告 UART 与 PCIe 验收均通过。本轮扩展版仍只占同一 4 KiB，连续 32 轮循环测试 `(M,N,K)=(3,5,17)、(1,1,1)、(2,3,32)、(3,5,31)`，每种形状执行 8 次。
 
-UART 最终应出现 `CLP RVV->AMU->RVV REUSE 32 ROUNDS PASS`。采集终端须同时显示 `CLP validation passed`、`completed_32_rounds=True`、`DDR_match=True`。最后一轮 A/B 为 3，C 为 9（`41100000`），D 为 41（`42240000`）；A/B 首字为 `35554200`，输出块其余字为 `c49a4000`，其他保护字为 `35553555`。完整原始数据和逐项差异保存到采集目录。
+AMU 计算 `C[m,n]=Σ A[m,k]×B[n,k]`，B 按转置后的 `[N,K]` 存储；RVV 对每行的 N 个结果加 `round+1`，得到 D。输入为 FP16 整数 −3 至 3，C/D 为 FP32，结果均可精确表示，逐位比较、不设误差阈值。N=5 在 VLEN=128 下分为4+1个元素，覆盖多次向量读写及尾段；K=17/31 检查奇数尾部，K=32 检查完整输入行。
+
+| 缓冲区 | DDR 起点 | 有效数据起点 | 数据形状 |
+|---|---|---|---|
+| A | `0xF0000000` | `0xF0000040` | FP16 `[M,K]` |
+| B | `0xF0000200` | `0xF0000240` | FP16 `[N,K]` |
+| C | `0xF0000400` | `0xF0000440` | FP32 `[M,N]` |
+| D | `0xF0000600` | `0xF0000640` | FP32 `[M,N]` |
+
+各区512字节、行距64字节；首行、未使用行和列为保护值，`0xF0000800–0xF0000FFF` 为额外保护区。每轮检查四个完整缓冲区，最后检查剩余2 KiB。共享数据交接只用 `fence iorw,iorw` 和读取 `xmfflags` 等待，不对共享区执行 CBO；低地址诊断仍需 clean 后供 PCIe 读取。
+
+UART 先打印四种 `CLP SHAPES`，最终应出现 `CLP RVV->AMU->RVV REUSE 32 ROUNDS PASS`。采集须显示 `CLP validation passed`、`completed_32_rounds=True`、`DDR_match=True`。最后一轮形状为 `[3,5,31]`，D 的三行有效结果为 `[60,−30,34,28,−27]`、`[28,34,−30,60,87]`、`[−32,56,95,71,−30]`；各行剩余11字为 `c49a4000`。输入半字保护值为 `3555`，其他保护字为 `35553555`。完整原始数据及差异保存在采集目录。扩展版仍待实板验证，不将上一版通过视为本版通过。
 
 成功或失败后固件自动进入 `clp_probe_halt` 停车，保留诊断，不需要赶在 UART 打印时手动停核。如需用现有 GDB 连续重跑并停在最终结论处：
 

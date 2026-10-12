@@ -6,8 +6,12 @@ Run on Linux/WSL: python3 yolo26_riscv/board/tests/test_clp.py
 import os
 from pathlib import Path
 import subprocess
+import sys
+
 
 root = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(root / 'tools'))
+from collect_board_diag import verify_clp_blob
 src = root / 'yolo26_riscv'
 out = src / 'build/clp-qemu-tests'
 out.mkdir(parents=True, exist_ok=True)
@@ -26,13 +30,18 @@ subprocess.run([prefix + '-gcc', *flags, '-c', 'board/start.S', '-o', str(out / 
 normal = (src / 'board/clp_selftest.c').read_text(encoding='utf-8')
 variants = [
     ('normal', None, None, 0, 'CLP RVV->AMU->RVV REUSE 32 ROUNDS PASS'),
-    ('tag', 'add_tag((float)(round+1));', 'add_tag((float)(round==7 ? 0 : round+1));',
-     4, 'round=0x0000000000000007 buffer=0x0000000000000003'),
-    ('guard', '        (void)old;', '        write16(256,0);\n        (void)old;',
-     4, 'round=0x000000000000001f buffer=0x0000000000000004'),
+    ('tag', 'add_tag(row*ROW_BYTES,n,(float)(round+1));',
+     'add_tag(row*ROW_BYTES,n,(float)(round==7 ? 0 : round+1));',
+     4, 'round=0x0000000000000007 buffer=0x0000000000000019'),
+    ('padding', '        (void)old;', '        if(round==7) write16(C+ROW_BYTES+5*4,0);\n        (void)old;',
+     4, 'round=0x0000000000000007 buffer=0x0000000000000011 element=0x0000000000000005'),
+    ('guard', '        (void)old;', '        write16(REGION_BYTES-2,0);\n        (void)old;',
+     4, 'round=0x000000000000001f buffer=0x000000000000003f element=0x000000000000000f'),
+    ('k-tail', '__riscv_msettilek(old,k,w);', '__riscv_msettilek(old,round==7 ? k-1 : k,w);',
+     4, 'round=0x0000000000000007 buffer=0x0000000000000011'),
     ('alias', '#define CLP_DDR_BASE ((uintptr_t)0x80100000u)',
      '#define CLP_DDR_BASE ((uintptr_t)0x80102000u)',
-     4, 'round=0x0000000000000000 buffer=0x0000000000000002'),
+     4, 'round=0x0000000000000000 buffer=0x0000000000000011'),
 ]
 for name, anchor, replacement, exit_code, expected in variants:
     code = src / 'board/clp_selftest.c'
@@ -47,15 +56,24 @@ for name, anchor, replacement, exit_code, expected in variants:
                     str(code), 'board/uart.c', 'board/diagnostics.c', 'amu.c',
                     'board/tests/clp_qemu.c', '-o', str(elf)], cwd=src, check=True, timeout=60)
     for vlen in (128, 256, 512):
+        dump = out / 'clp-qemu-ddr.bin'
+        dump.unlink(missing_ok=True)
         result = subprocess.run([qemu, '-machine', 'virt', '-cpu',
                                  f'rv64,v=true,vlen={vlen},matrix=on,xtlen=65536,xtrlen=512,xelen=32',
                                  '-m', '64M', '-smp', '1', '-nographic', '-monitor', 'none',
                                  '-serial', 'none', '-bios', 'none', '-kernel', str(elf),
                                  '-semihosting-config', 'enable=on,target=native', '-no-reboot'],
-                                cwd=src, capture_output=True, text=True, timeout=30)
+                                cwd=out, capture_output=True, text=True, timeout=30)
         text = result.stdout + result.stderr
         (out / f'{name}-vlen{vlen}.log').write_text(text, encoding='utf-8')
         if result.returncode != exit_code or expected not in text:
             raise RuntimeError(f'{name} vlen={vlen} exit={result.returncode}:\n{text}')
+        data = dump.read_bytes()
+        if len(data) != 4096:
+            raise RuntimeError('QEMU DDR dump is incomplete')
+        dump.rename(out / f'{name}-vlen{vlen}-ddr.bin')
+        if name == 'normal' and not verify_clp_blob(data)['data_match']:
+            raise RuntimeError(f'Independent host reference differs: vlen={vlen}')
         print(f'PASS {name} vlen={vlen}', flush=True)
-print('12 QEMU cases passed; physical remapping/cache/completion still require board validation.')
+print('18 QEMU cases passed; normal DDR dumps also match the independent host reference.')
+print('Physical remapping/cache/completion still require board validation.')

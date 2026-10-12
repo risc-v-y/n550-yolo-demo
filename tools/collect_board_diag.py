@@ -51,16 +51,33 @@ def offset(address, size, *, clp_test=False):
 
 
 def verify_clp_blob(blob):
-    """Final state of the 32-round CLP probe, including all guard words."""
+    """Independent integer reference for final round 31, shape M=3,N=5,K=31.
+
+    A/B each occupy 512 bytes, with 64-byte rows and a leading guard row.
+    B holds the N x K transpose; C/D each have 16 FP32 columns per row.
+    """
     if len(blob) != CLP_END - CLP_BASE:
         raise ValueError('CLP result must contain exactly 4096 bytes')
-    expected = [0x35553555] * 1024
-    expected[0] = expected[16] = 0x35554200  # A=B=FP16 3, high half is guard.
-    expected[32:64] = [0xc49a4000] * 32
-    expected[32], expected[48] = 0x41100000, 0x42240000  # C=9, D=9+32=41.
+    reference = bytearray(struct.pack('<I', 0x35553555) * 1024)
+    left = [[(31 * 3 + row * 5 + col * 2) % 7 - 3 for col in range(31)]
+            for row in range(3)]
+    right = [[(31 * 3 + row * 5 + col * 3 + 1) % 7 - 3 for col in range(31)]
+             for row in range(5)]
+    for base, matrix in ((0, left), (512, right)):
+        for row, entries in enumerate(matrix):
+            for col, entry in enumerate(entries):
+                struct.pack_into('<e', reference, base + (row + 1) * 64 + col * 2, entry)
+    reference[1024:2048] = struct.pack('<I', 0xc49a4000) * 256
+    for row in range(3):
+        for col in range(5):
+            product = sum(a * b for a, b in zip(left[row], right[col]))
+            struct.pack_into('<f', reference, 1024 + (row + 1) * 64 + col * 4, product)
+            struct.pack_into('<f', reference, 1536 + (row + 1) * 64 + col * 4, product + 32)
+    expected = struct.unpack('<1024I', reference)
     wrong = [(index, actual, want) for index, (actual, want) in
              enumerate(zip(struct.unpack('<1024I', blob), expected)) if actual != want]
     return {'data_match': not wrong, 'checked_words': 1024, 'mismatch_count': len(wrong),
+            'final_shape': [3, 5, 31], 'layout_bytes': {'A': 0, 'B': 512, 'C': 1024, 'D': 1536},
             'first_mismatches': [{'ddr_address': f'0x{CLP_BASE + index * 4:x}',
                                   'rvv_address': f'0x{0x10000000 + index * 4:x}',
                                   'got': f'0x{actual:08x}', 'expected': f'0x{want:08x}'}

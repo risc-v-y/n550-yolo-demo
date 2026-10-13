@@ -10,7 +10,8 @@
  * prepare/finish apply to external writes, NOT cached RVV stores: invalidating
  * a dirty RVV destination can discard its data. No scalar writes to a shared
  * line are allowed while an external writer owns it. */
-BOARD_INLINE void board_fence(void) { __asm__ volatile("fence rw,rw" ::: "memory"); }
+/* Include I/O ordering because CLP PMA classification is platform-defined. */
+BOARD_INLINE void board_fence(void) { __asm__ volatile("fence iorw,iorw" ::: "memory"); }
 BOARD_INLINE void board_clean(const void *address, size_t bytes) {
     if (!bytes) return;
     uintptr_t end = (uintptr_t)address + bytes;

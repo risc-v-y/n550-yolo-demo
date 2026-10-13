@@ -8,7 +8,12 @@
 
 uint32_t accel_rvv_nodes, accel_amu_nodes, accel_scalar_nodes, accel_alias_nodes;
 enum { CONV_COLUMNS = 32, MAX_CONV_K = 4096 };
+#ifdef YOLO_N550_BOARD
+#include "board/memory.h"
+static float conv_scratch[MAX_CONV_K * CONV_COLUMNS] BOARD_CLP_DATA;
+#else
 static float conv_scratch[MAX_CONV_K * CONV_COLUMNS] __attribute__((aligned(64)));
+#endif
 
 static size_t product(const ModelTensor *t, size_t begin, size_t end) {
     size_t value = 1;

@@ -4,7 +4,7 @@
 
 仓库提供源码、预编译固件、样例和数值基准。本机检查不代表实板通过；加载、缓存可见性、模型数值及吞吐仍须现场验收。以下命令均在 host 的仓库根目录执行。
 
-**当前先验证独立 CLP 通路。平台已确认 Memory port 上的 RVV 使用 DCache，旧自测/模型中的缓存交接需修正；`demo-pcie` 尚未迁移到 CLP，不能据新最小测试声称模型已跑通。**
+**当前交付为 CLP 模型版：工作区与临时缓冲区迁至已批准的16 MiB DDR，RVV 通过 CLP 别名访问模型数据，AMU 使用全局地址。bus/zidane 的 QEMU 完整推理与原 FP16 基准逐字节一致；完整模型仍待实板验收。**
 
 ## 1. 准备与查看调试串口
 
@@ -39,92 +39,54 @@ git pull --ff-only
 
 ## 2. 复位、加载 DDR、释放复位
 
-平台方须保证 DDR 可用、CPU `0x80000000–0x81FFFFFF` 的 32 MiB 独占、DCache 开启；复位释放不会清除已写入的 DDR，CPU 从 `0x80000000` 启动。平台初始化和 JTAG 配置仍由板级同事负责，见 [板端条件](docs/BOARD.md)。
+平台方须保证 DDR 可用，程序/权重/栈所在 `0x80000000–0x81FFFFFF` 的32 MiB，以及模型数据所在 `0xF0000000–0xF0FFFFFF` 的16 MiB均独占，DCache开启；复位释放不会清除已写入的 DDR，CPU 从 `0x80000000` 启动。平台初始化和 JTAG 配置仍由板级同事负责，见 [板端条件](docs/BOARD.md)。
 
 将参数指向 **现场已有 `reset1.sh` 和 `reset.sh` 的目录**：
 
 ```bash
-# 加载本轮独立 CLP 测试；按实际复位脚本目录修改
-bash tools/load_board.sh --reset-dir /实际路径/s2c --clp-selftest
+# 复位、加载正式模型固件、释放复位；按现场复位脚本和工具路径修改
+bash tools/load_board.sh --reset-dir /rv/fpga/bin --pbcopy /rv/fpga/bin/pbcopy
 ```
 
 脚本核对 BIN 哈希并获取 PCIe 互斥锁，然后执行 **`reset1.sh` 保持复位 → `pbcopy -d 完整BIN路径:0x0` → `reset.sh` 释放复位**。在复位脚本所在目录调用它们，保留相对路径依赖。每步检查退出码和失败文字，日志在 `yolo26_pc/outputs/deploy-*/load.log`。加载失败不会调用 `reset.sh`；释放失败报错，由平台方确认板卡状态。脚本成功只表示部署命令完成，启动与推理还需验证。
 
 默认加载 `firmware/demo-pcie.bin`，包含程序、模型图及权重，不用单独上传 `.pt`。PCIe 偏移 `0x0` 对应 CPU `0x80000000`；`demo-pcie.elf` 供符号和 JTAG 调试，不能改名为 BIN 加载。
 
-### 当前先运行 CLP 最小测试
+模型数据实际占8,143,104字节（约7.77 MiB）。高地址数据为 NOLOAD，不写入 BIN，由启动代码通过 RVV CLP 清零；BIN 约9.31 MiB，不会包含两个地址区之间的大空洞。标量使用全局 DDR 地址，参与交接时仍做缓存维护；权重及栈上索引数组使用正常缓存路径。
 
-平台已确认独占 NoC DDR `0xF0000000–0xF0000FFF` 的 4 KiB。RVV 经 CLP 别名 `0x10000000–0x10000FFF` 无缓存访问，AMU 使用全局 DDR 地址，PCIe 偏移从 `0x70000000` 开始。代码、栈和诊断仍在原 32 MiB 区；不允许标量访问这段共享数据。
+UART 应依次出现 BOOT、CLP 数据地址、四种 SHAPES、`32 ROUNDS PASS`、READY。模型启动复用已在现场通过的32轮CLP自测；自测失败会发布PCIe ERROR并保留诊断。看到READY后再执行第3节。
+
+### 独立 CLP 自测：按需复验
+
+提交 `9e253cf` 的四种形状、32轮自测已由现场报告全部成功。独立 `clp-selftest.bin/elf` 保持该已验证版本；旧 `selftest.bin/elf` 仅供历史缓存定位，不用于模型启动。
 
 ```bash
-# 拉取已发布的 CLP 固件和脚本，更新本地工作区
-git pull --ff-only
+# 可选：加载独立4 KiB自测，会替换当前运行的模型
+bash tools/load_board.sh --reset-dir /rv/fpga/bin \
+  --pbcopy /rv/fpga/bin/pbcopy --clp-selftest
 
-# 校验交付文件完整性
-sha256sum -c firmware/SHA256SUMS
-
-# 保持复位、加载 CLP 测试程序到 DDR 入口、释放复位；按现场路径修改目录
-bash tools/load_board.sh --reset-dir /rv/fpga/bin --clp-selftest
-
-# 只读采集诊断和完整 4 KiB 测试区，自动核对最终数据及保护值
+# 读取自测诊断及完整4 KiB，逐字核对；不是模型图像推理
 python3 tools/collect_board_diag.py --firmware clp-selftest --samples 1 \
-  --tool-cwd "$PWD"
+  --pbload /rv/fpga/bin/pbload --tool-cwd "$PWD"
 
-# 可选：查看 RVV 输出的三行，每行16个 FP32；前5个有效，其余为保护值
-python3 tools/read_ddr.py 0xf0000640 0xc0 --width 32 --clp-test
+# 复验后重新加载正式模型，等待READY再提交图像
+bash tools/load_board.sh --reset-dir /rv/fpga/bin --pbcopy /rv/fpga/bin/pbcopy
 ```
 
-上一版 1×1 CLP 测试已由现场报告 UART 与 PCIe 验收均通过。本轮扩展版仍只占同一 4 KiB，连续 32 轮循环测试 `(M,N,K)=(3,5,17)、(1,1,1)、(2,3,32)、(3,5,31)`，每种形状执行 8 次。
-
-AMU 计算 `C[m,n]=Σ A[m,k]×B[n,k]`，B 按转置后的 `[N,K]` 存储；RVV 对每行的 N 个结果加 `round+1`，得到 D。输入为 FP16 整数 −3 至 3，C/D 为 FP32，结果均可精确表示，逐位比较、不设误差阈值。N=5 在 VLEN=128 下分为4+1个元素，覆盖多次向量读写及尾段；K=17/31 检查奇数尾部，K=32 检查完整输入行。
-
-| 缓冲区 | DDR 起点 | 有效数据起点 | 数据形状 |
-|---|---|---|---|
-| A | `0xF0000000` | `0xF0000040` | FP16 `[M,K]` |
-| B | `0xF0000200` | `0xF0000240` | FP16 `[N,K]` |
-| C | `0xF0000400` | `0xF0000440` | FP32 `[M,N]` |
-| D | `0xF0000600` | `0xF0000640` | FP32 `[M,N]` |
-
-各区512字节、行距64字节；首行、未使用行和列为保护值，`0xF0000800–0xF0000FFF` 为额外保护区。每轮检查四个完整缓冲区，最后检查剩余2 KiB。共享数据交接只用 `fence iorw,iorw` 和读取 `xmfflags` 等待，不对共享区执行 CBO；低地址诊断仍需 clean 后供 PCIe 读取。
-
-UART 先打印四种 `CLP SHAPES`，最终应出现 `CLP RVV->AMU->RVV REUSE 32 ROUNDS PASS`。采集须显示 `CLP validation passed`、`completed_32_rounds=True`、`DDR_match=True`。最后一轮形状为 `[3,5,31]`，D 的三行有效结果为 `[60,−30,34,28,−27]`、`[28,34,−30,60,87]`、`[−32,56,95,71,−30]`；各行剩余11字为 `c49a4000`。输入半字保护值为 `3555`，其他保护字为 `35553555`。完整原始数据及差异保存在采集目录。扩展版仍待实板验证，不将上一版通过视为本版通过。
-
-成功或失败后固件自动进入 `clp_probe_halt` 停车，保留诊断，不需要赶在 UART 打印时手动停核。如需用现有 GDB 连续重跑并停在最终结论处：
-
-```gdb
-# 在已连接并停核的启动 hart 上切到仓库根目录
-cd /rv/fpga/yhb/n550-yolo-demo
-
-# 加载本次 CLP 固件的调试符号，不下载程序
-symbol-file firmware/clp-selftest.elf
-
-# 查看旧断点；确认不用后删除，释放有限硬件槽位
-info breakpoints
-delete breakpoints
-
-# 只设一个最终临时硬件断点，从入口连续重跑，中间不暂停
-thbreak clp_probe_halt
-set $pc = 0x80000000
-continue
-
-# 查看结论；通过时阶段为3、退出码为0、最后轮次为31
-p board_test_stage
-p board_error
-p board_diag.frame
-
-# 查看失败位置及原始数据；测试失败时保留这些字段
-p board_diag
-```
-
-若停点未到达，按 Ctrl+C 停核并记录 PC/trap；不要不断增加断点。CLP 最小测试通过后再迁移模型数据布局及标量交接。现有 `selftest.bin/elf` 和 `demo-pcie.bin/elf` 保留作历史定位，未按新硬件信息修正；下面图片/视频入口留待模型修正后验收。
+独立自测的数据布局、错误字段和最终 `clp_probe_halt` 停点见 [诊断说明](docs/DIAGNOSTICS.md)。每次只需一个临时硬件断点，不依赖人工追赶UART。它只验证四种矩阵形状，完整模型仍须实板单图及连续帧验收。
 
 ## 3. 固定图片：免安装验证
 
 ```bash
 # 读取接口并建立会话，不运行图像推理
-python3 yolo26_pc/pcie_backend.py
-python3 yolo26_pc/pcie_prepared.py --sample bus
-python3 yolo26_pc/pcie_prepared.py --sample zidane
+# 查看固件描述并建立PCIe会话，不运行图像推理
+python3 yolo26_pc/pcie_backend.py --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
+
+# 上传bus输入、推理并保存原始结果、参考差异和绘框图
+python3 yolo26_pc/pcie_prepared.py --sample bus --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
+
+# 同样验证zidane；程序和权重保持加载，不逐帧复位
+python3 yolo26_pc/pcie_prepared.py --sample zidane --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
 ```
 
 原始 JPEG、正式预处理流程生成的输入、坐标映射与哈希已交付，见 `reference/prepared/manifest.json`。输入是 RGB NCHW `[1,3,416,416]` 小端 FP32，2,076,672 字节；保留全部 334 节点和现有 RVV+AMU FP16 计算。返回 `[300,6]` FP32，7,200 字节，字段为输入图坐标下的 `x1,y1,x2,y2,score,class`。host 按 `score > 0.25` 过滤并还原坐标，不增加 NMS。
@@ -159,7 +121,7 @@ UART 忙或发送超时后关闭文字输出，PCIe 模型继续运行；总线�
 
 ### 单命令读取 DDR
 
-在 host 仓库根目录运行，Python 3.10 标准库即可。地址参数是 **CPU 地址**，脚本自动减去 `0x80000000` 得到 PCIe 偏移；读取范围限制在本演示预留的 `0x80000000–0x81FFFFFF`。
+在 host 仓库根目录运行，Python 3.10 标准库即可。地址参数是 **全局 DDR 地址**，脚本减去 `0x80000000` 得到 PCIe 偏移。默认允许原32 MiB区；读模型数据时加 `--model-data`，额外允许已批准的 `0xF0000000–0xF0FFFFFF`，不要传RVV别名。
 
 ```bash
 # 读取目标区的16字节，按16位十六进制显示，保存原始数据和日志
@@ -170,6 +132,9 @@ python3 tools/read_ddr.py 0x80003dc0 16 --width 16
 
 # 检查程序入口的16字节，按32位十六进制显示
 python3 tools/read_ddr.py 0x80000000 16 --width 32
+
+# 读取本版模型输入开头16字节，仅用于停核后定位，不判断整帧通过
+python3 tools/read_ddr.py 0xf0081000 16 --width 32 --model-data
 
 # 检查起始4KiB是否全零；屏幕默认只预览前256字节
 python3 tools/read_ddr.py 0x80000000 0x1000 --width 32
@@ -183,15 +148,15 @@ python3 tools/read_ddr.py 0x80000000 0x1000 --width 32
 
 ### 旧缓存定位入口
 
-`tools/rvv_store_probe.gdb` 仅对应旧 `selftest.bin/elf`，不能用于 CLP 固件。原方案将缓存 RVV 写入后直接 invalidate，可能丢弃脏数据，RVV→AMU 也缺少 clean；之前取消隐式 RVV 栈拷贝并不证明故障修复。当前按第 2 节运行 CLP 测试，不再使用旧固定地址作新停点。
+`tools/rvv_store_probe.gdb` 仅对应旧 `selftest.bin/elf`，不能用于 CLP 固件。原方案将缓存 RVV 写入后直接 invalidate，可能丢弃脏数据，RVV→AMU 也缺少 clean；之前取消隐式 RVV 栈拷贝并不证明故障修复。当前模型已修正交接并接入CLP；旧固定地址不能用于本版模型。
 
 ### UART 无输出：只读采集 DDR
 
 保留当前板端状态，停止其他 PCIe 控制程序，minicom 可以继续打开。`--firmware` 必须对应**当前已加载的 BIN**：CLP 测试选 `clp-selftest`，旧独立自测选 `selftest`，模型选 `demo-pcie`。
 
 ```bash
-# 只读采集当前 CLP 固件状态；加载日志路径替换为本次实际目录
-python3 tools/collect_board_diag.py --firmware clp-selftest --samples 1 \
+# 只读采集当前正式模型的启动/节点/trap状态；日志换成本次实际目录
+python3 tools/collect_board_diag.py --firmware demo-pcie --samples 1 \
   --tool-cwd "$PWD" \
   --load-log yolo26_pc/outputs/deploy-实际目录/load.log
 ```
@@ -244,3 +209,7 @@ UPLOAD_DIR="$(mktemp -d)"
 修改源码后，在现有 ESWIN 工具链的 Linux/WSL 构建机执行 `bash yolo26_riscv/build_board.sh`，可用 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定工具链。结果在 `yolo26_riscv/build/n550-board/`，不会自动替换交付目录 `firmware/`。
 
 CLP 独立固件的构建命令为 `bash yolo26_riscv/build_clp_selftest.sh`，输出在 `yolo26_riscv/build/clp-selftest/`；QEMU 回归命令为 `python3 yolo26_riscv/board/tests/test_clp.py`。均在配置现有 ESWIN 工具链/QEMU 的 Linux/WSL 构建机执行；QEMU 使用统一 RAM，只检查运算与故障报告，不验证真实 CLP 路由。
+
+完整模型 QEMU 回归：`python3 yolo26_riscv/board/tests/test_model.py`。它执行实际启动、自测、PCIe 邮箱和两帧334节点，保存原图、候选框、绘框图和差异报告；使用统一RAM模拟地址，不证明实板缓存一致性。
+
+街景视频两帧的开发验证也已完成，每帧11个框。复跑时，先在已有NumPy/OpenCV环境运行 `python tools/check_clp_video.py`，记录打印的清单路径；再在Linux/WSL运行 `python3 yolo26_riscv/board/tests/test_model.py --manifest 清单路径`。结束后在图像环境运行 `python tools/check_clp_video.py --render 本次结果目录`，生成原帧/检测PNG、`raw.mp4`、`demo.mp4`。视频将两个实际检测结果各停留2秒，播放帧率不代表推理速度；真实连续演示使用第4节的live_demo入口。

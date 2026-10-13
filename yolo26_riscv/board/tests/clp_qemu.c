@@ -23,6 +23,7 @@ void board_uart_test_write(unsigned offset,uint32_t value) {
     }
 }
 __attribute__((noreturn)) void clp_qemu_exit(uintptr_t code) {
+#ifndef CLP_MODEL_QEMU
     /* Capture actual RVV/AMU RAM so Python can check it independently.
      * Filename is relative to the isolated QEMU test output directory. */
     static const char name[]="clp-qemu-ddr.bin";
@@ -33,6 +34,7 @@ __attribute__((noreturn)) void clp_qemu_exit(uintptr_t code) {
         if(semihost(5,(uintptr_t)write_args)) code=0xfe;
         if(semihost(2,(uintptr_t)&handle)) code=0xfe;
     } else code=0xfe;
+#endif
     const uintptr_t block[2]={0x20026,code};
     semihost(0x20,(uintptr_t)block);
     for(;;) __asm__ volatile("wfi");

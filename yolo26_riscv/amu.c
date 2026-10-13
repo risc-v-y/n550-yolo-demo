@@ -3,6 +3,7 @@
 #include <xewmatrix_intrinsic.h>
 #ifdef YOLO_N550_BOARD
 #include "board/cache.h"
+#include "board/memory.h"
 #include "board/diagnostics.h"
 #define DIAG_PHASE(p) board_diag_phase(p)
 #else
@@ -10,8 +11,13 @@
 #endif
 
 enum { TILE_M = 32, TILE_N = 32, TILE_K = 32 };
+#ifdef YOLO_N550_BOARD
+static uint16_t left_tile[TILE_M * TILE_K] BOARD_CLP_DATA;
+static uint16_t right_tile[TILE_N * TILE_K] BOARD_CLP_DATA;
+#else
 static uint16_t left_tile[TILE_M * TILE_K] __attribute__((aligned(64)));
 static uint16_t right_tile[TILE_N * TILE_K] __attribute__((aligned(64)));
+#endif
 uint64_t amu_instruction_count;
 
 int amu_half(float value, uint16_t *bits) {

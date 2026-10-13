@@ -2,7 +2,11 @@ OUTPUT_ARCH(riscv)
 ENTRY(_start)
 /* Platform hands over with DDR, clocks, UART pins and DCache enabled.
  * Reserve this entire 32 MiB region exclusively before loading via JTAG. */
-MEMORY { RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 32M }
+/* Only the test build supplies board_clp_sim, placing CLP data in QEMU RAM. */
+MEMORY {
+    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 32M
+    CLP (rw) : ORIGIN = DEFINED(board_clp_sim) ? 0x84000000 : 0xf0000000, LENGTH = 16M
+}
 SECTIONS {
     .text : ALIGN(64) { KEEP(*(.text.init)) *(.text .text.*) } > RAM
     .rodata : ALIGN(64) { *(.rodata .rodata.* .srodata .srodata.*) } > RAM
@@ -19,6 +23,14 @@ SECTIONS {
     .pcie_mailbox 0x81f00000 (NOLOAD) : ALIGN(64) {
         KEEP(*(.pcie_mailbox))
     } > RAM
+    /* Do not include this region in __bss_start..__bss_end or BIN: otherwise
+     * boot/BIN would span a 1.75 GiB gap. main initializes it via RVV CLP. */
+    .clp_data (NOLOAD) : ALIGN(64) {
+        __clp_start = .;
+        *(.clp_data .clp_data.*)
+        . = ALIGN(64);
+        __clp_end = .;
+    } > CLP
     __stack_top = ORIGIN(RAM) + LENGTH(RAM);
     ASSERT(__bss_end <= 0x81f00000, "Board model overlaps PCIe mailbox reserve")
     ASSERT(SIZEOF(.pcie_mailbox) <= 256, "PCIe mailbox exceeds wire layout")

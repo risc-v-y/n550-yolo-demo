@@ -10,8 +10,10 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#define INPUT ((unsigned char *)(uintptr_t)0x80800000)
-#define OUTPUT ((unsigned char *)(uintptr_t)0x80a00000)
+static unsigned char *input=(unsigned char *)(uintptr_t)0x80800000;
+static unsigned char *output=(unsigned char *)(uintptr_t)0x80a00000;
+#define INPUT input
+#define OUTPUT output
 #define CONTROL ((volatile uint32_t *)(uintptr_t)0x80a20000)
 unsigned char *board_model_input(void) { return INPUT; }
 const unsigned char *board_model_output(void) { return OUTPUT; }
@@ -37,6 +39,12 @@ int main(int argc,char **argv) {
     if(fd<0) return 3;
     if(mmap((void *)(uintptr_t)0x80000000,32*1024*1024,PROT_READ|PROT_WRITE,
             MAP_SHARED|MAP_FIXED,fd,0)==MAP_FAILED) return 4;
+    if(getenv("YOLO_TEST_CLP")) {
+        if(mmap((void *)(uintptr_t)0xf0000000,16*1024*1024,PROT_READ|PROT_WRITE,
+                MAP_SHARED|MAP_FIXED,fd,0x70000000)==MAP_FAILED) return 5;
+        input=(unsigned char *)(uintptr_t)0xf0000000;
+        output=(unsigned char *)(uintptr_t)0xf0200000;
+    }
     close(fd);
     board_diag_init(); board_pcie_init();
     /* Mirror diagnostics into fixture DDR; protocol layout remains unchanged. */

@@ -3,8 +3,10 @@ import argparse
 from datetime import datetime
 import json
 import math
+import os
 from pathlib import Path
 import secrets
+import re
 import shutil
 import struct
 import subprocess
@@ -15,6 +17,8 @@ import zlib
 
 BASE=0x80000000
 MAILBOX=0x81f00000
+MODEL_DDR_BASE,MODEL_DDR_END=0xf0000000,0xf1000000
+TOOL_FAILURE=re.compile(r'(?i)(?:\b(?:failed|failure)\b|\bfail!|\[x\]\s*ERROR|EXIT_WITH_NO_LICENSE)')
 MAGIC=0x50363259
 INPUT_BYTES=3*416*416*4
 OUTPUT_BYTES=7200
@@ -49,8 +53,14 @@ class PBTools:
         except OSError:
             self.lock.close()
             raise RuntimeError('Another host process owns the YOLO PCIe link') from None
-        self.temp=tempfile.TemporaryDirectory(prefix='yolo26-pcie-')
-        self.path=Path(self.temp.name)/'transfer.bin'
+        self.cwd=Path.cwd()
+        try:
+            handle,name=tempfile.mkstemp(prefix='p',suffix='.bin',dir=self.cwd)
+            os.close(handle)
+            self.path=Path(name)
+        except BaseException:
+            self.lock.close()
+            raise
 
     def _run(self,command,argument,deadline):
         if self.stop.is_set():
@@ -59,7 +69,7 @@ class PBTools:
         if time.monotonic()>=limit:
             raise TimeoutError('PCIe command deadline exceeded')
         started=time.monotonic()
-        process=subprocess.Popen([command,'-d',argument],stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+        process=subprocess.Popen([command,'-d',argument],cwd=self.cwd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
         try:
             while True:
                 if self.stop.is_set():
@@ -83,24 +93,32 @@ class PBTools:
         self.diagnostic({'type':'pcie_tool','message':f'{Path(command).name}: exit {process.returncode}',
                          'argument':argument,'elapsed_seconds':time.monotonic()-started,
                          'returncode':process.returncode,'output':text[-8192:]})
-        if process.returncode:
+        if process.returncode or TOOL_FAILURE.search(text):
             raise RuntimeError(f'{Path(command).name} failed ({process.returncode}): {text[-2000:]}')
 
     def write(self,address,data,deadline):
+        self._range(address,len(data))
         self.path.write_bytes(data)
-        self._run(self.commands[0],f'{self.path}:0x{address-BASE:x}',deadline)
+        self._run(self.commands[0],f'{self.path.name}:0x{address-BASE:x}',deadline)
 
     def read(self,address,size,deadline):
+        self._range(address,size)
         self.path.unlink(missing_ok=True)  # Never accept a stale output file.
-        self._run(self.commands[1],f'{self.path}:0x{address-BASE:x}:0x{size:x}',deadline)
+        self._run(self.commands[1],f'{self.path.name}:0x{address-BASE:x}:0x{size:x}',deadline)
         data=self.path.read_bytes()
         if len(data)!=size:
             raise ValueError(f'PCIe read returned {len(data)} bytes, expected {size}')
         return data
 
     def close(self):
-        self.temp.cleanup()
+        self.path.unlink(missing_ok=True)
         self.lock.close()
+
+    @staticmethod
+    def _range(address,size):
+        if size<=0 or not (BASE<=address and address+size<=0x82000000 or
+                          MODEL_DDR_BASE<=address and address+size<=MODEL_DDR_END):
+            raise ValueError('PCIe access outside reserved DDR')
 
 
 class PCIeBackend:
@@ -128,9 +146,12 @@ class PCIeBackend:
             if values[:3]!=(MAGIC,1,256) or values[7:11]!=(INPUT_BYTES,OUTPUT_BYTES,816,334):
                 raise ValueError('Incompatible PCIe firmware; load firmware/demo-pcie.bin')
             self.input_address,self.output_address,self.diag_address=values[4:7]
-            for address,size in ((self.input_address,INPUT_BYTES),(self.output_address,OUTPUT_BYTES),(self.diag_address,816)):
-                if address<BASE or address%64 or address+size>MAILBOX:
+            for address,size in ((self.input_address,INPUT_BYTES),(self.output_address,OUTPUT_BYTES)):
+                if address%64 or not (BASE<=address and address+size<=MAILBOX or
+                                     MODEL_DDR_BASE<=address and address+size<=MODEL_DDR_END):
                     raise ValueError('Firmware reports a buffer outside the reserved model DDR')
+            if self.diag_address<BASE or self.diag_address%64 or self.diag_address+816>MAILBOX:
+                raise ValueError('Firmware reports diagnostics outside reserved normal DDR')
             self.info={'input_address':self.input_address,'output_address':self.output_address,
                        'diagnostic_address':self.diag_address,'input_bytes':INPUT_BYTES,
                        'output_bytes':OUTPUT_BYTES,'nodes':334,'mailbox':MAILBOX,'version':1}

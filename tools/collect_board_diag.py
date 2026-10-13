@@ -25,6 +25,7 @@ import serial_probe
 
 BASE, END = 0x80000000, 0x82000000
 CLP_BASE, CLP_END = 0xF0000000, 0xF0001000
+MODEL_END = 0xF1000000
 PREFIX_BYTES = 256
 SYMBOLS = {
     'board_uart_status': '<i', 'board_uart_baud': '<I', 'board_uart_dlf_bits': '<I',
@@ -42,10 +43,11 @@ def size_of(name):
     return struct.calcsize(SYMBOLS[name]) if SYMBOLS[name] else 816
 
 
-def offset(address, size, *, clp_test=False):
+def offset(address, size, *, clp_test=False, model_data=False):
     normal = BASE <= address and address + size <= END
     clp = clp_test and CLP_BASE <= address and address + size <= CLP_END
-    if size <= 0 or not (normal or clp):
+    model = model_data and CLP_BASE <= address and address + size <= MODEL_END
+    if size <= 0 or not (normal or clp or model):
         raise ValueError(f'Read outside reserved DDR: 0x{address:x}, {size} bytes')
     return address - BASE
 
@@ -183,7 +185,7 @@ def link_lock():
 
 
 class Reader:
-    def __init__(self, command, cwd, timeout, log, *, clp_test=False):
+    def __init__(self, command, cwd, timeout, log, *, clp_test=False, model_data=False):
         command = shutil.which(command)
         if command is None:
             raise FileNotFoundError('pbload executable not found; use --pbload /absolute/path/pbload')
@@ -191,9 +193,10 @@ class Reader:
         self.cwd, self.timeout, self.log = cwd, timeout, log
         self.number = 0
         self.clp_test = clp_test
+        self.model_data = model_data
 
     def read(self, address, size, label):
-        relative = offset(address, size, clp_test=self.clp_test)
+        relative = offset(address, size, clp_test=self.clp_test, model_data=self.model_data)
         self.number += 1
         prefix = f'{self.number:03d}-{label}'
         destination = self.log.directory / (prefix + '.bin')
@@ -341,7 +344,8 @@ def main(argv=None):
             report['warnings'].append(f'Serial enumeration failed: {exc}')
         report['firmware'], symbols, expected_prefix = firmware_info(ROOT, args.firmware)
         clp_test = args.firmware == 'clp-selftest'
-        reader = Reader(args.pbload, args.tool_cwd.resolve(), args.tool_timeout, log, clp_test=clp_test)
+        reader = Reader(args.pbload, args.tool_cwd.resolve(), args.tool_timeout, log, clp_test=clp_test,
+                        model_data=args.firmware == 'demo-pcie')
         report['pbload'] = reader.command
         with link_lock():
             report['snapshots'] = collect(reader, symbols, expected_prefix, args.samples, args.interval, log)

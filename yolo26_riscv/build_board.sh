@@ -32,9 +32,9 @@ model_weights_end:
 EOF
 "$tc-gcc" "${flags[@]}" -c "$out/weights.S" -o "$out/weights.o"
 sources=(matmul.c conv2d.c activation.c basic.c basic_rvv.c scalar_model.c
-         rvv_model_ops.c amu.c accel_model.c board/uart.c board/model_io.c board/main.c board/selftest.c board/sync_selftest.c board/diagnostics.c
+         rvv_model_ops.c amu.c accel_model.c board/uart.c board/model_io.c board/main.c board/clp_selftest.c board/diagnostics.c
          "$root/model/model_generated.c")
-"$tc-gcc" "${flags[@]}" -include board/coherent_rvv.h -nostdlib -nostartfiles \
+"$tc-gcc" "${flags[@]}" -DCLP_PROBE_EMBEDDED=1 -include board/coherent_rvv.h -nostdlib -nostartfiles \
     -Wl,--gc-sections -Wl,-Map="$out/demo-pcie.map" -T board/ddr.ld \
     "$out/start.o" "$out/weights.o" "${sources[@]}" board/pcie.c -o "$out/demo-pcie.elf"
 "$tc-objdump" -d "$out/demo-pcie.elf" > "$out/demo-pcie.disasm"
@@ -50,16 +50,9 @@ fi
 sha256sum "$out/demo-pcie.elf" "$out/demo-pcie.bin" "$root/model/constants.bin" "$root/model/model_generated.c" \
     "$root/model/model_generated.h" > "$out/sha256.txt"
 "$tc-gcc" --version > "$out/compiler.txt"
-"$tc-gcc" "${flags[@]}" -DBOARD_SELFTEST_STANDALONE=1 -nostdlib -nostartfiles \
-    -Wl,--gc-sections -T board/ddr.ld "$out/start.o" board/selftest.c board/sync_selftest.c board/uart.c board/diagnostics.c amu.c \
-    -o "$out/selftest.elf"
-"$tc-objdump" -d "$out/selftest.elf" > "$out/selftest.disasm"
-# The selftest intentionally uses only e16/e32 transfers. e64 would indicate
-# an unwrapped compiler-generated copy, as previously seen in shapes setup.
-if grep -Eq '\b(vle64\.v|vse64\.v)\b' "$out/selftest.disasm"; then
-    echo 'Unexpected compiler-generated e64 RVV copy in selftest ELF' >&2; exit 1
+# The model contains the CLP startup test. Do not regenerate the historical
+# cached-RVV selftest; independent CLP builds use build_clp_selftest.sh.
+if (( $(wc -c < "$out/demo-pcie.bin") > 12582912 )); then
+    echo 'Unexpected model BIN size; check CLP NOLOAD layout' >&2; exit 1
 fi
-sha256sum "$out/selftest.elf" >> "$out/sha256.txt"
-"$tc-objcopy" -O binary "$out/selftest.elf" "$out/selftest.bin"
-sha256sum "$out/selftest.bin" >> "$out/sha256.txt"
-printf 'PCIe firmware and debug-UART selftest compiled; physical board verification is still required.\n'
+printf 'CLP model firmware compiled; physical board inference still requires validation.\n'

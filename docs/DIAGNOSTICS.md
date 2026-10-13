@@ -50,11 +50,11 @@ AMU 等待前记录阶段，返回后记录原始 `xmfflags`，不将所有非�
 
 `tensor`（UART 的 `buffer`）是64字节块编号：0–7为A、8–15为B、16–23为AMU输出C、24–31为RVV输出D、32–63为额外保护区；`element` 是块内32位字下标。每个缓冲区首块为保护行，随后才是有效行。失败全局DDR地址为 `0xF0000000 + tensor×64 + element×4`，RVV别名为 `0x10000000 + tensor×64 + element×4`。
 
-CLP 失败 `error=4`，`detail=-200-tensor`，`observed/expected` 是原始32位字。A/B 每字包含低/高两个FP16；K为奇数时末字高半字为保护值 `3555`，其他未使用半字也必须保留。C/D 行内前N字有效，其余为 `c49a4000`。`board_test_stage`：1全区写读检查，4依赖及复用，3全部通过；`board_error=0/4/3/0x100` 分别表示通过/数据不符/AMU初始化失败/trap。成功/失败均停车于 `clp_probe_halt`，只需一个最终临时硬件断点，见README。
+CLP失败 `error=4`，`detail=-200-tensor`，`observed/expected` 是原始32位字。A/B每字含低/高两个FP16，奇数K的末字高半字保护值为 `3555`；C/D行内前N字有效，其余为 `c49a4000`。`board_test_stage`：1全区写读检查，4依赖及复用，3通过；错误码0/4/3/0x100表示通过/数据不符/AMU初始化失败/trap。独立固件结束后停车于 `clp_probe_halt`；模型启动复用自测，通过后进入READY，失败保留诊断并发布PCIe ERROR。
 
-旧 `selftest` 保留原尺寸和错误码：32 轮 `(3,5,17)/(1,1,1)/(2,3,32)/(3,5,31)`，`detail=-100/-101/-102/-103` 对应 A/B/AMU/RVV 输出；stage 1 RVV 缓存、2 AMU、4 复用、3 通过。它和模型启动自测尚未修正缓存 RVV 的错误交接，不能与新 CLP 固件混用符号或停点。
+旧 `selftest` 保留原尺寸及 `detail=-100/-101/-102/-103`，仅供历史缓存定位，未修正原交接问题。正式模型已经改用CLP自测；各固件必须使用自己的ELF，不能混用固定地址停点。
 
-实板保持 DCache 开启；CLP 最小测试通过后还需模型迁移、单图及连续帧验收，见 [验收状态](VALIDATION.md)。
+实板保持DCache开启，单图和连续帧验收见 [验收状态](VALIDATION.md)。CLP模型的数据为全局高地址，调试RVV时使用对应CLP别名；读取PCIe诊断仍使用低地址符号。
 
 ## UART 接口核对来源
 

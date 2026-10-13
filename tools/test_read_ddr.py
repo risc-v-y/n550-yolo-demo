@@ -16,6 +16,13 @@ import read_ddr
 
 
 class FormatTests(unittest.TestCase):
+    def test_model_ddr_mapping_and_bounds(self):
+        offset=read_ddr.diag.offset
+        self.assertEqual(offset(0xf0000000,0x1000000,model_data=True),0x70000000)
+        self.assertEqual(offset(0xf0fffffc,4,model_data=True),0x70fffffc)
+        for address,size in ((0xf1000000,4),(0xf0fffffc,8),(0x10000000,4)):
+            with self.assertRaises(ValueError):
+                offset(address,size,model_data=True)
     def test_clp_mapping_and_exclusive_bounds(self):
         offset = read_ddr.diag.offset
         self.assertEqual(offset(0xf0000000, 4096, clp_test=True), 0x70000000)
@@ -135,6 +142,11 @@ Path(destination).write_bytes(data[:-1] if config['mode'] == 'short' else data)
         self.assertEqual(self.report()['pcie_offset'], '0x70000000')
         self.assertTrue(self.events()[0][1].endswith(':0x70000000:0x10'))
         self.assertEqual((self.out / '001-ddr.bin').read_bytes(), self.data)
+
+    def test_model_data_read_beyond_small_probe_uses_correct_offset(self):
+        self.assertEqual(self.run_read('--model-data',address='0xf0800000'),0)
+        self.assertEqual(self.report()['pcie_offset'],'0x70800000')
+        self.assertTrue(self.events()[0][1].endswith(':0x70800000:0x10'))
 
     def test_clp_read_without_region_selection_never_calls_tool(self):
         with self.assertRaises(SystemExit) as stopped:

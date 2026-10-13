@@ -5,9 +5,13 @@
 #include "diagnostics.h"
 #include "uart.h"
 #include "../amu.h"
+#include "memory.h"
 #include <xewmatrix_intrinsic.h>
 
-#ifndef CLP_PROBE_SIM
+#ifdef CLP_PROBE_EMBEDDED
+#define CLP_RVV_BASE BOARD_CLP_RVV_BASE
+#define CLP_DDR_BASE BOARD_CLP_DDR_BASE
+#elif !defined(CLP_PROBE_SIM)
 #define CLP_RVV_BASE ((uintptr_t)0x10000000u)
 #define CLP_DDR_BASE ((uintptr_t)0xf0000000u)
 #else
@@ -24,7 +28,11 @@ _Static_assert(D+BLOCK_BYTES<=REGION_BYTES,"CLP buffers fit reserved DDR");
 #define GUARD 0x35553555u
 #define OUTPUT_GUARD 0xc49a4000u
 volatile uint32_t board_test_stage;
+#ifndef CLP_PROBE_EMBEDDED
 volatile uintptr_t board_error,board_trap_cause,board_trap_pc,board_trap_value;
+#endif
+static void message(const char *text) { (void)board_uart_text(text); }
+static void hex(uint64_t value) { (void)board_uart_hex(value); }
 
 static void clp_fence(void) {
     /* Cover both memory and I/O PMA classifications for this platform probe.
@@ -160,6 +168,26 @@ static int run_clp(void) {
     board_clean((const void *)&board_test_stage,sizeof(board_test_stage));
     return 0;
 }
+/* Reused by model startup; caller initializes AMU and owns stage changes. */
+int board_clp_selftest(void) {
+    message("CLP SHAPES (M,N,K)=(3,5,17)/(1,1,1)/(2,3,32)/(3,5,31)\n");
+    if(run_clp()) {
+        message("CLP TEST FAIL stage="); hex(board_test_stage);
+        message(" round="); hex(board_diag.frame);
+        message(" buffer="); hex(board_diag.tensor);
+        message(" element="); hex(board_diag.element);
+        message(" got="); hex(board_diag.observed);
+        message(" expected="); hex(board_diag.expected);
+        message(" M="); (void)board_uart_u64(shapes[board_diag.frame%4][0]);
+        message(" N="); (void)board_uart_u64(shapes[board_diag.frame%4][1]);
+        message(" K="); (void)board_uart_u64(shapes[board_diag.frame%4][2]);
+        message("\n");
+        return (int)(int64_t)board_diag.detail;
+    }
+    message("CLP RVV->AMU->RVV REUSE 32 ROUNDS PASS\n");
+    return 0;
+}
+#ifndef CLP_PROBE_EMBEDDED
 /* One stable symbolic final stop, after PASS/FAIL metadata is committed.
  * No intermediate breakpoints or UART reaction timing are necessary. */
 __attribute__((noinline,noreturn)) void clp_probe_halt(void) {
@@ -183,8 +211,6 @@ __attribute__((noreturn)) void platform_trap(uintptr_t cause,uintptr_t pc,uintpt
     board_diag_trap(cause,pc,value,registers);
     platform_exit(0x100);
 }
-static void message(const char *text) { (void)board_uart_text(text); }
-static void hex(uint64_t value) { (void)board_uart_hex(value); }
 int main(void) {
     board_diag_init();
     board_diag_stage(DIAG_UART);
@@ -194,24 +220,12 @@ int main(void) {
 #else
     message("CLP TEST RVV=10000000 AMU=f0000000 bytes=4096 rounds=32\n");
 #endif
-    message("CLP SHAPES (M,N,K)=(3,5,17)/(1,1,1)/(2,3,32)/(3,5,31)\n");
     board_diag_stage(DIAG_AMU_INIT);
     int status=amu_init();
     if(status) { board_diag_error(3,status); message("CLP AMU INIT FAIL\n"); platform_exit(3); }
     board_diag_stage(DIAG_SELFTEST);
-    if(run_clp()) {
-        message("CLP TEST FAIL stage="); hex(board_test_stage);
-        message(" round="); hex(board_diag.frame);
-        message(" buffer="); hex(board_diag.tensor);
-        message(" element="); hex(board_diag.element);
-        message(" got="); hex(board_diag.observed);
-        message(" expected="); hex(board_diag.expected);
-        message(" M="); (void)board_uart_u64(shapes[board_diag.frame%4][0]);
-        message(" N="); (void)board_uart_u64(shapes[board_diag.frame%4][1]);
-        message(" K="); (void)board_uart_u64(shapes[board_diag.frame%4][2]);
-        message("\n"); platform_exit(4);
-    }
+    if(board_clp_selftest()) platform_exit(4);
     board_diag_stage(DIAG_DONE);
-    message("CLP RVV->AMU->RVV REUSE 32 ROUNDS PASS\n");
     platform_exit(0);
 }
+#endif

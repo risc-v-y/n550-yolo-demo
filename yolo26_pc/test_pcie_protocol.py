@@ -20,9 +20,12 @@ class PCIeTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='pcie-test-')
         self.root=Path(self.temp.name)
         self.ddr=self.root/'ddr.bin'
+        clp=self._testMethodName=='test_clp_high_ddr_round_trip_and_short_tool_names'
         with self.ddr.open('wb') as f:
-            f.truncate(32*1024*1024)
-        self.process=subprocess.Popen([BINARY,str(self.ddr)],stdout=subprocess.PIPE)
+            f.truncate(0x71000000 if clp else 32*1024*1024)
+        env=dict(os.environ)
+        if clp: env['YOLO_TEST_CLP']='1'
+        self.process=subprocess.Popen([BINARY,str(self.ddr)],stdout=subprocess.PIPE,env=env)
         if not select.select([self.process.stdout],[],[],5)[0] or self.process.stdout.readline()!=b'READY\n':
             raise RuntimeError('Native PCIe fixture failed to start')
         for command in ('pbcopy','pbload'):
@@ -36,6 +39,7 @@ if (root/'fail').exists(): print('injected failure',file=sys.stderr); sys.exit(7
 assert sys.argv[1]=='-d'
 args=sys.argv[2].split(':')
 file=Path(args[0]); offset=int(args[1],0)
+assert not file.is_absolute() and len(file.name)<=13
 with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
     ddr.seek(offset)
     if Path(sys.argv[0]).name=='pbcopy':
@@ -89,6 +93,16 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         time.sleep(.03)
         self.assertEqual(struct.unpack('<I',self.read(0x80a20000,4))[0],3)
         self.assertEqual(STATUS.unpack(checked(self.read(MAILBOX+192,64)))[6],backend.sequence)
+
+    def test_clp_high_ddr_round_trip_and_short_tool_names(self):
+        backend=self.connect()
+        self.assertEqual(backend.input_address,0xf0000000)
+        self.assertEqual(backend.output_address,0xf0200000)
+        self.assertEqual(struct.unpack_from('<f',backend.infer_bytes(self.tensor(4)))[0],4)
+        self.assertEqual(struct.unpack_from('<f',self.read(0xf0000000,4))[0],4)
+        for address,size in ((0xf1000000,4),(0xf0ffffff,2),(0x10000000,4),(BASE,0)):
+            with self.assertRaises(ValueError):
+                backend.link._range(address,size)
 
     def test_bad_input_crc_never_runs_model(self):
         backend=self.connect()

@@ -2,17 +2,40 @@
 #include "../amu.h"
 #include "model_generated.h"
 #include "cache.h"
+#include "memory.h"
 #include "uart.h"
 #include "model_io.h"
 #include "diagnostics.h"
 #include "pcie.h"
 extern const unsigned char model_weights[], model_weights_end[];
-static unsigned char arena[MODEL_ARENA_BYTES] __attribute__((aligned(64)));
+static unsigned char arena[MODEL_ARENA_BYTES] BOARD_CLP_DATA;
 /* Inspect these symbols with the team's debugger when UART cannot start. */
 volatile uintptr_t board_error, board_trap_cause, board_trap_pc, board_trap_value;
 volatile uint32_t board_current_node;
-int board_selftest(void);
+int board_clp_selftest(void);
 static int startup_failure;
+__attribute__((noreturn)) void platform_exit(uintptr_t code);
+static void initialize_clp(void) {
+    size_t bytes=(size_t)(__clp_end-__clp_start);
+    if((uintptr_t)__clp_start!=BOARD_CLP_DDR_BASE || bytes>BOARD_CLP_BYTES || bytes%64)
+        platform_exit(2);
+    board_uart_text("[YOLO] CLP data_ddr="); board_uart_hex((uintptr_t)__clp_start);
+    board_uart_text(" rvv="); board_uart_hex(BOARD_CLP_RVV_BASE);
+    board_uart_text(" bytes="); board_uart_u64(bytes); board_uart_text("\n");
+    /* Relinquish global cache lines before uncached initialization, then
+     * invalidate their aliases before any scalar/model/PCIe access. */
+    board_prepare_write(__clp_start,bytes);
+    uintptr_t at=(uintptr_t)board_rvv_address(__clp_start);
+    size_t words=bytes/4;
+    while(words) {
+        uintptr_t vl;
+        __asm__ volatile("vsetvli %0,%2,e32,m1,ta,ma\n"
+                         "vmv.v.i v8,0\nvse32.v v8,(%1)"
+                         : "=&r"(vl) : "r"(at),"r"(words) : "v8","memory");
+        at+=vl*4; words-=vl;
+    }
+    board_finish_write(__clp_start,bytes);
+}
 __attribute__((noreturn)) void platform_exit(uintptr_t code) {
     board_error=code;
     if(board_diag.stage!=DIAG_TRAP) board_diag_error((unsigned)code,0);
@@ -98,12 +121,13 @@ int main(void) {
     if((size_t)(model_weights_end-model_weights)!=MODEL_CONSTANT_BYTES) platform_exit(1);
     if(model_tensors[0].dtype!=1 || board_model_input_size()!=3*416*416*4 ||
        board_model_output_size()!=7200) platform_exit(2);
+    initialize_clp();
     board_diag_stage(DIAG_AMU_INIT);
     status=amu_init();
     if(status) { startup_failure=1; board_error=3; board_diag_error(3,status); }
     else {
         board_diag_stage(DIAG_SELFTEST);
-        status=board_selftest();
+        status=board_clp_selftest();
         if(status) { startup_failure=1; board_error=4; board_diag_error(4,status); }
     }
     if(!startup_failure) {

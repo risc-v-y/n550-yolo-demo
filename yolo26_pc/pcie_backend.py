@@ -22,7 +22,7 @@ TOOL_FAILURE=re.compile(r'(?i)(?:\b(?:failed|failure)\b|\bfail!|\[x\]\s*ERROR|EX
 MAGIC=0x50363259
 INPUT_BYTES=3*416*416*4
 OUTPUT_BYTES=7200
-BOOT,READY,BUSY,DONE,ERROR=range(5)
+BOOT,READY,BUSY,DONE,ERROR,NODE=range(6)
 INFO=struct.Struct('<4I3Q6I')
 STATUS=struct.Struct('<4I2Q3Ii4I')
 STATUS_KEYS='magic version state error session frame sequence output_bytes output_crc detail generation reserved reserved2 crc'.split()
@@ -124,7 +124,7 @@ class PBTools:
 class PCIeBackend:
     def __init__(self, pbcopy='pbcopy', pbload='pbload', stop=None, infer_timeout=900,
                  progress=None, diagnostic=None, transport=None, tool_timeout=30,
-                 poll_interval=.1, check_finite=False, trace=False):
+                 poll_interval=.1, check_finite=False, trace=False, capture=False):
         if infer_timeout<=0 or tool_timeout<=0 or poll_interval<=0:
             raise ValueError('PCIe timeouts and polling interval must be positive')
         self.stop=stop or threading.Event()
@@ -135,7 +135,7 @@ class PCIeBackend:
         self.link=transport or PBTools(pbcopy,pbload,self.stop,tool_timeout,self.diagnostic)
         self.session=secrets.randbits(64) or 1
         self.frame=0
-        self.options=(4 if check_finite else 0) | (2 if trace else 0)
+        self.options=(4 if check_finite else 0) | (2 if trace else 0) | (8 if capture else 0)
         self.failed=False
         self.last_timing={}
         self.last_diagnostic=None
@@ -146,6 +146,10 @@ class PCIeBackend:
             if values[:3]!=(MAGIC,1,256) or values[7:11]!=(INPUT_BYTES,OUTPUT_BYTES,816,334):
                 raise ValueError('Incompatible PCIe firmware; load firmware/demo-pcie.bin')
             self.input_address,self.output_address,self.diag_address=values[4:7]
+            self.capture_address=values[11] if values[3]&1 else 0
+            if capture and (not self.capture_address or self.capture_address%64 or
+                            not BASE<=self.capture_address<=MAILBOX-512):
+                raise ValueError('Firmware lacks node capture; load the updated demo-pcie.bin')
             for address,size in ((self.input_address,INPUT_BYTES),(self.output_address,OUTPUT_BYTES)):
                 if address%64 or not (BASE<=address and address+size<=MAILBOX or
                                      MODEL_DDR_BASE<=address and address+size<=MODEL_DDR_END):
@@ -154,12 +158,15 @@ class PCIeBackend:
                 raise ValueError('Firmware reports diagnostics outside reserved normal DDR')
             self.info={'input_address':self.input_address,'output_address':self.output_address,
                        'diagnostic_address':self.diag_address,'input_bytes':INPUT_BYTES,
-                       'output_bytes':OUTPUT_BYTES,'nodes':334,'mailbox':MAILBOX,'version':1}
+                       'output_bytes':OUTPUT_BYTES,'nodes':334,'mailbox':MAILBOX,'version':1,
+                       'capture_address':self.capture_address}
             while True:
                 state=self._status(deadline)
+                if state['state']==NODE:
+                    raise RuntimeError('Board capture is paused; run node_capture.py --recover-paused')
                 doorbell=struct.unpack_from('<I',self.link.read(MAILBOX+128,64,deadline))[0]
                 if state['state'] not in (BOOT,BUSY) and doorbell==state['sequence']:
-                    if state['state']==ERROR and state['error'] not in range(0x40,0x44):
+                    if state['state']==ERROR and state['error'] not in range(0x40,0x45):
                         self._snapshot(deadline)
                         raise RuntimeError(f'Board startup/trap failure: {state}')
                     break
@@ -194,7 +201,7 @@ class PCIeBackend:
             except ValueError:
                 self._pause(deadline)  # May have read during a board publication.
                 continue
-            if state['magic']!=MAGIC or state['version']!=1 or state['state'] not in range(5):
+            if state['magic']!=MAGIC or state['version']!=1 or state['state'] not in range(6):
                 raise ValueError('Invalid PCIe status; firmware may have restarted')
             if state!=self.last_status:
                 self.diagnostic({'type':'pcie_status','message':f"PCIe state={state['state']} frame={state['frame']}",
@@ -223,7 +230,9 @@ class PCIeBackend:
     def _wait(self,target,deadline):
         while True:
             state=self._status(deadline)
-            if state['state']==ERROR:
+            # OPEN may follow a cancelled/failed session. Its old ERROR can
+            # remain visible until the new committed command is consumed.
+            if state['state']==ERROR and (state['sequence']==self.sequence or state['error'] not in range(0x40,0x45)):
                 self._snapshot(deadline)
                 raise RuntimeError(f'Board PCIe error: {state}; diagnostic={self.last_diagnostic}')
             if state['sequence']==self.sequence:

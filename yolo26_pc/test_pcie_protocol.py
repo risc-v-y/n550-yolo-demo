@@ -11,6 +11,7 @@ import time
 import unittest
 import zlib
 from pcie_backend import BASE,MAILBOX,PBTools,PCIeBackend,STATUS,checked,INPUT_BYTES,OUTPUT_BYTES
+from node_capture import wait_capture,read_node,read_tensor,recover_paused
 
 BINARY=sys.argv.pop(1)
 
@@ -111,6 +112,31 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
             backend.infer_bytes(self.tensor())
         self.assertEqual(backend.last_status['error'],0x42)
         self.assertEqual(struct.unpack('<I',self.read(0x80a20000,4))[0],0)
+
+    def test_open_waits_for_previous_error_snapshot(self):
+        backend=self.connect()
+        (self.root/'badinput').touch()
+        with self.assertRaises(RuntimeError):
+            backend.infer_bytes(self.tensor())
+        stale=self.read(MAILBOX+192,64)
+        backend.close(); self.backend=None
+        (self.root/'badinput').unlink()
+        transport=PBTools(str(self.root/'pbcopy'),str(self.root/'pbload'))
+        self.tools=transport
+        original_read,original_write=transport.read,transport.write
+        committed=[False]; injected=[False]
+        def write(address,data,deadline):
+            original_write(address,data,deadline)
+            if address==MAILBOX+128: committed[0]=True
+        def read(address,size,deadline):
+            if address==MAILBOX+192 and committed[0] and not injected[0]:
+                injected[0]=True
+                return stale
+            return original_read(address,size,deadline)
+        transport.read=read; transport.write=write
+        backend=self.connect(transport=transport)
+        self.assertTrue(injected[0])
+        self.assertEqual(struct.unpack_from('<f',backend.infer_bytes(self.tensor(4)))[0],4)
 
     def test_corrupt_result_rejected(self):
         backend=self.connect()
@@ -215,6 +241,62 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         with self.assertRaisesRegex(RuntimeError,'Another host'):
             PBTools(str(self.root/'pbcopy'),str(self.root/'pbload'))
 
+    def begin_capture(self):
+        backend=self.connect(capture=True,check_finite=True,infer_timeout=5)
+        backend.frame=1
+        data=self.tensor(3)
+        backend.link.write(backend.input_address,data,time.monotonic()+5)
+        backend._submit(2,len(data),zlib.crc32(data),time.monotonic()+5)
+        state=wait_capture(backend,time.monotonic()+5)
+        return backend,state,read_node(backend,state,time.monotonic()+5)
+
+    def test_capture_holds_full_data_until_ack_and_finishes(self):
+        backend,state,node=self.begin_capture()
+        self.assertEqual(node['node'],0)
+        output=next(d for d in node['tensors'] if d['direction']=='output')
+        data=read_tensor(backend,output,time.monotonic()+5)
+        time.sleep(.03)
+        self.assertEqual(backend._status(time.monotonic()+5),state)
+        self.assertEqual(read_tensor(backend,output,time.monotonic()+5),data)
+        backend._submit(3,0,node['token'],time.monotonic()+5)
+        state=wait_capture(backend,time.monotonic()+5)
+        node=read_node(backend,state,time.monotonic()+5)
+        self.assertEqual(node['node'],1)
+        backend._submit(3,0,node['token'],time.monotonic()+5)
+        self.assertEqual(wait_capture(backend,time.monotonic()+5)['state'],3)
+
+    def test_capture_wrong_token_does_not_resume_model(self):
+        backend,state,node=self.begin_capture()
+        backend._submit(3,0,node['token']+1,time.monotonic()+5)
+        with self.assertRaisesRegex(RuntimeError,'Board capture error'):
+            wait_capture(backend,time.monotonic()+5)
+        self.assertEqual(backend.last_status['error'],0x43)
+        self.assertEqual(backend.last_diagnostic['error'],0x40)
+
+    def test_capture_abort_and_ordinary_reconnect(self):
+        backend,state,node=self.begin_capture()
+        backend._submit(4,0,node['token'],time.monotonic()+5)
+        with self.assertRaisesRegex(RuntimeError,'Board capture error'):
+            wait_capture(backend,time.monotonic()+5)
+        self.assertEqual(backend.last_status['error'],0x44)
+        backend.close(); self.backend=None
+        backend=self.connect()
+        self.assertEqual(struct.unpack_from('<f',backend.infer_bytes(self.tensor(4)))[0],4)
+
+    def test_capture_rejects_new_open_while_paused(self):
+        backend,state,node=self.begin_capture()
+        backend._submit(1,0,node['token'],time.monotonic()+5)
+        with self.assertRaisesRegex(RuntimeError,'Board capture error'):
+            wait_capture(backend,time.monotonic()+5)
+        self.assertEqual(backend.last_diagnostic['error'],0x40)
+
+    def test_recover_paused_capture_after_host_disappears(self):
+        backend,state,node=self.begin_capture()
+        backend.close(); self.backend=None
+        self.assertTrue(recover_paused(str(self.root/'pbcopy'),str(self.root/'pbload'),5,lambda event:None))
+        backend=self.connect()
+        self.assertEqual(struct.unpack_from('<f',backend.infer_bytes(self.tensor(2)))[0],2)
+
     def test_video_flow(self):
         # Exercise real CLI, transport, preprocess/postprocess and video recorder.
         try:
@@ -250,7 +332,7 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
 
     def test_unsupported_option_rejected(self):
         backend=self.connect()
-        backend.options=8
+        backend.options=16
         with self.assertRaisesRegex(RuntimeError,'Board PCIe error'):
             backend.infer_bytes(self.tensor())
         self.assertEqual(backend.last_status['error'],0x40)

@@ -4,7 +4,7 @@
 
 仓库提供源码、预编译固件、样例和数值基准。本机检查不代表实板通过；加载、缓存可见性、模型数值及吞吐仍须现场验收。以下命令均在 host 的仓库根目录执行。
 
-**当前交付为 CLP 模型版：工作区与临时缓冲区迁至已批准的16 MiB DDR，RVV 通过 CLP 别名访问模型数据，AMU 使用全局地址。bus/zidane 的 QEMU 完整推理与原 FP16 基准逐字节一致；完整模型仍待实板验收。**
+**当前交付为 CLP 模型版，增加自动逐节点采集。实板 bus 已完成334节点，两次结果逐字节一致，但与QEMU基准存在差异，原因尚未确定。先按第3.1节自动定位，再继续精度验收。**
 
 ## 1. 准备与查看调试串口
 
@@ -94,6 +94,30 @@ python3 yolo26_pc/pcie_prepared.py --sample zidane --pbcopy /rv/fpga/bin/pbcopy 
 
 首次验收保留上述逐节点打印和中间值检查。旧版 `5af2816` 在节点305存在常量输出检查误报，已修正；更新后须重新加载本包的 `demo-pcie.bin`，仅拉取源码不会替换板上程序。原因见 [诊断说明](docs/DIAGNOSTICS.md)。
 
+### 3.1 自动采集并在 host 上比较
+
+仍只需 Python 3.10 标准库及已有PCIe工具，无需GDB断点。停止其他PCIe控制程序，让CPU保持运行；minicom可继续查看日志。
+
+```bash
+# 更新源码、采集基准及固件；fetch不会更新工作区，须执行pull
+git pull --ff-only
+
+# 重新加载新增采集接口的固件，等待UART出现READY
+bash tools/load_board.sh --reset-dir /rv/fpga/bin --pbcopy /rv/fpga/bin/pbcopy
+
+# 自动采集bus全部节点、逐张量比较、绘框，最后再跑一次普通模式检查采集影响
+python3 yolo26_pc/node_capture.py --sample bus \
+  --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
+```
+
+板端每完成一个节点自动暂停；host读取并核对CRC、比较完整张量，再自动通知板端继续。334节点全部处理完才结束，首个差异节点还会读取实际输入并尝试数值重算。无需人工赶UART或反复设置断点。采集增加CRC扫描、读回和握手开销，耗时不代表正常推理速度；最后的普通模式结果用于检查采集是否改变结果。
+
+结果目录由终端打印，默认 `yolo26_pc/outputs/node-capture/<时间>/`。**只回传其中的 `return.zip`（不超过1 MiB）**；包含汇总、全部节点指标、首个差异的样本/重算结果及绘框SVG。完整张量、实际输入、参考和工具日志全部留在host，不需要上传整个目录。`completed`表示采集完成，不能当作数值精度通过；规则重算匹配也不能独立证明FPGA采用该舍入规则。
+
+`reference/nodes/` 为一次性下载的bus/zidane无损QEMU基准，合计约136 MiB，分片不超过24 MiB，清单绑定冻结模型和输入哈希。每张图采集的完整输出约90 MiB。另一张图把 `--sample bus` 改为 `--sample zidane`。每节点默认超时300秒、单次工具30秒，可用 `--node-timeout`、`--tool-timeout` 调整。
+
+Ctrl-C或采集失败会尽力发送ABORT并生成已有结果的小包。进程被强杀导致板端停在 `state=5` 时，在同一命令后加 `--recover-paused`，自动终止旧采集并重新开始；无须重新加载固件。若核心被GDB暂停或PCIe工具不可用，先恢复现场通路。详细字段与限制见 [诊断说明](docs/DIAGNOSTICS.md)。
+
 ## 4. 摄像头或视频演示
 
 此步需要 host 已有兼容的 NumPy/OpenCV 和图形桌面，版本见 `yolo26_pc/requirements-board.txt`。缺失时由部署方准备匹配 host 的离线依赖，固定图片步骤不受影响。
@@ -118,7 +142,7 @@ python3 yolo26_pc/live_demo.py --backend pcie \
 
 UART 默认打印启动配置、AMU 初始化、自测、READY、每帧开始/结束、每 32 个节点的进度和错误。给 Python 命令加 `--board-trace`，打印每个节点开始/结束、形状及周期；`--check-intermediates` 增加中间 FP32 NaN/Inf 检查。详细打印会增加耗时。
 
-host 重复打印 `pbload: exit 0` 只表示读回工具正常退出，不表示模型完成。PCIe `state=1/2/3/4` 分别为READY/BUSY/DONE/ERROR；GDB若停住CPU，须先执行 `continue` 才能处理请求。
+host 重复打印 `pbload: exit 0` 只表示读回工具正常退出，不表示模型完成。PCIe `state=1/2/3/4/5` 分别为READY/BUSY/DONE/ERROR/节点采集暂停；GDB若停住CPU，须先执行 `continue` 才能处理请求。
 
 UART 忙或发送超时后关闭文字输出，PCIe 模型继续运行；总线异常不属于可继续的超时。host 核对长度、CRC、会话和帧号，异常保存日志和 DDR 诊断。`--infer-timeout 900` 限制一帧，`--tool-timeout 30` 限制单次工具调用；退出或超时不复位板卡，也不能中断已开始的推理。
 
@@ -213,6 +237,6 @@ UPLOAD_DIR="$(mktemp -d)"
 
 CLP 独立固件的构建命令为 `bash yolo26_riscv/build_clp_selftest.sh`，输出在 `yolo26_riscv/build/clp-selftest/`；QEMU 回归命令为 `python3 yolo26_riscv/board/tests/test_clp.py`。均在配置现有 ESWIN 工具链/QEMU 的 Linux/WSL 构建机执行；QEMU 使用统一 RAM，只检查运算与故障报告，不验证真实 CLP 路由。
 
-完整模型 QEMU 回归：`python3 yolo26_riscv/board/tests/test_model.py`。它执行实际启动、自测、PCIe 邮箱和两帧334节点，保存原图、候选框、绘框图和差异报告；使用统一RAM模拟地址，不证明实板缓存一致性。
+完整模型 QEMU 回归：`python3 yolo26_riscv/board/tests/test_model.py`；加 `--capture` 验证节点快照/握手并逐字节核对两帧全部输出。它执行实际启动、自测、PCIe 邮箱和两帧334节点，保存原图、候选框、绘框图和差异报告；使用统一RAM模拟地址，不证明实板缓存一致性。
 
 街景视频两帧的开发验证也已完成，每帧11个框。复跑时，先在已有NumPy/OpenCV环境运行 `python tools/check_clp_video.py`，记录打印的清单路径；再在Linux/WSL运行 `python3 yolo26_riscv/board/tests/test_model.py --manifest 清单路径`。结束后在图像环境运行 `python tools/check_clp_video.py --render 本次结果目录`，生成原帧/检测PNG、`raw.mp4`、`demo.mp4`。视频将两个实际检测结果各停留2秒，播放帧率不代表推理速度；真实连续演示使用第4节的live_demo入口。

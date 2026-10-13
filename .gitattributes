@@ -9,6 +9,7 @@
 *.jpg binary
 *.png binary
 *.mp4 binary
+*.gz.part* binary
 # Frozen generated assets retain byte-identical hashes across clones.
 /model/model_generated.c -text whitespace=cr-at-eol
 /model/model_generated.h -text whitespace=cr-at-eol

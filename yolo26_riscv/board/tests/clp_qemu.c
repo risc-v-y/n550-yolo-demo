@@ -4,7 +4,7 @@ static uint32_t registers[64];
 static uintptr_t semihost(uintptr_t operation,uintptr_t argument) {
     register uintptr_t a0 __asm__("a0")=operation;
     register uintptr_t a1 __asm__("a1")=argument;
-    __asm__ volatile(".option push\n.option norvc\n"
+    __asm__ volatile(".option push\n.option norvc\n.balign 16\n"
                      "slli zero,zero,31\nebreak\nsrai zero,zero,7\n.option pop"
                      : "+r"(a0) : "r"(a1) : "memory");
     return a0;

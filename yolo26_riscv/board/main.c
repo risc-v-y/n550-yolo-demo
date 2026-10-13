@@ -81,6 +81,7 @@ int board_model_run(void) {
             const ModelTensor *t=model_tensors+node->in[i];
             board_clean((t->constant ? model_weights : arena)+t->offset,t->bytes);
         }
+        board_pcie_node_begin((uint32_t)step,node,model_tensors,arena,model_weights);
         board_diag_phase(PHASE_COMPUTE);
         int status=accel_model_node(node,model_tensors,arena,model_weights);
         if(status) { board_diag_error(0x31,status); return -2; }
@@ -104,6 +105,7 @@ int board_model_run(void) {
         board_diag.phase=PHASE_NODE_END;
         board_diag_commit();
         if(board_diag.options&DIAG_TRACE) board_diag_event();
+        if(board_pcie_node_end()) return -2;
     }
     board_diag_stage(DIAG_DONE);
     return 0;

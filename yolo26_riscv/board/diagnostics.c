@@ -110,6 +110,7 @@ void board_diag_node(uint32_t id,const ModelNode *node,const ModelTensor *tensor
         for(unsigned j=0;j<7;++j) board_diag.tensors[slot][j]=0;
         if(!valid) { board_diag.tensors[slot][0]=UINT64_MAX; continue; }
         int index=slot<4 ? node->in[slot] : node->out[slot-4];
+        if(index<0) { board_diag.tensors[slot][0]=UINT64_MAX; continue; }
         const ModelTensor *t=tensors+index;
         board_diag.tensors[slot][0]=(uint64_t)index;
         board_diag.tensors[slot][1]=t->dtype;

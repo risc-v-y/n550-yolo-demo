@@ -23,6 +23,14 @@ int board_model_run(void) {
     ++CONTROL[0];
     while(CONTROL[2]) usleep(1000);
     if(CONTROL[1]) { board_diag_error(0x31,-77); return -2; }
+    ModelTensor tensors[2]={
+        {.bytes=3*416*416*4,.count=3*416*416,.rank=4,.dtype=1,.shape={1,3,416,416}},
+        {.offset=(uint32_t)(OUTPUT-INPUT),.bytes=7200,.count=1800,.rank=3,.dtype=1,.shape={1,300,6}}};
+    ModelNode node={.op=OP_COPY,.inputs=1,.outputs=1,.in={0},.out={1}};
+    if(board_diag.options&PCIE_CAPTURE) {
+        board_diag_node(0,&node,tensors);
+        board_pcie_node_begin(0,&node,tensors,INPUT,INPUT);
+    }
     float *out=(float *)OUTPUT;
     for(unsigned i=0;i<300;++i) {
         out[6*i]=((float *)INPUT)[0]; out[6*i+1]=20;
@@ -30,6 +38,15 @@ int board_model_run(void) {
         out[6*i+4]=i==0 ? .9f : 0; out[6*i+5]=CONTROL[3] ? 80 : 0;
     }
     if(CONTROL[4]) { uint32_t nan=0x7fc00000; memcpy(out,&nan,4); }
+    if(board_diag.options&PCIE_CAPTURE) {
+        board_diag.phase=PHASE_NODE_END;
+        if(board_pcie_node_end()) return -2;
+        node.in[0]=1;
+        board_diag_node(1,&node,tensors);
+        board_pcie_node_begin(1,&node,tensors,INPUT,INPUT);
+        board_diag.phase=PHASE_NODE_END;
+        if(board_pcie_node_end()) return -2;
+    }
     board_diag_stage(DIAG_DONE);
     return 0;
 }

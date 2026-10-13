@@ -11,10 +11,15 @@
 extern const unsigned char model_weights[];
 extern void clp_qemu_exit(uintptr_t code) __attribute__((noreturn));
 extern volatile uint32_t board_current_node,board_test_stage;
+#ifdef MODEL_CAPTURE_TEST
+static unsigned capture_sequence=1,capture_frame,capture_records;
+static uintptr_t capture_file;
+extern int __real_board_pcie_node_end(void);
+#endif
 static uintptr_t host_call(uintptr_t op,uintptr_t argument) {
     register uintptr_t a0 __asm__("a0")=op;
     register uintptr_t a1 __asm__("a1")=argument;
-    __asm__ volatile(".option push\n.option norvc\nslli zero,zero,31\n"
+    __asm__ volatile(".option push\n.option norvc\n.balign 16\nslli zero,zero,31\n"
                      "ebreak\nsrai zero,zero,7\n.option pop"
                      : "+r"(a0),"+r"(a1) :: "memory");
     return a0;
@@ -29,9 +34,51 @@ static void file(const char *name,void *data,size_t bytes,int writing) {
     if(host_call(writing ? 5 : 6,(uintptr_t)transfer)) clp_qemu_exit(11);
     if(host_call(2,(uintptr_t)&handle)) clp_qemu_exit(12);
 }
+#ifdef MODEL_CAPTURE_TEST
+static void capture_write(const void *data,size_t bytes) {
+    uintptr_t transfer[3]={capture_file,(uintptr_t)data,bytes};
+    if(host_call(5,(uintptr_t)transfer)) clp_qemu_exit(30);
+}
+static void capture_record(unsigned id,unsigned dtype,const void *data,unsigned bytes) {
+    uint32_t header[3]={id,dtype,bytes};
+    capture_write(header,sizeof(header)); capture_write(data,bytes); ++capture_records;
+}
+int __wrap_board_pcie_node_end(void) {
+    if(!(board_diag.options&PCIE_CAPTURE)) return __real_board_pcie_node_end();
+    /* Synthetic host ACK is precommitted in unified RAM. The separate native
+     * host integration verifies real waiting, stable reads, ACK and ABORT. */
+    PcieRequest request={.session=0x12345678,.frame=capture_frame,.command=PCIE_ADVANCE,
+                        .sequence=++capture_sequence,.input_crc=board_node_snapshot.token,
+                        .options=DIAG_FINITE|PCIE_CAPTURE};
+    request.crc=board_crc32(&request,60);
+    const unsigned char *src=(const unsigned char *)&request;
+    volatile unsigned char *dst=(volatile unsigned char *)&board_pcie_mailbox.request;
+    for(unsigned i=0;i<sizeof(request);++i) dst[i]=src[i];
+    board_clean((const void *)&board_pcie_mailbox.request,64);
+    board_pcie_mailbox.doorbell[0]=capture_sequence;
+    board_clean((const void *)board_pcie_mailbox.doorbell,64);
+    int result=__real_board_pcie_node_end();
+    if(result || board_node_snapshot.node!=board_current_node ||
+       board_node_snapshot.frame!=capture_frame ||
+       board_node_snapshot.crc!=board_crc32((const void *)&board_node_snapshot,508) ||
+       board_pcie_mailbox.status.state!=PCIE_BUSY ||
+       board_pcie_mailbox.status.sequence!=capture_sequence) clp_qemu_exit(31);
+    for(unsigned slot=4;slot<6;++slot) {
+        const volatile PcieTensorSnapshot *d=board_node_snapshot.tensors+slot;
+        if(d->id<0) continue;
+        const void *data=(const void *)(uintptr_t)d->address;
+        if(d->crc_after!=board_crc32(data,d->bytes)) clp_qemu_exit(32);
+        capture_record((unsigned)d->id,d->dtype,data,d->bytes);
+    }
+    return 0;
+}
+#endif
 static void submit(unsigned command,unsigned sequence,unsigned frame) {
     PcieRequest request={.session=0x12345678,.frame=frame,.command=command,
                         .sequence=sequence,.options=DIAG_FINITE};
+#ifdef MODEL_CAPTURE_TEST
+    request.options|=PCIE_CAPTURE;
+#endif
     if(command==PCIE_RUN) {
         request.input_bytes=board_model_input_size();
         request.input_crc=board_crc32(board_model_input(),request.input_bytes);
@@ -76,10 +123,26 @@ void __wrap_board_pcie_loop(int failure) {
     for(unsigned sample=0;sample<2;++sample) {
         file(inputs[sample],board_model_input(),board_model_input_size(),0);
         board_clean(board_model_input(),board_model_input_size());
+#ifdef MODEL_CAPTURE_TEST
+        static const char *const dumps[]={"frame-0-tensors.bin","frame-1-tensors.bin"};
+        size_t length=0; while(dumps[sample][length]) ++length;
+        uintptr_t open_args[3]={(uintptr_t)dumps[sample],5,length};
+        capture_file=host_call(1,(uintptr_t)open_args);
+        if(capture_file==(uintptr_t)-1) clp_qemu_exit(33);
+        struct { char magic[8]; uint32_t version,count; } header={"Y26SCAL1",1,336};
+        capture_write(&header,sizeof(header)); capture_records=0;
+        capture_record(0,1,board_model_input(),board_model_input_size());
+        capture_frame=sample+1;
+        submit(PCIE_RUN,++capture_sequence,capture_frame);
+        if(capture_records!=336 || host_call(2,(uintptr_t)&capture_file)) clp_qemu_exit(34);
+        unsigned expected_sequence=capture_sequence;
+#else
         submit(PCIE_RUN,sample+2,sample+1);
+        unsigned expected_sequence=sample+2;
+#endif
         PcieStatus status=board_pcie_mailbox.status;
         if(status.state!=PCIE_DONE || status.error || status.frame!=sample+1 ||
-           status.sequence!=sample+2 || status.output_bytes!=7200 || board_current_node!=333 ||
+           status.sequence!=expected_sequence || status.output_bytes!=7200 || board_current_node!=333 ||
            status.crc!=board_crc32(&status,60) ||
            status.output_crc!=board_crc32(board_model_output(),7200)) clp_qemu_exit(22);
         const volatile uint32_t *poison=(const volatile uint32_t *)guard;

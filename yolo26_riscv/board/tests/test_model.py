@@ -15,6 +15,7 @@ import time
 
 root=Path(__file__).resolve().parents[3]
 parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--capture',action='store_true',help='Exercise node snapshots/ACK and export all tensors')
 parser.add_argument('--manifest',type=Path,default=root/'reference/prepared/manifest.json',
                     help='Two prepared samples; video manifests may omit the numerical reference')
 args=parser.parse_args()
@@ -37,6 +38,8 @@ flags=['-march=rv64gcv_zicbom_zifencei_xewmatrix1p0','-mabi=lp64d','-mcmodel=med
        '-fno-asynchronous-unwind-tables','-DYOLO_N550_BOARD=1','-DMODEL_PRECISION=1','-DMODEL_PROFILE=0',
        '-DBOARD_CLP_SIM=1','-DCLP_PROBE_EMBEDDED=1','-DBOARD_UART_TEST=1','-DCLP_MODEL_QEMU=1',
        '-I',str(src),'-I',str(root/'model')]
+if args.capture:
+    flags+=['-DMODEL_CAPTURE_TEST=1','-Wl,--wrap=board_pcie_node_end']
 subprocess.run([tc+'-gcc',*flags,'-c','board/start.S','-o',str(out/'start.o')],cwd=src,check=True)
 (out/'weights.S').write_text('.section .rodata.weights,"a",@progbits\n.balign 64\n'
                             '.global model_weights,model_weights_end\nmodel_weights:\n'
@@ -56,7 +59,7 @@ for index,sample in enumerate(samples):
     (out/f'{sample}-original.jpg').write_bytes(checked_file(record['source'],record['source_sha256']))
 report={'status':'running','mode':'QEMU unified RAM','nodes_per_frame':334,
         'physical_clp_cache_verified':False,'samples':{},'output':str(out),
-        'manifest':manifest_path.relative_to(root).as_posix()}
+        'manifest':manifest_path.relative_to(root).as_posix(),'node_capture':args.capture}
 (out/'report.json').write_text(json.dumps(report,indent=2)+'\n')
 print(f'QEMU model started; UART/progress: {out}/uart.log',flush=True)
 started=time.monotonic()
@@ -87,6 +90,24 @@ for index,sample in enumerate(samples):
             row[5]!=int(row[5]) or not 0<=row[5]<80 for row in struct.iter_unpack('<6f',raw)):
         raise ValueError('Invalid result length, finite values or class range')
     comparison=None
+    if args.capture:
+        from node_compare import ReferenceArchive
+        capture_manifest=json.loads((root/'reference/nodes/manifest.json').read_text(encoding='utf-8'))
+        archive=ReferenceArchive(root,capture_manifest,sample)
+        try:
+            with (out/f'frame-{index}-tensors.bin').open('rb') as stream:
+                if struct.unpack('<8sII',stream.read(16))!=(b'Y26SCAL1',1,336):
+                    raise ValueError('Invalid actual capture header')
+                for tensor_record in capture_manifest['samples'][sample]['records']:
+                    tid,dtype,size=struct.unpack('<3I',stream.read(12))
+                    if (tid,dtype,size)!=(tensor_record['id'],capture_manifest['tensors'][tid]['dtype'],
+                                          capture_manifest['tensors'][tid]['bytes']) or stream.read(size)!=archive.take(tid):
+                        raise ValueError(f'Actual model capture differs at tensor {tid}')
+                if stream.read(1):
+                    raise ValueError('Unexpected actual capture tail')
+            archive.finish()
+        finally:
+            archive.close()
     if 'reference' in record:
         reference=checked_file(record['reference'],record['reference_sha256'],32+OUTPUT_BYTES)
         comparison=reference_result(raw,reference)

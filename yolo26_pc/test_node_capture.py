@@ -157,6 +157,18 @@ class CompareTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'hash mismatch'):
                 ReferenceArchive(root,manifest,'bus')
 
+    def test_reference_paths_cannot_escape_package(self):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name)/'package'; root.mkdir()
+            # Include a sibling with the same prefix: string-prefix checks are unsafe.
+            for path in ('../part', '../package-other/part',
+                         str(root.parent/'package-other/part')):
+                manifest={'tensors':[], 'samples':{'bus':{
+                    'parts':[{'path':path}], 'records':[]}}}
+                with self.subTest(path=path):
+                    with self.assertRaisesRegex(ValueError,'Reference path escapes package'):
+                        ReferenceArchive(root,manifest,'bus')
+
     def test_return_bundle_never_contains_full_tensors_or_inputs(self):
         with tempfile.TemporaryDirectory() as name:
             root=Path(name); (root/'tensors').mkdir()

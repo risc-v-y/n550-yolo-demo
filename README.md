@@ -18,7 +18,7 @@ command -v pbload
 python3 yolo26_pc/serial_probe.py
 ```
 
-固定图片验证仅需 Python 3 标准库（建议 3.10+）及现场已有的 PCIe 工具；无需 PyTorch、NumPy、OpenCV、pyserial、pip 或 venv。串口枚举不发送数据，需结合接线或 USB 序列号确认实际端口。
+固定图片验证、逐节点自动采集及截图报告支持 Python 3.8+ 标准库及现场已有的 PCIe 工具；无需 PyTorch、NumPy、OpenCV、pyserial、pip 或 venv。host 使用 Python 3.8.10 时可直接执行文中的 `python3` 命令。串口枚举不发送数据，需结合接线或 USB 序列号确认实际端口。
 
 **先打开串口终端，再加载固件**，才能看到启动信息。例如另一终端执行：
 

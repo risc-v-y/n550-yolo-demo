@@ -1,6 +1,6 @@
 """Lossless node references, full-tensor metrics and limited numerical replays.
 
-Uses Python 3.10 stdlib only. A matching replay is evidence about that candidate
+Uses Python 3.8+ stdlib only. A matching replay is evidence about that candidate
 rule, not proof of the FPGA's unspecified accumulation implementation.
 """
 from __future__ import annotations
@@ -59,8 +59,11 @@ class ReferenceArchive:
         paths=[]
         for entry in record['parts']:
             path=(self.root/entry['path']).resolve()
-            if not path.is_relative_to(self.root):
-                raise ValueError('Reference path escapes package')
+            # relative_to preserves containment checks on Python 3.8 as well.
+            try:
+                path.relative_to(self.root)
+            except ValueError:
+                raise ValueError('Reference path escapes package') from None
             if path.stat().st_size!=entry['bytes']:
                 raise ValueError(f'Reference part length mismatch: {path.name}')
             hasher=hashlib.sha256()

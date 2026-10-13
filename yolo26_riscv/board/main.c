@@ -87,9 +87,13 @@ int board_model_run(void) {
         if((board_diag.options&DIAG_FINITE) || step+1==MODEL_NODE_COUNT) {
             board_diag_phase(PHASE_CHECK);
             for(unsigned i=0;i<node->outputs;++i) {
+                if(node->out[i]<0) continue;
                 const ModelTensor *t=model_tensors+node->out[i];
                 if(t->dtype!=1) continue;
-                const uint32_t *data=(const uint32_t *)(arena+t->offset);
+                /* Constant views retain the weights address; their offset
+                 * must not be interpreted relative to the activation arena. */
+                const unsigned char *base=t->constant ? model_weights : arena;
+                const uint32_t *data=(const uint32_t *)(base+t->offset);
                 for(size_t j=0;j<t->count;++j) if((data[j]&0x7f800000)==0x7f800000) {
                     board_diag.tensor=(uint64_t)node->out[i]; board_diag.element=j;
                     board_diag.observed=data[j]; board_diag_error(0x32,-1); return -2;

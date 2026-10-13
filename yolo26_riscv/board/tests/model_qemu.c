@@ -6,6 +6,9 @@
 #include "../cache.h"
 #include "../memory.h"
 #include "../uart.h"
+#include "../../scalar_model.h"
+#include "model_generated.h"
+extern const unsigned char model_weights[];
 extern void clp_qemu_exit(uintptr_t code) __attribute__((noreturn));
 extern volatile uint32_t board_current_node,board_test_stage;
 static uintptr_t host_call(uintptr_t op,uintptr_t argument) {
@@ -42,10 +45,31 @@ static void submit(unsigned command,unsigned sequence,unsigned frame) {
     board_clean((const void *)board_pcie_mailbox.doorbell,64);
     board_pcie_poll();
 }
+static uintptr_t poison_constant_view_alias(void) {
+    const ModelNode *node=model_nodes+305;
+    const ModelTensor *input=model_tensors+515,*output=model_tensors+516;
+    uintptr_t arena=(uintptr_t)board_model_input()-model_tensors[0].offset;
+    uintptr_t wrong=arena+output->offset;
+    if(node->op!=OP_COPY || node->in[0]!=515 || node->out[0]!=516 ||
+       !input->constant || !output->constant || input->offset!=output->offset ||
+       input->bytes!=output->bytes || output->dtype!=1 ||
+       output->bytes!=output->count*4 || wrong<(uintptr_t)__clp_end ||
+       wrong>BOARD_CLP_DDR_BASE+BOARD_CLP_BYTES-output->bytes ||
+       *(const uint32_t *)(model_weights+output->offset)!=0x3f000000u) clp_qemu_exit(23);
+    /* Emulate the board's uninitialized DDR at the WRONG arena-relative
+     * address. The constant view lives in model_weights, not this region.
+     * Leaving QEMU's RAM zero here allowed the old checker to pass. */
+    volatile uint32_t *guard=(volatile uint32_t *)wrong;
+    for(size_t i=0;i<output->count;++i) guard[i]=0xffffffffu;
+    board_clean((const void *)guard,output->bytes);
+    board_uart_text("QEMU CONSTANT VIEW GUARD tensor=516 wrong-region=NaN\n");
+    return wrong;
+}
 void __wrap_board_pcie_loop(int failure) {
     board_pcie_start(failure);
     if(failure || board_test_stage!=3 || board_uart_status) clp_qemu_exit(20);
     if(!board_is_clp(board_model_input()) || !board_is_clp(board_model_output())) clp_qemu_exit(21);
+    uintptr_t guard=poison_constant_view_alias();
     submit(PCIE_OPEN,1,0);
     static const char *const inputs[]={"frame-0-input.bin","frame-1-input.bin"};
     static const char *const outputs[]={"frame-0-candidates.bin","frame-1-candidates.bin"};
@@ -58,6 +82,9 @@ void __wrap_board_pcie_loop(int failure) {
            status.sequence!=sample+2 || status.output_bytes!=7200 || board_current_node!=333 ||
            status.crc!=board_crc32(&status,60) ||
            status.output_crc!=board_crc32(board_model_output(),7200)) clp_qemu_exit(22);
+        const volatile uint32_t *poison=(const volatile uint32_t *)guard;
+        for(size_t i=0;i<model_tensors[516].count;++i)
+            if(poison[i]!=0xffffffffu) clp_qemu_exit(24);
         file(outputs[sample],(void *)board_model_output(),7200,1);
         board_uart_text("QEMU MODEL FRAME PASS sample="); board_uart_u64(sample);
         board_uart_text(" nodes=334\n");

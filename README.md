@@ -78,20 +78,21 @@ bash tools/load_board.sh --reset-dir /rv/fpga/bin --pbcopy /rv/fpga/bin/pbcopy
 ## 3. 固定图片：免安装验证
 
 ```bash
-# 读取接口并建立会话，不运行图像推理
 # 查看固件描述并建立PCIe会话，不运行图像推理
 python3 yolo26_pc/pcie_backend.py --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
 
 # 上传bus输入、推理并保存原始结果、参考差异和绘框图
-python3 yolo26_pc/pcie_prepared.py --sample bus --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
+python3 yolo26_pc/pcie_prepared.py --sample bus --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload --board-trace --check-intermediates
 
 # 同样验证zidane；程序和权重保持加载，不逐帧复位
-python3 yolo26_pc/pcie_prepared.py --sample zidane --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
+python3 yolo26_pc/pcie_prepared.py --sample zidane --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload --board-trace --check-intermediates
 ```
 
 原始 JPEG、正式预处理流程生成的输入、坐标映射与哈希已交付，见 `reference/prepared/manifest.json`。输入是 RGB NCHW `[1,3,416,416]` 小端 FP32，2,076,672 字节；保留全部 334 节点和现有 RVV+AMU FP16 计算。返回 `[300,6]` FP32，7,200 字节，字段为输入图坐标下的 `x1,y1,x2,y2,score,class`。host 按 `score > 0.25` 过滤并还原坐标，不增加 NMS。
 
 结果在 `yolo26_pc/outputs/board-pcie/<时间>/`：报告、日志、`candidates.bin` 和内嵌原图的 `annotated.svg`。用浏览器查看 SVG；检查报告的 `status=completed`、`reference.byte_identical`、类别顺序、坐标/分数差异和绘框效果。完成状态仅表示收发及结果检查完成，数值仍须验收，不设经验阈值掩盖差异。
+
+首次验收保留上述逐节点打印和中间值检查。旧版 `5af2816` 在节点305存在常量输出检查误报，已修正；更新后须重新加载本包的 `demo-pcie.bin`，仅拉取源码不会替换板上程序。原因见 [诊断说明](docs/DIAGNOSTICS.md)。
 
 ## 4. 摄像头或视频演示
 
@@ -116,6 +117,8 @@ python3 yolo26_pc/live_demo.py --backend pcie \
 ## 5. 运行状态与故障
 
 UART 默认打印启动配置、AMU 初始化、自测、READY、每帧开始/结束、每 32 个节点的进度和错误。给 Python 命令加 `--board-trace`，打印每个节点开始/结束、形状及周期；`--check-intermediates` 增加中间 FP32 NaN/Inf 检查。详细打印会增加耗时。
+
+host 重复打印 `pbload: exit 0` 只表示读回工具正常退出，不表示模型完成。PCIe `state=1/2/3/4` 分别为READY/BUSY/DONE/ERROR；GDB若停住CPU，须先执行 `continue` 才能处理请求。
 
 UART 忙或发送超时后关闭文字输出，PCIe 模型继续运行；总线异常不属于可继续的超时。host 核对长度、CRC、会话和帧号，异常保存日志和 DDR 诊断。`--infer-timeout 900` 限制一帧，`--tool-timeout 30` 限制单次工具调用；退出或超时不复位板卡，也不能中断已开始的推理。
 

@@ -1,7 +1,7 @@
 """Automatically collect board nodes, compare on the host and bundle small results.
 
-Run on the Linux host connected to PCIe. All full tensors remain on that host;
-return.zip contains reports, numerical samples and the rendered SVG only.
+Run on the Linux host connected to PCIe. Full data remain on that host;
+terminal report pages can be returned as screenshots. A compact ZIP is optional.
 """
 from __future__ import annotations
 import argparse
@@ -241,6 +241,8 @@ def collect(backend, archive, manifest, sample, prepared, output, timeout, log):
                         (output/f'first-input-{source_id:04d}.bin').write_bytes(data)
                     first={'node':step,'kind':node['kind'],'module':node['module'],'tensor':tid,
                            'shape':d['shape'],'metrics':metrics,'inputs':input_checks,
+                           'input_descriptors':[{key:item[key] for key in ('id','dtype','shape')}
+                                                for item in snapshot['tensors'] if item['direction']=='input'],
                            'same_input_full_bytes_verified':len(input_checks)==len(node['inputs']) and
                                 all(c['byte_identical_to_reference'] for c in input_checks),
                            'replay':replay_convolution(node,descriptors,actual_inputs,actual,expected,metrics['samples'])}
@@ -392,9 +394,19 @@ def main():
         summary['elapsed_seconds']=time.monotonic()-started
         (output/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
         diagnostics.close()
-        bundle=make_return_bundle(output)
-        print(f'Summary: {summary["status"]}; return only {bundle} ({bundle.stat().st_size} bytes)',flush=True)
+        try:
+            bundle=make_return_bundle(output)
+            print(f'Optional compact archive: {bundle} ({bundle.stat().st_size} bytes)',flush=True)
+        except (OSError,ValueError) as exc:
+            print(f'Optional archive unavailable: {exc}',flush=True)
         print(f'Full data remain on host: {output}',flush=True)
+        from node_report import remember_report,render_page
+        try:
+            remember_report(output)
+            print('Screenshot pages: python3 yolo26_pc/node_report.py --page 1 (or 2, 3)',flush=True)
+            print(render_page(output,1),end='',flush=True)
+        except (OSError,ValueError,KeyError,IndexError,TypeError) as exc:
+            print(f'Screenshot report error: {exc}; saved data remain at {output}',flush=True)
     return exit_code
 
 

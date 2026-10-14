@@ -55,13 +55,16 @@ def parse_snapshot(blob, state, backend):
                 raise ValueError('Invalid empty tensor slot')
             continue
         tid,dtype,rank,size,address,constant,count=raw[:7]
-        shape=list(raw[7:7+rank])
-        if (not 1<=rank<=4 or dtype not in (1,2) or constant not in (0,1) or
+        shape=list(raw[7:7+min(rank,4)])
+        # A rank-zero tensor is one scalar: prod([]) == 1, not an empty tensor.
+        if (not 0<=rank<=4 or dtype not in (1,2) or constant not in (0,1) or
                 any(d<=0 for d in shape) or math.prod(shape)!=count or
                 size!=count*(4 if dtype==1 else 8) or
                 (slot<4 and slot>=header['inputs']) or
                 (slot>=4 and slot-4>=header['outputs'])):
-            raise ValueError('Invalid node tensor descriptor')
+            raise ValueError(f'Invalid node tensor descriptor: node={header["node"]} '
+                             f'slot={slot} tensor={tid} rank={rank} shape={shape} '
+                             f'dtype={dtype} count={count} bytes={size} constant={constant}')
         backend.link._range(address,size)
         descriptors.append({'slot':slot,'direction':'input' if slot<4 else 'output',
                             'id':tid,'dtype':dtype,'shape':shape,'bytes':size,'address':address,

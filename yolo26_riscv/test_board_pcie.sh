@@ -5,6 +5,7 @@ out="$root/yolo26_riscv/build/n550-board"
 mkdir -p "$out"
 cc -std=c11 -O2 -Wall -Wextra -Werror -fno-pie -no-pie -mcmodel=large \
    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+   -DBOARD_SNAPSHOT_HOST_TEST=1 -Wl,--section-start=.pcie_snapshot=0x80a10800 \
    -Wl,--section-start=.pcie_mailbox=0x81f00000 \
    "$root/yolo26_riscv/board/pcie.c" "$root/yolo26_riscv/board/model_io.c" \
    "$root/yolo26_riscv/board/diagnostics.c" "$root/yolo26_riscv/board/tests/pcie_host.c" \

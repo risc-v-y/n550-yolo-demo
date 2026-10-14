@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import tempfile
@@ -32,6 +33,12 @@ def checked(data):
     if len(data)!=64 or zlib.crc32(data[:60])!=struct.unpack_from('<I',data,60)[0]:
         raise ValueError('PCIe snapshot length/CRC mismatch')
     return data
+
+
+class PCIeToolError(RuntimeError):
+    def __init__(self, command, returncode, output):
+        self.returncode=returncode
+        super().__init__(f'{Path(command).name} failed ({returncode}): {output[-2000:]}')
 
 
 class PBTools:
@@ -90,11 +97,12 @@ class PBTools:
                 pass  # A blocked kernel driver may require platform intervention.
             raise
         text=output.decode('utf-8',errors='replace')
+        failed=bool(process.returncode or TOOL_FAILURE.search(text))
         self.diagnostic({'type':'pcie_tool','message':f'{Path(command).name}: exit {process.returncode}',
                          'argument':argument,'elapsed_seconds':time.monotonic()-started,
-                         'returncode':process.returncode,'output':text[-8192:]})
-        if process.returncode or TOOL_FAILURE.search(text):
-            raise RuntimeError(f'{Path(command).name} failed ({process.returncode}): {text[-2000:]}')
+                         'returncode':process.returncode,'output':text if failed else text[-8192:]})
+        if failed:
+            raise PCIeToolError(command,process.returncode,text)
 
     def write(self,address,data,deadline):
         self._range(address,len(data))
@@ -103,8 +111,25 @@ class PBTools:
 
     def read(self,address,size,deadline):
         self._range(address,size)
-        self.path.unlink(missing_ok=True)  # Never accept a stale output file.
-        self._run(self.commands[1],f'{self.path.name}:0x{address-BASE:x}:0x{size:x}',deadline)
+        # Retry only crashed reads, at most twice, within the original deadline.
+        # A crashed process may have left a full-sized file; never accept it.
+        for attempt in range(1,4):
+            self.path.unlink(missing_ok=True)
+            try:
+                self._run(self.commands[1],f'{self.path.name}:0x{address-BASE:x}:0x{size:x}',deadline)
+                break
+            except PCIeToolError as exc:
+                self.path.unlink(missing_ok=True)
+                if exc.returncode!=-signal.SIGSEGV or attempt==3:
+                    raise
+                remaining=deadline-time.monotonic()
+                if remaining<=0:
+                    raise
+                self.diagnostic({'type':'pcie_read_retry','address':address,'bytes':size,
+                                 'attempt':attempt,'next_attempt':attempt+1,
+                                 'message':f'pbload crashed; retry {attempt}/2, address=0x{address:x}, bytes={size}'})
+                if self.stop.wait(min(.2,remaining)):
+                    raise InterruptedError('PCIe read retry cancelled') from exc
         data=self.path.read_bytes()
         if len(data)!=size:
             raise ValueError(f'PCIe read returned {len(data)} bytes, expected {size}')

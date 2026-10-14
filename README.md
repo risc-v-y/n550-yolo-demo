@@ -127,6 +127,20 @@ python3 yolo26_pc/node_report.py --page 3
 
 命令默认读取最近一次结束的采集报告，按完成顺序记录，不受host回调日期影响。失败时第二、三页优先显示错误与最后节点。已有旧版采集结果也可直接查看：`python3 yolo26_pc/node_report.py 结果目录 --page 1`，无需重跑；第二、三页替换页码即可。这些查看命令只读host文件，不访问板子。
 
+采集中途失败时，已保存的首差异仍可分析，无需重新采集：
+
+```bash
+# 查看已保存的首差异节点、输入形状、全张量误差与原始数值
+python3 yolo26_pc/node_report.py --view difference --page 2
+
+# 查看基于实际输入的候选计算规则重算结果
+python3 yolo26_pc/node_report.py --view difference --page 3
+```
+
+报告保留 `status=failed`，并标注 `PARTIAL CAPTURE`，不能作为完整模型精度结论。要查看指定旧结果，在脚本名后添加结果目录。
+
+PCIe 读取遇到 `pbload` 段错误（返回码 -11）时，最多重试两次，共三次尝试，并受原有超时限制。每次重读前删除旧文件，成功后仍校验长度，采集张量还须通过CRC校验才会继续。失败工具的完整输出和重试记录保存在 `diagnostics.jsonl`；写入命令、其他错误以及数据校验失败不自动重试。
+
 结果默认在 `yolo26_pc/outputs/node-capture/<时间>/`；完整张量、实际输入、参考和工具日志全部保留host，后续缺少某项证据可再提取。`return.zip`保留为可选的小包。`completed`表示采集完成，不能当作数值精度通过；规则重算匹配也不能独立证明FPGA采用该舍入规则。
 
 `reference/nodes/` 为一次性下载的bus/zidane无损QEMU基准，合计约136 MiB，分片不超过24 MiB，清单绑定冻结模型和输入哈希。每张图采集的完整输出约90 MiB。另一张图把 `--sample bus` 改为 `--sample zidane`。每节点默认超时300秒、单次工具30秒，可用 `--node-timeout`、`--tool-timeout` 调整。

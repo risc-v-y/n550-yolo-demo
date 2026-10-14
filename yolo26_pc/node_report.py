@@ -70,7 +70,7 @@ def input_descriptors(first):
 
 
 def shape(value):
-    return 'x'.join(map(str,value)) if value else 'unknown'
+    return 'unknown' if value is None else ('x'.join(map(str,value)) or 'scalar')
 
 
 def failure_lines(summary, page):
@@ -97,9 +97,12 @@ def failure_lines(summary, page):
     return lines
 
 
-def render_page(directory=None, page=1):
+def render_page(directory=None, page=1, view='status'):
     directory,summary,first,rows,identity=load_report(directory)
-    lines=[f'YOLO NODE REPORT - PAGE {page}/3',
+    title='YOLO NODE REPORT' if view=='status' else 'YOLO NODE DIFFERENCE'
+    if view=='difference' and summary.get('status')!='completed':
+        title+=' (PARTIAL CAPTURE)'
+    lines=[f'{title} - PAGE {page}/3',
            f"ID={identity} sample={summary.get('sample','?')} status={summary.get('status','?')}"]
     completed={r['node'] for r in rows}
     differences={r['node'] for r in rows if r.get('byte_identical')=='False'}
@@ -127,7 +130,7 @@ def render_page(directory=None, page=1):
             lines += [short(f"ERROR: {summary.get('error',summary.get('exception','unknown'))}"),
                       f"Last board node={last.get('node','?')} error={last.get('error','?')}; details: page 2"]
         lines.append('Cause not established; stable results do not prove rounding.')
-    elif summary.get('status')=='failed':
+    elif summary.get('status')=='failed' and view=='status':
         lines+=failure_lines(summary,page)
     elif not first:
         lines+=['No first differing tensor was recorded.',
@@ -192,9 +195,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory',nargs='?',type=Path,help='Saved result directory; default: latest completed report')
     parser.add_argument('--page',type=int,choices=(1,2,3),default=1)
+    parser.add_argument('--view',choices=('status','difference'),default='status',
+                        help='difference: show saved first-node metrics/replay even after a later capture failure')
     args=parser.parse_args()
     try:
-        print(render_page(args.directory,args.page),end='')
+        print(render_page(args.directory,args.page,args.view),end='')
     except (OSError,ValueError,KeyError,IndexError,TypeError) as exc:
         parser.exit(1,f'Report error: {exc}\n')
 

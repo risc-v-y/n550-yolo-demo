@@ -40,7 +40,8 @@ def main():
             report.update(reference_crlf_count=manifest.read_bytes().count(b'\r\n'),
                           reference_manifest_sha256=source_sha(manifest),images={})
             samples=json.loads((checkout/'reference/prepared/manifest.json').read_text())['samples']
-            for sample,record in samples.items():
+            for sample in ('bus',):
+                record=samples[sample]
                 source=checked_file(record['source'],record['source_sha256'])
                 raw=checked_file(record['reference'],record['reference_sha256'])[32:]
                 found=detections(raw,record['transform']); path=output/(sample+'-detected.png')

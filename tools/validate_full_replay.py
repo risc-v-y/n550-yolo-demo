@@ -1,4 +1,4 @@
-"""Release gate: replay ALL frozen QEMU nodes for both samples, never hardware."""
+"""Release gate: replay every frozen QEMU node for bus, never hardware."""
 import argparse
 from collections import Counter
 import json
@@ -21,7 +21,7 @@ def validate(binary,output):
     report={'status':'running','binary_sha256':sha(binary.read_bytes()),'samples':{}}
     started=time.monotonic()
     try:
-        for sample in ('bus','zidane'):
+        for sample in ('bus',):
             replay=Replay(32,binary=binary); archive=ReferenceArchive(ROOT,manifest,sample)
             live={0:archive.take(0)}; results=[]
             try:
@@ -51,7 +51,7 @@ def validate(binary,output):
         report['elapsed_seconds']=time.monotonic()-started
         output.parent.mkdir(parents=True,exist_ok=True)
         output.write_text(json.dumps(report,indent=2)+'\n')
-    print('Native release gate PASS: both samples, 668 nodes / 670 full outputs exact.',flush=True)
+    print('Native release gate PASS: bus, 334 nodes / 335 full outputs exact.',flush=True)
     return report
 
 

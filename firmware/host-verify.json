@@ -22,8 +22,9 @@
   "reference_normalization": "CRLF-to-LF",
   "qemu_gate": {
     "status": "passed",
-    "nodes": 668,
-    "outputs": 670,
+    "sample": "bus",
+    "nodes": 334,
+    "outputs": 335,
     "operators": {
       "CONV": 102,
       "SILU": 87,
@@ -47,6 +48,6 @@
       "CAST": 1,
       "FLOORDIV": 1
     },
-    "full_report_sha256": "4fbd2000c3404cb7be19614de8e879c0430a9ac3639f61d42111df159a7b4e90"
+    "full_report_sha256": "fe21a84dc3f96eeeca191c86341e7795b4d8a9739299ce210819b49c28f2b6c6"
   }
 }

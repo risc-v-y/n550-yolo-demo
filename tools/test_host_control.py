@@ -110,7 +110,7 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(full['directory'],job['result'])
         self.assertTrue(Path(job['result']).is_dir())
 
-    def test_full_pages_only_read_existing_report(self):
+    def test_full_pages_reaudit_bus_once_without_board_access(self):
         directory=self.root/'full'; directory.mkdir(); (directory/'summary.json').write_text('{}')
         host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
         with patch('host_control.subprocess.run') as run,patch('builtins.input',return_value=''):
@@ -119,8 +119,27 @@ class MenuTests(unittest.TestCase):
         for page,call in enumerate(run.call_args_list,1):
             command=call.args[0]
             self.assertIn('--report',command)
-            self.assertEqual(command[-2:],['--page',str(page)])
+            self.assertEqual(command[4:6],['--page',str(page)])
+            self.assertEqual('--reanalyze' in command,page==1)
             self.assertNotIn('--output',command)
+            self.assertNotIn('--pbcopy',command)
+            self.assertNotIn('--pbload',command)
+
+    def test_full_pages_accept_completed_bus_before_legacy_parent_finishes(self):
+        directory=self.root/'full'; capture=directory/'bus/attempt-1'; capture.mkdir(parents=True)
+        (capture/'summary.json').write_text('{"sample":"bus","status":"completed"}')
+        host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
+        with patch('host_control.subprocess.run') as run,patch('builtins.input',return_value=''), \
+             patch.object(host,'progress') as progress:
+            host.full_pages()
+        self.assertEqual(run.call_count,3); progress.assert_not_called()
+
+    def test_full_pages_wait_when_bus_capture_not_completed(self):
+        directory=self.root/'full'; directory.mkdir()
+        host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
+        with patch('host_control.subprocess.run') as run,patch.object(host,'progress') as progress:
+            host.full_pages()
+        run.assert_not_called(); progress.assert_called_once()
 
     def test_png_menu_only_runs_offline_exporter(self):
         with patch('host_control.subprocess.run') as run:

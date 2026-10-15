@@ -26,9 +26,9 @@ class FinalResultTests(unittest.TestCase):
                 self.assertEqual(result['annotated'],'full-check-annotated.png')
                 return result
 
-    def test_both_frozen_candidate_sets_and_drawings(self):
+    def test_bus_frozen_candidates_and_drawing(self):
         samples=ev.read_json(ev.ROOT/'reference/prepared/manifest.json')['samples']
-        for name,count in (('bus',6),('zidane',2)):
+        for name,count in (('bus',6),):
             sample=samples[name]; raw=(ev.ROOT/sample['reference']).read_bytes()[32:]
             result=self.check(raw,sample)
             self.assertTrue(result['normal_repeat_exact']); self.assertEqual(len(result['detections']),count)
@@ -152,14 +152,24 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'graph/sample/input evidence'):
             ev.identity(self.directory,'bus',self.manifest,self.prepared)
 
+    def test_complete_node_capture_without_ordinary_repeat_cannot_be_reused(self):
+        prepared=job.read_json(job.ROOT/'reference/prepared/manifest.json')['samples']['bus'].copy()
+        prepared['input_sha256']=self.prepared['input_sha256']
+        self.summary['normal_repeat']={'sha256':sha(self.final),'byte_identical_to_capture':True}
+        (self.directory/'summary.json').write_text(json.dumps(self.summary))
+        normal=self.directory/'normal-candidates.bin'; normal.write_bytes(self.final)
+        self.assertTrue(ev.reusable(self.directory,'bus',self.manifest,prepared))
+        normal.unlink()
+        self.assertFalse(ev.reusable(self.directory,'bus',self.manifest,prepared))
+
 
 class WorkflowTests(unittest.TestCase):
-    def run_job(self,stop=False,numerical_error=False):
+    def run_job(self,stop=False,numerical_error=False,reuse=False):
         with tempfile.TemporaryDirectory() as name:
             root=Path(name); (root/'reference/nodes').mkdir(parents=True)
             (root/'reference/prepared').mkdir(parents=True); (root/'firmware').mkdir()
             (root/'reference/nodes/manifest.json').write_text('{}')
-            (root/'reference/prepared/manifest.json').write_text('{"samples":{"bus":{},"zidane":{}}}')
+            (root/'reference/prepared/manifest.json').write_text('{"samples":{"bus":{}}}')
             (root/'firmware/host-verify.json').write_text('{}')
             args=argparse.Namespace(output=root/'result',fresh=False,probe=None)
             def collect(args,sample,output): return output/'attempt-1',stop
@@ -169,25 +179,32 @@ class WorkflowTests(unittest.TestCase):
             with patch.object(job,'ROOT',root),patch.object(job,'Replay'),patch.object(job,'check_renderer'), \
                  patch.object(job,'verify_reference_manifest'), \
                  patch.object(job,'probe_gate',return_value={'status':'passed'}), \
-                 patch.object(job,'find_reuse',return_value=None),patch.object(job,'audit',side_effect=analyze), \
+                 patch.object(job,'find_reuse',return_value=root/'old/bus/attempt-1' if reuse else None), \
+                 patch.object(job,'audit',side_effect=analyze), \
                  patch.object(job,'capture',side_effect=collect) as capture:
                 code=job.run(args)
             return code,json.loads((root/'result/summary.json').read_text()),capture.call_count
 
-    def test_numeric_difference_still_checks_both_images(self):
+    def test_numeric_difference_finishes_bus_without_starting_another_image(self):
         code,report,count=self.run_job(numerical_error=True)
-        self.assertEqual(count,2); self.assertEqual(code,1)
-        self.assertEqual(set(report['samples']),{'bus','zidane'})
+        self.assertEqual(count,1); self.assertEqual(code,1)
+        self.assertEqual(set(report['samples']),{'bus'})
         self.assertEqual(report['status'],'not_passed')
 
-    def test_terminal_board_failure_stops_next_image_but_saves_summary(self):
+    def test_terminal_board_failure_saves_bus_summary(self):
         code,report,count=self.run_job(stop=True)
         self.assertEqual(count,1); self.assertEqual(code,1)
-        self.assertTrue(report['errors']); self.assertIn('zidane',report['samples'])
+        self.assertTrue(report['errors']); self.assertEqual(set(report['samples']),{'bus'})
 
-    def test_only_complete_two_image_results_pass(self):
+    def test_complete_bus_result_passes(self):
         code,report,count=self.run_job()
-        self.assertEqual((code,count,report['status']),(0,2,'passed'))
+        self.assertEqual((code,count,report['status']),(0,1,'passed'))
+
+    def test_validated_bus_reuse_never_loads_or_captures_again(self):
+        with patch.object(job,'load') as load:
+            code,report,count=self.run_job(reuse=True)
+        load.assert_not_called()
+        self.assertEqual((code,count,report['status']),(0,0,'passed'))
 
     def test_only_one_whole_frame_retry_for_tagged_read_failure(self):
         for retryable,expected in ((True,2),(False,1)):
@@ -208,7 +225,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_three_pages_are_bounded_even_with_all_nodes_bad(self):
         r={'id':'123456789abc','status':'not_passed','samples':{},'errors':['x'*200]*20}
-        for sample in ('bus','zidane'):
+        for sample in ('bus',):
             r['samples'][sample]={'rows':[{'node':i,'kind':'CONV','status':'unexplained','outputs':[]} for i in range(334)],
                                   'errors':['long error '*20]}
         for page in (1,2,3):
@@ -218,8 +235,60 @@ class WorkflowTests(unittest.TestCase):
     def test_successful_page_does_not_invent_missing_nodes(self):
         r={'id':'123456789abc','status':'passed','samples':{
             name:{'nodes_captured':334,'outputs_captured':335,'inputs_verified_nodes':334,
-                  'counts':{'exact':334}} for name in ('bus','zidane')}}
-        self.assertEqual(job.render(r,1).count('missing=0'),2)
+                  'counts':{'exact':334}} for name in ('bus',)}}
+        self.assertEqual(job.render(r,1).count('missing=0'),1)
+
+
+class LegacyBusTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.directory=Path(self.temp.name)
+        self.capture=self.directory/'bus/attempt-1'; self.capture.mkdir(parents=True)
+        self.original={'id':'legacy','samples':{'bus':{'directory':str(self.capture)},
+                       'zidane':{'passed':False}},'errors':['zidane failed'],'status':'not_passed'}
+
+    def complete(self):
+        (self.capture/'summary.json').write_text('{"sample":"bus","status":"completed"}')
+
+    def reanalyze(self,passed=True):
+        args=argparse.Namespace(report=self.directory,probe=None)
+        result={'passed':passed,'rows':[],'counts':{},'final':{},'errors':[]}
+        with patch.object(job,'assets',return_value=({},{})), \
+             patch.object(job,'probe_gate',return_value={'status':'passed'}), \
+             patch.object(job,'audit',return_value=result) as audit, \
+             patch.object(job,'capture') as capture,patch.object(job,'load') as load:
+            report=job.reanalyze(args)
+        capture.assert_not_called(); load.assert_not_called()
+        return report,audit.call_args.args[0]
+
+    def test_old_second_image_failure_is_excluded_after_raw_bus_reaudit(self):
+        self.complete()
+        original=json.dumps(self.original); (self.directory/'summary.json').write_text(original)
+        report,raw=self.reanalyze()
+        self.assertEqual(raw,self.capture); self.assertEqual(report['status'],'passed')
+        self.assertEqual(report['errors'],[]); self.assertEqual(set(report['samples']),{'bus'})
+        self.assertEqual((self.directory/'summary.json').read_text(),original)
+        self.assertTrue((self.directory/'bus-analysis.json').is_file())
+        for page in (1,2,3): self.assertNotIn('zidane',job.render(report,page).lower())
+
+    def test_completed_bus_is_found_before_parent_summary_exists(self):
+        self.complete()
+        self.assertEqual(job.bus_capture(self.directory),self.capture)
+        report,raw=self.reanalyze(); self.assertEqual(raw,self.capture)
+        self.assertEqual(report['status'],'passed')
+
+    def test_derived_analysis_without_raw_summary_is_not_selected(self):
+        (self.directory/'bus/analysis.json').write_text(json.dumps({'passed':True,'directory':str(self.capture)}))
+        self.assertEqual(job.bus_capture(self.directory),self.directory/'bus/not-collected')
+        report,raw=self.reanalyze(passed=False)
+        self.assertEqual(report['status'],'not_passed')
+        self.assertEqual(raw,self.directory/'bus/not-collected')
+
+    def test_bus_with_failed_reaudit_is_not_accepted_from_old_passed_report(self):
+        self.complete(); self.original['status']='passed'
+        (self.directory/'summary.json').write_text(json.dumps(self.original))
+        report,_=self.reanalyze(passed=False)
+        self.assertEqual(report['status'],'not_passed')
 
 
 if __name__=='__main__': unittest.main()

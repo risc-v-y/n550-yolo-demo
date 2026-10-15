@@ -113,7 +113,7 @@ def launch_full():
                                    stderr=subprocess.STDOUT,start_new_session=True,pass_fds=(lock.fileno(),))
         save_json(directory/'last-full.json',{'directory':str(result)})
         save_json(directory/'last-launch.json',{'pid':child.pid,'result':str(result),'log':str(log)})
-    print('Full BUS + ZIDANE check started in background. Normal firmware loads automatically.')
+    print('Full BUS-only check started in background; complete saved BUS evidence is reused.')
     print('PID:',child.pid,'\nResult:',result,'\nOptions: 6 progress; 12 final three pages.')
     return child
 
@@ -122,10 +122,14 @@ def full_pages():
     pointer=workspace()/'last-full.json'
     if not pointer.exists(): raise ValueError('No full check started; use option 11.')
     directory=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
-    if not (directory/'summary.json').exists(): progress(); return
+    if not (directory/'summary.json').exists():
+        from full_check import bus_capture
+        if not (bus_capture(directory)/'summary.json').is_file(): progress(); return
     for page in (1,2,3):
-        subprocess.run([sys.executable,str(ROOT/'tools/full_check.py'),'--report',str(directory),
-                        '--page',str(page)],cwd=ROOT,check=True)
+        command=[sys.executable,str(ROOT/'tools/full_check.py'),'--report',str(directory),
+                 '--page',str(page)]
+        if page==1: command.append('--reanalyze')
+        subprocess.run(command,cwd=ROOT,check=True)
         if input('Enter: next/return; q: menu: ').strip().lower()=='q': break
 
 
@@ -245,8 +249,8 @@ def main():
                   '\n6 Capture/probe progress/log\n7 Select saved result'
                   '\n8 Load + run 3-tile probe (background, replaces firmware)'
                   '\n9 Reanalyze saved probe (offline, 3 pages)\n10 Reload normal demo firmware'
-                  '\n11 Full BUS + ZIDANE check (background, auto-load normal firmware)'
-                  '\n12 Full check summary (3 pages, offline)\n13 Export saved drawings to PNG (offline)\n0 Exit')
+                  '\n11 Full BUS-only check (background, reuse complete evidence)'
+                  '\n12 Reanalyze BUS + summary (3 pages, offline)\n13 Export saved drawings to PNG (offline)\n0 Exit')
             answer=input('Choice: ').strip()
             if answer=='0':
                 return 0

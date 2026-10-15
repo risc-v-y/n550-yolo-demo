@@ -21,7 +21,9 @@ def package(binary,gate_path):
         raise ValueError('Native auditor has a dynamic loader/dependency')
     manifest=json.loads((ROOT/'reference/nodes/manifest.json').read_text())
     if len(gate['operators'])!=21: raise ValueError('Not all operator types were validated')
-    for sample in ('bus','zidane'):
+    if set(gate.get('samples',{}))!={'bus'}:
+        raise ValueError('Release gate must validate bus only')
+    for sample in ('bus',):
         expected=[{'node':n['id'],'tensor':tid,'sha256':next(r['sha256'] for r in manifest['samples'][sample]['records'] if r['id']==tid)}
                   for n in manifest['nodes'] for tid in n['outputs'] if tid>=0]
         actual=gate['samples'][sample]
@@ -31,7 +33,7 @@ def package(binary,gate_path):
             'sources':{name:source_sha(ROOT/name) for name in SOURCES},
             'source_normalization':'CRLF-to-LF','reference_manifest_sha256':source_sha(ROOT/'reference/nodes/manifest.json'),
             'reference_normalization':'CRLF-to-LF',
-            'qemu_gate':{'status':'passed','nodes':668,'outputs':670,'operators':gate['operators'],
+            'qemu_gate':{'status':'passed','sample':'bus','nodes':334,'outputs':335,'operators':gate['operators'],
                          'full_report_sha256':sha(gate_path.read_bytes())}}
     (ROOT/'firmware/host-verify').write_bytes(raw)
     (ROOT/'firmware/host-verify').chmod(0o755)

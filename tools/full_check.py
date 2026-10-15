@@ -1,4 +1,4 @@
-"""Python 3.8+ single-start BUS/ZIDANE collection, local replay and screenshot report."""
+"""Python 3.8+ BUS-only collection, local replay and screenshot report."""
 import argparse
 from datetime import datetime
 import json
@@ -12,6 +12,8 @@ from full_evidence import audit,reusable,read_json
 from node_capture import verify_reference_manifest
 from png_output import check_renderer
 import tile_probe
+
+BUS_ONLY_VERSION = 2
 
 
 def save(path,value):
@@ -101,60 +103,118 @@ def capture(args,sample,output):
         return directory,True
 
 
+def new_report():
+    return {'version':BUS_ONLY_VERSION,'sample':'bus','status':'running','created':datetime.now().isoformat(),
+            'samples':{},'errors':[],'tile_gate':{'status':'not_run'},
+            'scope':'One fixed bus input only; matches do not prove equivalence for all inputs'}
+
+
+def assets(report):
+    manifest=read_json(ROOT/'reference/nodes/manifest.json'); verify_reference_manifest(manifest)
+    prepared=read_json(ROOT/'reference/prepared/manifest.json')['samples']['bus']
+    # Verify packaged binary, source hashes and renderer before any reset.
+    native=Replay(); native.close(); check_renderer()
+    report['auditor']=read_json(ROOT/'firmware/host-verify.json')
+    report['reference_manifest_sha256']=source_sha(ROOT/'reference/nodes/manifest.json')
+    report['reference_normalization']='CRLF-to-LF'
+    return manifest,prepared
+
+
+def finish(report,started):
+    report['elapsed_seconds']=time.monotonic()-started
+    report['id']=sha(json.dumps(report,sort_keys=True).encode())[:12]
+
+
+def bus_capture(directory):
+    """Find raw BUS evidence, including an unfinished legacy parent job."""
+    candidates=[directory]
+    # Prefer a completed retry over an incomplete earlier attempt.
+    candidates+=sorted(directory.glob('bus/attempt-*'),reverse=True)
+    for name in ('summary.json','checkpoint.json','bus/analysis.json'):
+        path=directory/name
+        if not path.is_file(): continue
+        record=read_json(path)
+        result=record if name=='bus/analysis.json' else record.get('samples',{}).get('bus',{})
+        if result.get('directory'): candidates.append(Path(result['directory']))
+    for candidate in candidates:
+        path=candidate/'summary.json'
+        if path.is_file():
+            record=read_json(path)
+            if record.get('sample')=='bus' and record.get('status')=='completed': return candidate
+    # audit() will enumerate the missing evidence; a derived report cannot pass.
+    return directory/'bus/not-collected'
+
+
+def reanalyze(args):
+    """Re-audit raw BUS data without modifying any original reports or board state."""
+    directory=args.report; started=time.monotonic(); report=new_report()
+    report['mode']='offline reanalysis'
+    try:
+        source_files={}
+        for name in ('summary.json','checkpoint.json','tile-gate.json'):
+            path=directory/name
+            if path.is_file(): source_files[name]=sha(path.read_bytes())
+        report['source']={'directory':str(directory),'files_sha256':source_files}
+        manifest,prepared=assets(report)
+        gate=read_json(directory/'tile-gate.json') if (directory/'tile-gate.json').is_file() else {}
+        probe=Path(gate['directory']) if gate.get('directory') else args.probe
+        try: report['tile_gate']=probe_gate(probe)
+        except Exception as exc: report['tile_gate']={'status':'failed','error':str(exc)}
+        raw=bus_capture(directory)
+        if (raw/'summary.json').is_file():
+            report['source']['capture_summary_sha256']=sha((raw/'summary.json').read_bytes())
+        report['samples']['bus']=audit(raw,'bus',manifest,prepared)
+        report['status']='passed' if (report['tile_gate']['status']=='passed' and
+                                     report['samples']['bus']['passed']) else 'not_passed'
+    except Exception as exc:
+        report.update(status='failed'); report['errors'].append(type(exc).__name__+': '+str(exc))
+    finish(report,started)
+    save(directory/'bus-analysis.json',report)
+    return report
+
+
 def run(args):
     output=args.output
     output.mkdir(parents=True,exist_ok=True)
     if (output/'summary.json').exists(): raise ValueError('Output already has a final report; use a new directory')
     started=time.monotonic()
-    report={'version':1,'status':'running','created':datetime.now().isoformat(),'samples':{},'errors':[],
-            'tile_gate':{'status':'not_run'},
-            'scope':'Two fixed inputs only; split16 matches do not prove RTL equivalence for all inputs'}
+    report=new_report()
     def progress(sample,node,status):
         save(output/'progress.json',{'sample':sample,'node':node,'status':status,
                                     'elapsed_seconds':time.monotonic()-started})
         if node%16==0 or status in ('unexplained','input_unverified','missing'):
             print('AUDIT {} node={:03d} {}'.format(sample,node,status),flush=True)
     try:
-        manifest=read_json(ROOT/'reference/nodes/manifest.json'); verify_reference_manifest(manifest)
-        prepared=read_json(ROOT/'reference/prepared/manifest.json')['samples']
-        # Verify packaged binary, source hashes and native selftest before any reset.
-        native=Replay(); native.close()
-        check_renderer()
-        report['auditor']=read_json(ROOT/'firmware/host-verify.json')
-        report['reference_manifest_sha256']=source_sha(ROOT/'reference/nodes/manifest.json')
-        report['reference_normalization']='CRLF-to-LF'
+        manifest,prepared=assets(report)
         try: report['tile_gate']=probe_gate(args.probe)
         except Exception as exc: report['tile_gate']={'status':'failed','error':str(exc)}
         save(output/'tile-gate.json',report['tile_gate'])
-        stop_board=False
-        for sample in ('bus','zidane'):
-            directory=None; sample_output=output/sample; sample_output.mkdir(exist_ok=True)
-            if not args.fresh: directory=find_reuse(sample,manifest,prepared[sample],output)
-            if directory is not None:
-                print('Reuse fully verified capture: '+str(directory),flush=True)
-            elif not stop_board:
-                try:
-                    directory,stop_board=capture(args,sample,sample_output)
-                    if stop_board:
-                        failure=read_json(directory/'summary.json') if (directory/'summary.json').is_file() else {}
-                        report['errors'].append(sample+': capture/normal repeat failed; '+failure.get('error','see capture log'))
-                except Exception as exc:
-                    stop_board=True; report['errors'].append(sample+': '+str(exc))
-            if directory is None:
-                directory=sample_output/'not-collected'
-                report['errors'].append(sample+': no complete collection; board actions stopped')
-            result=audit(directory,sample,manifest,prepared[sample],progress=progress)
-            report['samples'][sample]=result
-            save(sample_output/'analysis.json',result)
-            save(output/'checkpoint.json',report)
+        directory=None; sample_output=output/'bus'; sample_output.mkdir(exist_ok=True)
+        if not args.fresh: directory=find_reuse('bus',manifest,prepared,output)
+        if directory is not None:
+            print('Reuse fully verified BUS capture: '+str(directory),flush=True)
+        else:
+            try:
+                directory,failed=capture(args,'bus',sample_output)
+                if failed:
+                    failure=read_json(directory/'summary.json') if (directory/'summary.json').is_file() else {}
+                    report['errors'].append('bus: capture/normal repeat failed; '+failure.get('error','see capture log'))
+            except Exception as exc:
+                report['errors'].append('bus: '+str(exc))
+        if directory is None:
+            directory=sample_output/'not-collected'
+            report['errors'].append('bus: no complete collection; board actions stopped')
+        result=audit(directory,'bus',manifest,prepared,progress=progress)
+        report['samples']['bus']=result
+        save(sample_output/'analysis.json',result)
+        save(output/'checkpoint.json',report)
         report['status']='passed' if (not report['errors'] and report['tile_gate']['status']=='passed'
                            and all(r['passed'] for r in report['samples'].values())) else 'not_passed'
     except BaseException as exc:
         report.update(status='failed'); report['errors'].append(type(exc).__name__+': '+str(exc))
         (output/'error.log').write_text(traceback.format_exc(),encoding='utf-8')
     finally:
-        report['elapsed_seconds']=time.monotonic()-started
-        report['id']=sha(json.dumps(report,sort_keys=True).encode())[:12]
+        finish(report,started)
         save(output/'summary.json',report)
         print('FULL CHECK FINISHED: '+report['status']+' ID='+report['id'],flush=True)
         print('Full evidence remains on host: '+str(output),flush=True)
@@ -164,10 +224,10 @@ def run(args):
 
 def render(report,page):
     lines=['FULL MODEL CHECK ID={} PAGE={}/3'.format(report['id'],page),'STATUS: '+report['status']]
-    samples=report.get('samples',{})
+    samples={k:v for k,v in report.get('samples',{}).items() if k=='bus'}
     if page==1:
         lines+=['Coverage: nodes / valid outputs / verified-input nodes']
-        for sample in ('bus','zidane'):
+        for sample in ('bus',):
             r=samples.get(sample,{})
             lines+=['{}: {}/334 {}/335 {}/334'.format(sample,r.get('nodes_captured',0),r.get('outputs_captured',0),r.get('inputs_verified_nodes',0))]
             c=r.get('counts',{})
@@ -175,7 +235,7 @@ def render(report,page):
                     '  input-unverified={} missing={}'.format(c.get('input_unverified',0),c.get('missing',0 if r else 334))]
         lines+=['Saved physical tile gate: '+report.get('tile_gate',{}).get('status','missing'),
                 'Elapsed seconds: {:.1f}'.format(report.get('elapsed_seconds',0)),
-                'No tolerance; every element compared. Match covers these inputs only.']
+                'No tolerance; every element compared. Match covers this input only.']
     elif page==2:
         lines+=['Exceptions (full details in host analysis.json):']
         tile=report.get('tile_gate',{})
@@ -191,7 +251,7 @@ def render(report,page):
             lines.extend('  '+e[:70] for e in r.get('errors',[])[:1])
         lines.extend(e[:78] for e in report.get('errors',[])[:2])
     elif page==3:
-        for sample in ('bus','zidane'):
+        for sample in ('bus',):
             r=samples.get(sample,{}); f=r.get('final',{})
             lines+=['{}: candidate-valid={} normal-repeat={}'.format(sample,f.get('valid',False),f.get('normal_repeat_exact',False)),
                     '  boxes={} QEMU-different-outputs={}'.format(len(f.get('detections',[])),r.get('qemu_different_outputs','?'))]
@@ -202,7 +262,8 @@ def render(report,page):
             lines+=['  capture SHA256: '+f.get('capture_sha256','missing')[:48]]
         lines+=['Drawing: each capture/full-check-annotated.png (host).',
                 'Inspect drawings on host; no GUI needed for numeric checks.',
-                'Report retains all local differences; screenshot these 3 pages.']
+                'Report retains all local differences; screenshot these 3 pages.',
+                'Scope: BUS only. Next stage may proceed after this check passes.']
     else: raise ValueError('Page must be 1, 2 or 3')
     # Deliberately bounded terminal pages; full error text is retained in JSON.
     return '\n'.join(line[:80] for line in lines[:22])+'\n'
@@ -212,21 +273,30 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path)
     p.add_argument('--report',type=Path)
+    p.add_argument('--reanalyze',action='store_true',help='Re-audit saved BUS raw evidence offline')
     p.add_argument('--page',type=int,choices=(1,2,3),default=1)
     p.add_argument('--probe',type=Path)
-    p.add_argument('--fresh',action='store_true',help='Recapture both images even if old evidence is complete')
+    p.add_argument('--fresh',action='store_true',help='Recapture BUS even if old evidence is complete')
     p.add_argument('--reset-dir',default='/rv/fpga/bin')
     p.add_argument('--pbcopy',default='/rv/fpga/bin/pbcopy'); p.add_argument('--pbload',default='/rv/fpga/bin/pbload')
     p.add_argument('--node-timeout',type=float,default=300); p.add_argument('--tool-timeout',type=float,default=30)
     args=p.parse_args()
-    if args.report:
-        print(render(read_json(args.report/'summary.json'),args.page),end=''); return 0
-    if sys.platform!='linux': p.error('Run collection on the Linux x86_64 host')
-    if not args.output: p.error('--output is required for collection')
-    if min(args.node_timeout,args.tool_timeout)<=0: p.error('Timeouts must be positive')
     if args.probe is None:
         pointer=ROOT/'yolo26_pc/outputs/host-menu/last-probe.json'
         if pointer.is_file(): args.probe=Path(read_json(pointer)['directory'])
+    if args.reanalyze and not args.report: p.error('--reanalyze requires --report')
+    if args.report:
+        if args.output or args.fresh: p.error('--report cannot be combined with --output/--fresh')
+        if args.reanalyze: report=reanalyze(args)
+        else:
+            path=args.report/'bus-analysis.json'
+            report=read_json(path if path.is_file() else args.report/'summary.json')
+            if report.get('version')!=2 or report.get('sample')!='bus':
+                p.error('Legacy report: use --reanalyze to audit BUS independently')
+        print(render(report,args.page),end=''); return 0
+    if sys.platform!='linux': p.error('Run collection on the Linux x86_64 host')
+    if not args.output: p.error('--output is required for collection')
+    if min(args.node_timeout,args.tool_timeout)<=0: p.error('Timeouts must be positive')
     return run(args)
 
 

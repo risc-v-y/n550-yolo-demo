@@ -88,7 +88,9 @@ def probe_pages():
     if not (directory/'summary.json').exists():
         progress(); return
     for page in (1,2,3):
-        subprocess.run([sys.executable,str(ROOT/'tools/tile_probe.py'),'--report',str(directory),'--page',str(page)],check=True)
+        command=[sys.executable,str(ROOT/'tools/tile_probe.py'),'--report',str(directory),'--page',str(page)]
+        if page==1: command.append('--reanalyze')
+        subprocess.run(command,check=True)
         if input('Enter: next/return; q: menu: ').strip().lower()=='q': break
 
 
@@ -203,7 +205,7 @@ def main():
                   '\n4 Analyze first convolution\n5 Start BUS capture (background)'
                   '\n6 Capture/probe progress/log\n7 Select saved result'
                   '\n8 Load + run 3-tile probe (background, replaces firmware)'
-                  '\n9 Probe report (3 screenshot pages)\n10 Reload normal demo firmware\n0 Exit')
+                  '\n9 Reanalyze saved probe (offline, 3 pages)\n10 Reload normal demo firmware\n0 Exit')
             answer=input('Choice: ').strip()
             if answer=='0':
                 return 0

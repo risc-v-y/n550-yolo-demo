@@ -51,6 +51,32 @@ class MenuTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): host.restore()
             run.assert_not_called()
 
+    def test_probe_report_reanalyzes_once_then_displays_same_saved_analysis(self):
+        directory=self.root/'saved-probe'; directory.mkdir()
+        (directory/'summary.json').write_text('{"status":"completed"}')
+        host.save_json(host.workspace()/'last-probe.json',{'directory':str(directory)})
+        with patch('host_control.subprocess.run') as run,patch('builtins.input',return_value=''):
+            host.probe_pages()
+        self.assertEqual(run.call_count,3)
+        for page,call in enumerate(run.call_args_list,1):
+            command=call.args[0]
+            self.assertEqual(command[:4],[sys.executable,str(self.root/'tools/tile_probe.py'),'--report',str(directory)])
+            self.assertEqual(command[4:6],['--page',str(page)])
+            self.assertEqual('--reanalyze' in command,page==1)
+            self.assertNotIn('--load',command)
+            self.assertNotIn('--pbcopy',command)
+            self.assertNotIn('--pbload',command)
+
+    def test_failed_reanalysis_does_not_display_old_cached_pages(self):
+        directory=self.root/'saved-probe'; directory.mkdir()
+        (directory/'summary.json').write_text('{"status":"completed"}')
+        host.save_json(host.workspace()/'last-probe.json',{'directory':str(directory)})
+        with patch('host_control.subprocess.run',side_effect=subprocess.CalledProcessError(1,['analysis'])) as run, \
+             patch('builtins.input') as prompt:
+            with self.assertRaises(subprocess.CalledProcessError): host.probe_pages()
+        self.assertEqual(run.call_count,1)
+        prompt.assert_not_called()
+
     def test_probe_launch_uses_loader_and_records_report_pointer(self):
         previous=self.root/'old-capture'; previous.mkdir()
         (previous/'summary.json').write_text('{"sample":"bus"}')

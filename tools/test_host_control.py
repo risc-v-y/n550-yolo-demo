@@ -41,6 +41,34 @@ class MenuTests(unittest.TestCase):
         with patch('builtins.input',return_value='2'): host.choose()
         self.assertEqual(host.selected(),base/'2026-run')
 
+    def test_probe_reports_are_not_selected_as_node_captures(self):
+        directory=host.workspace()/'run-probe/capture'; directory.mkdir(parents=True)
+        (directory/'summary.json').write_text('{"status":"completed","runs":[]}')
+        self.assertEqual(host.candidates(),[])
+
+    def test_restore_refuses_active_job(self):
+        with host.guard(host.workspace()/'control.lock'),patch('host_control.subprocess.run') as run:
+            with self.assertRaises(RuntimeError): host.restore()
+            run.assert_not_called()
+
+    def test_probe_launch_uses_loader_and_records_report_pointer(self):
+        previous=self.root/'old-capture'; previous.mkdir()
+        (previous/'summary.json').write_text('{"sample":"bus"}')
+        with patch('host_control.Path.is_file',return_value=True), \
+             patch.object(host,'selected',return_value=previous), \
+             patch('host_control.subprocess.Popen') as popen:
+            popen.return_value.pid=123
+            host.launch(probe=True)
+        command=popen.call_args.args[0]
+        self.assertIn('--load',command)
+        self.assertIn('tile_probe.py',command[2])
+        self.assertEqual(command[-2:],['--capture',str(previous)])
+        self.assertTrue(popen.call_args.kwargs['start_new_session'])
+        self.assertEqual(len(popen.call_args.kwargs['pass_fds']),1)
+        job=json.loads((host.workspace()/'last-launch.json').read_text())
+        saved=json.loads((host.workspace()/'last-probe.json').read_text())
+        self.assertEqual(saved['directory'],job['result'])
+
     def test_detached_capture_keeps_lock_and_saves_paths(self):
         script=self.root/'yolo26_pc/node_capture.py'; script.parent.mkdir(parents=True)
         script.write_text('''import json,sys,time,os

@@ -1,4 +1,4 @@
-"""Python 3.8+ host menu. Board access occurs only when starting a capture."""
+"""Python 3.8+ host menu. Explicit capture/probe/restore choices access the board."""
 import argparse
 from collections import deque
 from contextlib import contextmanager
@@ -45,7 +45,7 @@ def update():
     print('Update complete. Board firmware has not been reloaded.')
 
 
-def launch(sample='bus'):
+def launch(sample='bus',probe=False):
     directory=workspace()
     with guard(directory/'control.lock') as lock:
         with guard(board_lock()):
@@ -58,15 +58,44 @@ def launch(sample='bus'):
         command=[sys.executable,'-u',str(ROOT/'yolo26_pc/node_capture.py'),
                  '--sample',sample,'--recover-paused','--pbcopy','/rv/fpga/bin/pbcopy',
                  '--pbload','/rv/fpga/bin/pbload','--output',str(result)]
+        if probe:
+            command=[sys.executable,'-u',str(ROOT/'tools/tile_probe.py'),'--load','--output',str(result)]
+            try:
+                previous=selected()
+                summary=json.loads((previous/'summary.json').read_text(encoding='utf-8'))
+                if (summary.get('sample')=='bus' and (previous/'first_difference.json').is_file()
+                        and (previous/'tensors/0003.bin').is_file()):
+                    command+=['--capture',str(previous)]
+            except ValueError:
+                pass
         with (run/'terminal.log').open('wb') as log:
             process=subprocess.Popen(command,cwd=ROOT,stdin=subprocess.DEVNULL,
                                      stdout=log,stderr=subprocess.STDOUT,start_new_session=True,
                                      pass_fds=(lock.fileno(),))
         save_json(directory/'last-launch.json',{'pid':process.pid,'result':str(result),
                                               'log':str(run/'terminal.log')})
-    print('Background capture started; SSH disconnect/menu exit will not send it Ctrl+C.')
+        if probe:
+            save_json(directory/'last-probe.json',{'directory':str(result)})
+    print('Background '+('probe (loads diagnostic firmware)' if probe else 'capture')+' started; SSH disconnect will not stop it.')
     print('PID:',process.pid,'\nResult:',result,'\nLog:',run/'terminal.log')
     return process
+
+
+def probe_pages():
+    pointer=workspace()/'last-probe.json'
+    if not pointer.exists(): raise ValueError('No menu probe yet; use option 8.')
+    directory=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
+    if not (directory/'summary.json').exists():
+        progress(); return
+    for page in (1,2,3):
+        subprocess.run([sys.executable,str(ROOT/'tools/tile_probe.py'),'--report',str(directory),'--page',str(page)],check=True)
+        if input('Enter: next/return; q: menu: ').strip().lower()=='q': break
+
+
+def restore():
+    with guard(workspace()/'control.lock'):
+        subprocess.run(['bash',str(ROOT/'tools/load_board.sh'),'--reset-dir','/rv/fpga/bin',
+                        '--pbcopy','/rv/fpga/bin/pbcopy'],cwd=ROOT,check=True)
 
 
 def candidates():
@@ -80,7 +109,8 @@ def candidates():
     result=[]
     for path in paths:
         path=path.resolve()
-        if (path/'summary.json').is_file() and path not in result:
+        if ((path/'summary.json').is_file() and path not in result and
+                'runs' not in json.loads((path/'summary.json').read_text(encoding='utf-8'))):
             result.append(path)
     return result
 
@@ -155,13 +185,15 @@ def progress():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','analysis','progress'))
+    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','analysis','progress','probe','probe-report','restore'))
     args=parser.parse_args()
     if sys.platform!='linux':
         parser.error('Run this menu on the Linux host.')
     actions={'1':update,'2':lambda:pages('status'),'3':lambda:pages('difference'),
-             '4':lambda:pages('analysis'),'5':launch,'6':progress,'7':choose}
-    names={'update':'1','status':'2','difference':'3','analysis':'4','capture':'5','progress':'6'}
+             '4':lambda:pages('analysis'),'5':launch,'6':progress,'7':choose,
+             '8':lambda:launch(probe=True),'9':probe_pages,'10':restore}
+    names={'update':'1','status':'2','difference':'3','analysis':'4','capture':'5','progress':'6',
+           'probe':'8','probe-report':'9','restore':'10'}
     while True:
         try:
             if args.action:
@@ -169,12 +201,14 @@ def main():
                 return 0
             print('\nYOLO host menu\n1 Update repository\n2 Saved capture report\n3 Saved first difference'
                   '\n4 Analyze first convolution\n5 Start BUS capture (background)'
-                  '\n6 Capture progress/log\n7 Select saved result\n0 Exit')
+                  '\n6 Capture/probe progress/log\n7 Select saved result'
+                  '\n8 Load + run 3-tile probe (background, replaces firmware)'
+                  '\n9 Probe report (3 screenshot pages)\n10 Reload normal demo firmware\n0 Exit')
             answer=input('Choice: ').strip()
             if answer=='0':
                 return 0
             if answer not in actions:
-                print('Choose 0-7.'); continue
+                print('Choose 0-10.'); continue
             actions[answer]()
             if answer=='1':
                 # Reload updated menu code only after a successful fast-forward pull.

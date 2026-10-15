@@ -1,6 +1,9 @@
 #include "amu.h"
 #include "model_profile.h"
 #include <xewmatrix_intrinsic.h>
+#ifdef BOARD_TILE_PROBE
+#include "board/tile_probe.h"
+#endif
 #ifdef YOLO_N550_BOARD
 #include "board/cache.h"
 #include "board/memory.h"
@@ -130,6 +133,9 @@ int amu_matmul_fp16(const float *a, const float *b, float *c,
                 board_finish_write(c + (row+i)*ldc + col, cols*sizeof(float));
 #endif
             (void)old;
+#ifdef BOARD_TILE_PROBE
+            if (row || col || tile_probe_amu(left_tile, right_tile, c, m, n, k, lda, ldb, ldc)) return -1;
+#endif
         }
     }
     return 0;

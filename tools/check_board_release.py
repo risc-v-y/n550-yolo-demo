@@ -43,6 +43,27 @@ def main():
     info,addresses,prefix=diag.firmware_info(root,'demo-pcie')
     assert all(0x80000000<=address<0x82000000 for address in addresses.values())
     print(f'Physical CLP package verified: BIN={len(blob)} bytes, CLP NOLOAD=8143104 bytes.')
+    # The probe has its own BIN/ELF and preserves the physical model-data
+    # layout. Never package a QEMU test image or a mismatched symbol file.
+    probe_symbols={}
+    for line in (root/'firmware/tile-probe-symbols.txt').read_text().splitlines():
+        address,kind,name=line.split(); probe_symbols[name]=int(address,16)
+    for name in ('arena','conv_scratch','left_tile','right_tile','__clp_start','__clp_end'):
+        assert probe_symbols[name]==symbols[name],name
+    probe_address=probe_symbols['board_tile_probe']
+    assert probe_address%64==0 and 0x80000000<=probe_address<probe_address+25024<=probe_symbols['__bss_end']<=0x81f00000
+    probe_elf=(root/'firmware/tile-probe.elf').read_bytes()
+    assert struct.unpack_from('<Q',probe_elf,24)[0]==0x80000000
+    probe_blob=(root/'firmware/tile-probe.bin').read_bytes()
+    assert len(probe_blob)<12*1024*1024
+    at=probe_symbols['model_weights']-0x80000000
+    assert probe_blob[at:at+9678644]==(root/'model/constants.bin').read_bytes()
+    with tempfile.TemporaryDirectory() as temp:
+        generated=Path(temp)/'probe.bin'
+        subprocess.run([str(tc)+'-objcopy','-O','binary',str(root/'firmware/tile-probe.elf'),str(generated)],check=True)
+        assert generated.read_bytes()==probe_blob
+    assert 'clp_qemu_exit' not in probe_symbols and '__wrap_board_pcie_loop' not in probe_symbols
+    print(f'Tile diagnostic package verified: BIN={len(probe_blob)} bytes, snapshot=25024 bytes; physical model layout preserved.')
     print('Program, constants, diagnostic symbols and BIN/ELF match; physical inference remains to validate.')
 
 if __name__=='__main__':

@@ -147,6 +147,17 @@ class PBTools:
 
 
 class PCIeBackend:
+    output_bytes=OUTPUT_BYTES
+    node_count=334
+    required_capability=0
+    firmware_name='demo-pcie.bin'
+
+    def validate_result(self,result):
+        for candidate in struct.iter_unpack('<6f',result):
+            category=candidate[5]
+            if not all(map(math.isfinite,candidate)) or category!=round(category) or not 0<=category<80:
+                raise ValueError('Invalid PCIe result values/classes')
+
     def __init__(self, pbcopy='pbcopy', pbload='pbload', stop=None, infer_timeout=900,
                  progress=None, diagnostic=None, transport=None, tool_timeout=30,
                  poll_interval=.1, check_finite=False, trace=False, capture=False):
@@ -168,14 +179,15 @@ class PCIeBackend:
         try:
             deadline=time.monotonic()+infer_timeout
             values=INFO.unpack(checked(self.link.read(MAILBOX,64,deadline)))
-            if values[:3]!=(MAGIC,1,256) or values[7:11]!=(INPUT_BYTES,OUTPUT_BYTES,816,334):
-                raise ValueError('Incompatible PCIe firmware; load firmware/demo-pcie.bin')
+            if (values[:3]!=(MAGIC,1,256) or values[7:11]!=(INPUT_BYTES,self.output_bytes,816,self.node_count)
+                    or (values[3]&self.required_capability)!=self.required_capability):
+                raise ValueError('Incompatible PCIe firmware; load firmware/'+self.firmware_name)
             self.input_address,self.output_address,self.diag_address=values[4:7]
             self.capture_address=values[11] if values[3]&1 else 0
             if capture and (not self.capture_address or self.capture_address%64 or
                             not BASE<=self.capture_address<=MAILBOX-512):
                 raise ValueError('Firmware lacks node capture; load the updated demo-pcie.bin')
-            for address,size in ((self.input_address,INPUT_BYTES),(self.output_address,OUTPUT_BYTES)):
+            for address,size in ((self.input_address,INPUT_BYTES),(self.output_address,self.output_bytes)):
                 if address%64 or not (BASE<=address and address+size<=MAILBOX or
                                      MODEL_DDR_BASE<=address and address+size<=MODEL_DDR_END):
                     raise ValueError('Firmware reports a buffer outside the reserved model DDR')
@@ -183,7 +195,7 @@ class PCIeBackend:
                 raise ValueError('Firmware reports diagnostics outside reserved normal DDR')
             self.info={'input_address':self.input_address,'output_address':self.output_address,
                        'diagnostic_address':self.diag_address,'input_bytes':INPUT_BYTES,
-                       'output_bytes':OUTPUT_BYTES,'nodes':334,'mailbox':MAILBOX,'version':1,
+                       'output_bytes':self.output_bytes,'nodes':self.node_count,'mailbox':MAILBOX,'version':1,
                        'capture_address':self.capture_address}
             while True:
                 state=self._status(deadline)
@@ -288,18 +300,15 @@ class PCIeBackend:
             self.progress(f'Board processing frame {self.frame}')
             state=self._wait(DONE,deadline)
             inferred=time.monotonic()
-            if state['output_bytes']!=OUTPUT_BYTES:
+            if state['output_bytes']!=self.output_bytes:
                 raise ValueError('PCIe result length mismatch')
-            result=self.link.read(self.output_address,OUTPUT_BYTES,deadline)
-            if len(result)!=OUTPUT_BYTES or zlib.crc32(result)!=state['output_crc']:
+            result=self.link.read(self.output_address,self.output_bytes,deadline)
+            if len(result)!=self.output_bytes or zlib.crc32(result)!=state['output_crc']:
                 raise ValueError('PCIe result CRC/length mismatch')
             confirmed=self._status(deadline)
             if confirmed!=state:
                 raise ValueError('PCIe status changed during result download')
-            for candidate in struct.iter_unpack('<6f',result):
-                category=candidate[5]
-                if not all(map(math.isfinite,candidate)) or category!=round(category) or not 0<=category<80:
-                    raise ValueError('Invalid PCIe result values/classes')
+            self.validate_result(result)
             self.last_timing={'upload_seconds':uploaded-started,'run_roundtrip_seconds':inferred-uploaded,
                               'download_seconds':time.monotonic()-inferred,'pcie_frame':self.frame}
             self._snapshot(deadline)

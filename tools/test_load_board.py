@@ -19,7 +19,7 @@ class LoadTests(unittest.TestCase):
         self.reset.mkdir()
         shutil.copyfile(Path(__file__).with_name('load_board.sh'), self.root / 'tools/load_board.sh')
         entries = []
-        for name in ('demo-pcie.bin', 'selftest.bin', 'clp-selftest.bin'):
+        for name in ('demo-pcie.bin', 'selftest.bin', 'clp-selftest.bin', 'tile-probe.bin'):
             blob = name.encode()
             (self.root / 'firmware' / name).write_bytes(blob)
             entries.append(f'{hashlib.sha256(blob).hexdigest()}  firmware/{name}\n')
@@ -79,6 +79,14 @@ fi
     def test_conflicting_images_do_not_touch_hardware(self):
         self.assertEqual(self.run_load('--clp-selftest', '--selftest').returncode, 2)
         self.assertEqual(self.events(), [])
+
+    def test_tile_probe_selection_and_conflict(self):
+        result=self.run_load('--tile-probe')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('tile-probe.bin:0x0',Path(self.env['ARGUMENT']).read_text())
+        self.assertEqual(self.events(),['hold','load','release'])
+        self.assertEqual(self.run_load('--tile-probe','--clp-selftest').returncode,2)
+        self.assertEqual(self.events(),['hold','load','release'])
 
     def test_hold_failure_never_loads(self):
         self.assertNotEqual(self.run_load(FAIL_AT='hold').returncode, 0)

@@ -95,6 +95,33 @@ class MenuTests(unittest.TestCase):
         saved=json.loads((host.workspace()/'last-probe.json').read_text())
         self.assertEqual(saved['directory'],job['result'])
 
+    def test_full_launch_is_detached_and_passes_saved_probe(self):
+        host.save_json(host.workspace()/'last-probe.json',{'directory':'/saved/probe'})
+        with patch('host_control.Path.is_file',return_value=True),patch('host_control.subprocess.Popen') as popen:
+            popen.return_value.pid=321
+            host.launch_full()
+        command=popen.call_args.args[0]
+        self.assertEqual(command[2],str(self.root/'tools/full_check.py'))
+        self.assertEqual(command[-2:],['--probe','/saved/probe'])
+        self.assertTrue(popen.call_args.kwargs['start_new_session'])
+        self.assertEqual(len(popen.call_args.kwargs['pass_fds']),1)
+        full=json.loads((host.workspace()/'last-full.json').read_text())
+        job=json.loads((host.workspace()/'last-launch.json').read_text())
+        self.assertEqual(full['directory'],job['result'])
+        self.assertTrue(Path(job['result']).is_dir())
+
+    def test_full_pages_only_read_existing_report(self):
+        directory=self.root/'full'; directory.mkdir(); (directory/'summary.json').write_text('{}')
+        host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
+        with patch('host_control.subprocess.run') as run,patch('builtins.input',return_value=''):
+            host.full_pages()
+        self.assertEqual(run.call_count,3)
+        for page,call in enumerate(run.call_args_list,1):
+            command=call.args[0]
+            self.assertIn('--report',command)
+            self.assertEqual(command[-2:],['--page',str(page)])
+            self.assertNotIn('--output',command)
+
     def test_detached_capture_keeps_lock_and_saves_paths(self):
         script=self.root/'yolo26_pc/node_capture.py'; script.parent.mkdir(parents=True)
         script.write_text('''import json,sys,time,os

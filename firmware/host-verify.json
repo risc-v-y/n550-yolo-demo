@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "arch": "linux-x86_64",
+  "static": true,
+  "binary": "firmware/host-verify",
+  "sha256": "fc90c8175235092ec7859f4324ce41edbeeb68278e81113618e32ab678ab482e",
+  "sources": {
+    "tools/full_replay.c": "98f8c9ef72b9d7958be3c18a8b0ba35335bffb7f6ecca5024ab87226b3926717",
+    "yolo26_riscv/scalar_model.c": "6b6077a4e4ec7740c6ed5910dfc000d9e3a5edd97513f60d1a80afb24799dba6",
+    "yolo26_riscv/scalar_model.h": "d3e7e56f7f65ee2b3510652c041a49549f45c24631fb37d4d71b3a4a82bd3e5b",
+    "yolo26_riscv/basic.c": "0465ed4bf7451e498ee520358a8269b0032c0b6b468903d613cf6494b4c12e0a",
+    "yolo26_riscv/basic.h": "fddd77567e94170e069db099b138a45bbb05c39c1d5b3007bd6532eccea1be54",
+    "yolo26_riscv/activation.c": "4af3b91cd3fe78ba3af7b7262e70bd5a6366da83c38516a6b9dffa2b7fd275c5",
+    "yolo26_riscv/conv2d.h": "a91760977cab8fee5bcc582fc2e66179d66bd6be33f00f85de8e4274cfaa90d5",
+    "yolo26_riscv/matmul.h": "67b1806c827cce5457e3314d311dff694d06605aa978ea2a803acacad376d9a7",
+    "model/model_generated.c": "8aace0997ed6c626d725304fc476198a34850bff53cbff24659fdd9ad7e038dc",
+    "model/model_generated.h": "545229fb4e800982f0d7d106d2e6b3a482c12f06b981fa197071462f164c1fa4",
+    "model/constants.bin": "ce4ce892ec5cc8b0f1bee0f4cb754535aa4932b5879da95ed01c3db9039ad1ce"
+  },
+  "source_normalization": "CRLF-to-LF",
+  "reference_manifest_sha256": "c9fa065edef58dcea284b76582daddf562bef02d69eb871ea37c3f396f3ae421",
+  "qemu_gate": {
+    "status": "passed",
+    "nodes": 668,
+    "outputs": 670,
+    "operators": {
+      "CONV": 102,
+      "SILU": 87,
+      "SLICE": 28,
+      "ADD": 21,
+      "CONCAT": 24,
+      "POOL": 3,
+      "COPY": 32,
+      "MUL": 3,
+      "PERMUTE": 5,
+      "EXPAND": 10,
+      "BMM": 4,
+      "SOFTMAX": 2,
+      "NEAREST": 2,
+      "SUB": 1,
+      "SIGMOID": 1,
+      "MAX": 1,
+      "TOPK": 2,
+      "GATHER": 3,
+      "REMAINDER": 1,
+      "CAST": 1,
+      "FLOORDIV": 1
+    },
+    "full_report_sha256": "4fbd2000c3404cb7be19614de8e879c0430a9ac3639f61d42111df159a7b4e90"
+  }
+}

@@ -1,0 +1,208 @@
+"""Full workflow failures, actual-input provenance and screenshot bounds."""
+import argparse
+import json
+from pathlib import Path
+import struct
+import tempfile
+import unittest
+from unittest.mock import patch
+import zlib
+import full_check as job
+import full_evidence as ev
+from node_capture import HEADER,TENSOR
+from pcie_backend import MAGIC
+from full_replay import sha
+
+
+class FinalResultTests(unittest.TestCase):
+    def check(self,raw,sample):
+        with tempfile.TemporaryDirectory() as name:
+            directory=Path(name); (directory/'tensors').mkdir()
+            (directory/'tensors/0548.bin').write_bytes(raw)
+            (directory/'normal-candidates.bin').write_bytes(raw)
+            return ev.final_check(directory,sample,{'normal_repeat':{'sha256':sha(raw),'byte_identical_to_capture':True}})
+
+    def test_both_frozen_candidate_sets_and_drawings(self):
+        samples=ev.read_json(ev.ROOT/'reference/prepared/manifest.json')['samples']
+        for name,count in (('bus',6),('zidane',2)):
+            sample=samples[name]; raw=(ev.ROOT/sample['reference']).read_bytes()[32:]
+            result=self.check(raw,sample)
+            self.assertTrue(result['normal_repeat_exact']); self.assertEqual(len(result['detections']),count)
+            self.assertTrue(result['qemu']['byte_identical'])
+
+    def test_no_detections_is_valid_and_bad_values_are_rejected(self):
+        sample=ev.read_json(ev.ROOT/'reference/prepared/manifest.json')['samples']['bus']
+        candidate=[0,0,1,1,0,0]
+        self.assertEqual(self.check(struct.pack('<6f',*candidate)*300,sample)['detections'],[])
+        for index,value in ((0,float('nan')),(0,2),(4,1.1),(5,80),(5,.5)):
+            bad=list(candidate); bad[index]=value
+            with self.assertRaises(ValueError): self.check(struct.pack('<6f',*bad)*300,sample)
+        with self.assertRaises(ValueError): self.check(bytes(7196),sample)
+
+
+class EvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name); self.directory=self.root/'capture'; self.directory.mkdir()
+        (self.directory/'snapshots').mkdir(); (self.directory/'tensors').mkdir()
+        (self.root/'reference/nodes').mkdir(parents=True)
+        (self.root/'firmware').mkdir(); (self.root/'firmware/demo-pcie.bin').write_bytes(b'firmware')
+        self.input=struct.pack('<f',1.0); self.changed=struct.pack('<f',1.5)
+        self.final=struct.pack('<6f',1.5,0,2,2,.5,0)*300
+        self.tensors=[{'dtype':1,'shape':[1],'bytes':4,'constant':0,'count':1} for _ in range(549)]
+        self.tensors[548].update(shape=[300,6],bytes=7200,count=1800)
+        self.nodes=[{'id':0,'op':5,'kind':'COPY','inputs':[0],'outputs':[1]},
+                    {'id':1,'op':5,'kind':'COPY','inputs':[1],'outputs':[548]}]
+        self.manifest={'tensors':self.tensors,'nodes':self.nodes,'samples':{'bus':{'records':[
+            {'id':1,'sha256':sha(self.input)},{'id':548,'sha256':sha(bytes(7200))}]}}}
+        (self.root/'reference/nodes/manifest.json').write_text(json.dumps(self.manifest))
+        self.prepared={'input_sha256':sha(self.input)}
+        self.summary={'status':'completed','sample':'bus','evidence_version':1,'input_sha256':sha(self.input),
+                      'firmware_sha256':sha(b'firmware'),
+                      'reference_manifest_sha256':sha((self.root/'reference/nodes/manifest.json').read_bytes())}
+        (self.directory/'summary.json').write_text(json.dumps(self.summary))
+        (self.directory/'input.bin').write_bytes(self.input)
+        (self.directory/'tensors/0001.bin').write_bytes(self.changed)
+        (self.directory/'tensors/0548.bin').write_bytes(self.final)
+        for node in self.nodes: self.snapshot(node)
+        p=patch.object(ev,'ROOT',self.root); p.start(); self.addCleanup(p.stop)
+
+    def snapshot(self,node):
+        i=node['inputs'][0]; o=node['outputs'][0]; blob=bytearray(512)
+        HEADER.pack_into(blob,0,MAGIC,1,512,node['id'],123,1,node['id']+2,5,1,1,node['id']+1,12,0,0)
+        for slot in range(6): struct.pack_into('<i',blob,64+slot*64,-1)
+        proof=[]
+        for slot,tid in ((0,i),(4,o)):
+            data=self.input if tid==0 else self.changed if tid==1 else self.final
+            t=self.tensors[tid]; s=t['shape']; crc=zlib.crc32(data)
+            # Node 0 overwrites input storage, so pre/post CRC differ.
+            after=zlib.crc32(self.changed) if tid==0 else crc
+            TENSOR.pack_into(blob,64+slot*64,tid,1,len(s),len(data),0xf0000000,0,t['count'],
+                             *(s+[0]*(4-len(s))),crc,after,0,0)
+            if slot==0: proof=[{'id':tid,'verified':True,'crc32_before':crc,
+                               'sha256':sha(data),'path':'input.bin' if tid==0 else 'tensors/0001.bin'}]
+        struct.pack_into('<I',blob,508,zlib.crc32(blob[:508])); raw=bytes(blob)
+        h=HEADER.unpack_from(raw)
+        backend=type('B',(),{'session':123,'frame':1,'sequence':h[6],'options':12,
+                 'link':type('L',(),{'_range':staticmethod(ev.PBTools._range)})()})()
+        state={'detail':node['id'],'output_bytes':512,'output_crc':zlib.crc32(raw)}
+        snap=ev.parse_snapshot(raw,state,backend)
+        prefix=self.directory/'snapshots/{:04d}'.format(node['id'])
+        prefix.with_suffix('.bin').write_bytes(raw)
+        prefix.with_suffix('.json').write_text(json.dumps({'version':1,'snapshot':snap,'inputs':proof,
+            'snapshot_sha256':sha(raw),'outputs':[{'id':o,'sha256':sha(self.changed if o==1 else self.final)}]}))
+
+    def audit(self):
+        owner=self
+        class Native:
+            def __init__(self,mode): pass
+            def run(self,node,tensors,inputs):
+                if node['id']==0: return {1:owner.input}
+                # Correct local output from a DIFFERENT upstream input.
+                owner.assertEqual(inputs[1],owner.changed)
+                return {548:owner.final}
+            def close(self): pass
+        with patch.object(ev,'final_check',return_value={'normal_repeat_exact':True}):
+            return ev.audit(self.directory,'bus',self.manifest,self.prepared,replay_factory=Native)
+
+    def test_local_error_vs_upstream_propagation_and_reused_input(self):
+        r=self.audit()
+        self.assertEqual([n['status'] for n in r['rows']],['unexplained','exact'])
+        self.assertTrue(r['rows'][1]['upstream_propagation'])
+        self.assertEqual(r['nodes_captured'],2)
+        self.assertFalse(r['passed'])
+
+    def test_single_bit_corruption_is_not_tolerated_and_does_not_stop_later_nodes(self):
+        path=self.directory/'tensors/0001.bin'; raw=bytearray(path.read_bytes()); raw[0]^=1; path.write_bytes(raw)
+        r=self.audit()
+        self.assertEqual(r['rows'][0]['status'],'missing')
+        self.assertEqual(r['rows'][1]['status'],'input_unverified')
+
+    def test_incomplete_and_legacy_capture_cannot_be_reused(self):
+        (self.directory/'snapshots/0001.bin').unlink()
+        self.assertFalse(ev.reusable(self.directory,'bus',self.manifest,self.prepared))
+        r=self.audit(); self.assertEqual(r['rows'][1]['status'],'missing')
+        del self.summary['evidence_version']
+        (self.directory/'summary.json').write_text(json.dumps(self.summary))
+        self.assertFalse(ev.reusable(self.directory,'bus',self.manifest,self.prepared))
+
+    def test_input_before_crc_is_required_even_when_output_matches(self):
+        path=self.directory/'snapshots/0001.json'; r=json.loads(path.read_text())
+        r['inputs'][0]['crc32_before']^=1; path.write_text(json.dumps(r))
+        self.assertEqual(self.audit()['rows'][1]['status'],'input_unverified')
+
+    def test_missing_and_duplicate_snapshot_rejected(self):
+        prefix=self.directory/'snapshots'
+        (prefix/'0001.bin').write_bytes((prefix/'0000.bin').read_bytes())
+        self.assertEqual(self.audit()['rows'][1]['status'],'missing')
+
+
+class WorkflowTests(unittest.TestCase):
+    def run_job(self,stop=False,numerical_error=False):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name); (root/'reference/nodes').mkdir(parents=True)
+            (root/'reference/prepared').mkdir(parents=True); (root/'firmware').mkdir()
+            (root/'reference/nodes/manifest.json').write_text('{}')
+            (root/'reference/prepared/manifest.json').write_text('{"samples":{"bus":{},"zidane":{}}}')
+            (root/'firmware/host-verify.json').write_text('{}')
+            args=argparse.Namespace(output=root/'result',fresh=False,probe=None)
+            def collect(args,sample,output): return output/'attempt-1',stop
+            def analyze(directory,sample,*args,**kwargs):
+                return {'passed':not numerical_error,'rows':[],'counts':{},'final':{},'errors':[],
+                        'nodes_captured':334,'outputs_captured':335,'inputs_verified_nodes':334}
+            with patch.object(job,'ROOT',root),patch.object(job,'Replay'),patch.object(job,'verify_reference_manifest'), \
+                 patch.object(job,'probe_gate',return_value={'status':'passed'}), \
+                 patch.object(job,'find_reuse',return_value=None),patch.object(job,'audit',side_effect=analyze), \
+                 patch.object(job,'capture',side_effect=collect) as capture:
+                code=job.run(args)
+            return code,json.loads((root/'result/summary.json').read_text()),capture.call_count
+
+    def test_numeric_difference_still_checks_both_images(self):
+        code,report,count=self.run_job(numerical_error=True)
+        self.assertEqual(count,2); self.assertEqual(code,1)
+        self.assertEqual(set(report['samples']),{'bus','zidane'})
+        self.assertEqual(report['status'],'not_passed')
+
+    def test_terminal_board_failure_stops_next_image_but_saves_summary(self):
+        code,report,count=self.run_job(stop=True)
+        self.assertEqual(count,1); self.assertEqual(code,1)
+        self.assertTrue(report['errors']); self.assertIn('zidane',report['samples'])
+
+    def test_only_complete_two_image_results_pass(self):
+        code,report,count=self.run_job()
+        self.assertEqual((code,count,report['status']),(0,2,'passed'))
+
+    def test_only_one_whole_frame_retry_for_tagged_read_failure(self):
+        for retryable,expected in ((True,2),(False,1)):
+            with tempfile.TemporaryDirectory() as name:
+                path=Path(name); args=argparse.Namespace(pbcopy='copy',pbload='read',node_timeout=300,tool_timeout=30)
+                def child(command,log):
+                    d=Path(command[-1]); d.mkdir()
+                    (d/'summary.json').write_text(json.dumps({'status':'failed','retryable_capture_failure':retryable}))
+                    return 1
+                with patch.object(job,'load') as load,patch.object(job,'command',side_effect=child):
+                    _,stop=job.capture(args,'bus',path)
+                self.assertTrue(stop); self.assertEqual(load.call_count,expected)
+
+    def test_write_or_reset_failure_never_starts_capture(self):
+        with patch.object(job,'load',side_effect=RuntimeError('write failed')),patch.object(job,'command') as command:
+            with self.assertRaises(RuntimeError): job.capture(argparse.Namespace(),'bus',Path('unused'))
+            command.assert_not_called()
+
+    def test_three_pages_are_bounded_even_with_all_nodes_bad(self):
+        r={'id':'123456789abc','status':'not_passed','samples':{},'errors':['x'*200]*20}
+        for sample in ('bus','zidane'):
+            r['samples'][sample]={'rows':[{'node':i,'kind':'CONV','status':'unexplained','outputs':[]} for i in range(334)],
+                                  'errors':['long error '*20]}
+        for page in (1,2,3):
+            lines=job.render(r,page).splitlines()
+            self.assertLessEqual(len(lines),22); self.assertLessEqual(max(map(len,lines)),80)
+
+    def test_successful_page_does_not_invent_missing_nodes(self):
+        r={'id':'123456789abc','status':'passed','samples':{
+            name:{'nodes_captured':334,'outputs_captured':335,'inputs_verified_nodes':334,
+                  'counts':{'exact':334}} for name in ('bus','zidane')}}
+        self.assertEqual(job.render(r,1).count('missing=0'),2)
+
+
+if __name__=='__main__': unittest.main()

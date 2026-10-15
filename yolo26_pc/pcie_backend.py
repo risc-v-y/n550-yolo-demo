@@ -38,6 +38,7 @@ def checked(data):
 class PCIeToolError(RuntimeError):
     def __init__(self, command, returncode, output):
         self.returncode=returncode
+        self.command=str(command)
         super().__init__(f'{Path(command).name} failed ({returncode}): {output[-2000:]}')
 
 
@@ -89,7 +90,8 @@ class PBTools:
                     break
                 except subprocess.TimeoutExpired:
                     pass
-        except BaseException:
+        except BaseException as exc:
+            exc.pcie_operation='read' if command==self.commands[1] else 'write'
             process.kill()
             try:
                 process.communicate(timeout=1)
@@ -102,7 +104,9 @@ class PBTools:
                          'argument':argument,'elapsed_seconds':time.monotonic()-started,
                          'returncode':process.returncode,'output':text if failed else text[-8192:]})
         if failed:
-            raise PCIeToolError(command,process.returncode,text)
+            exc=PCIeToolError(command,process.returncode,text)
+            exc.pcie_operation='read' if command==self.commands[1] else 'write'
+            raise exc
 
     def write(self,address,data,deadline):
         self._range(address,len(data))

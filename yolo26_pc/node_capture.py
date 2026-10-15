@@ -10,6 +10,7 @@ from datetime import datetime
 import hashlib
 import json
 import math
+import signal
 from pathlib import Path
 import struct
 import sys
@@ -20,7 +21,7 @@ import zlib
 from board_diagnostics import DiagnosticLog
 from node_compare import ReferenceArchive, compare_tensor, digest, replay_convolution
 from pcie_backend import (BASE, MAILBOX, MAGIC, INFO, STATUS, checked, PBTools,
-                          PCIeBackend, READY, BUSY, DONE, ERROR, NODE, OUTPUT_BYTES)
+                          PCIeBackend, PCIeToolError, READY, BUSY, DONE, ERROR, NODE, OUTPUT_BYTES)
 from pcie_prepared import checked_file, detections, annotated_svg, reference_result
 
 ROOT=Path(__file__).resolve().parent.parent
@@ -94,6 +95,7 @@ def read_node(backend, state, deadline):
     node=parse_snapshot(blob,state,backend)
     if backend._status(deadline)!=state:
         raise ValueError('Board resumed/reset during node snapshot read')
+    node['_raw_hex']=blob.hex()
     return node
 
 
@@ -162,12 +164,15 @@ def collect(backend, archive, manifest, sample, prepared, output, timeout, log):
     expected_live={0:archive.take(0)}
     if expected_live[0]!=prepared:
         raise ValueError('Reference input differs from the transmitted prepared input')
-    actual_paths={0:ROOT/sample['input']}
+    (output/'input.bin').write_bytes(prepared)
+    actual_paths={0:output/'input.bin'}
     last_use={}
     for step,node in enumerate(nodes):
         for tid in node['inputs']:
             last_use[tid]=step
     tensor_dir=output/'tensors'; tensor_dir.mkdir()
+    snapshot_dir=output/'snapshots'; snapshot_dir.mkdir()
+    input_dir=output/'inputs'; input_dir.mkdir()
     backend.frame+=1
     deadline=time.monotonic()+timeout
     previous=backend._status(deadline)
@@ -188,7 +193,7 @@ def collect(backend, archive, manifest, sample, prepared, output, timeout, log):
             observed_inputs=[d['id'] for d in snapshot['tensors'] if d['direction']=='input']
             if observed_inputs!=node['inputs']:
                 raise ValueError('Missing, repeated or unexpected node inputs')
-            actual_inputs={}; checks=[]
+            actual_inputs={}; checks=[]; evidence=[]
             for d in snapshot['tensors']:
                 tid=d['id']
                 if not 0<=tid<len(descriptors):
@@ -203,6 +208,24 @@ def collect(backend, archive, manifest, sample, prepared, output, timeout, log):
                 expected=constants[t['offset']:t['offset']+t['bytes']] if t['constant'] else expected_live[tid]
                 checks.append({'tensor':tid,'reference_crc_before_matches':zlib.crc32(expected)==d['crc_before'],
                                'storage_unchanged_after_operation':d['crc_before']==d['crc_after']})
+                source=actual_paths.get(tid)
+                data=source.read_bytes() if source is not None else None
+                # Producer outputs survive arena reuse in host files. Constants
+                # are read once from physical DDR, not assumed to equal QEMU.
+                if data is None or zlib.crc32(data)!=d['crc_before']:
+                    if d['crc_before']==d['crc_after']:
+                        data=read_tensor(backend,d,deadline,'crc_before')
+                        source=input_dir/f'{step:04d}-{tid:04d}.bin'
+                        source.write_bytes(data); actual_paths[tid]=source
+                    else:
+                        data=None
+                proof={'id':tid,'verified':data is not None,'crc32_before':d['crc_before']}
+                if data is not None:
+                    actual_inputs[tid]=data
+                    proof.update(path=source.relative_to(output).as_posix(),sha256=digest(data))
+                else:
+                    proof['error']='Input overwritten; no earlier bytes match its pre-operation CRC'
+                evidence.append(proof)
             observed_ids=[d['id'] for d in snapshot['tensors'] if d['direction']=='output']
             if observed_ids!=[tid for tid in node['outputs'] if tid>=0]:
                 raise ValueError('Missing or extra node outputs')
@@ -226,17 +249,10 @@ def collect(backend, archive, manifest, sample, prepared, output, timeout, log):
                         if item['direction']!='input':
                             continue
                         source_id=item['id']; t=descriptors[source_id]
-                        if item['crc_after']==item['crc_before']:
-                            data=read_tensor(backend,item,deadline,'crc_before')
-                            source='physical DDR at paused node'
-                        elif not t['constant'] and source_id in actual_paths:
-                            data=actual_paths[source_id].read_bytes()
-                            source='previous full tensor capture; input storage was reused'
-                            if zlib.crc32(data)!=item['crc_before']:
-                                continue
-                        else:
-                            continue
-                        actual_inputs[source_id]=data
+                        if source_id not in actual_inputs: continue
+                        data=actual_inputs[source_id]
+                        source=('previous full tensor capture; input storage was reused'
+                                if item['crc_after']!=item['crc_before'] else 'CRC-verified saved/physical input')
                         ref=constants[t['offset']:t['offset']+t['bytes']] if t['constant'] else expected_live[source_id]
                         input_checks.append({'tensor':source_id,'source':source,
                                              'byte_identical_to_reference':data==ref,
@@ -254,6 +270,14 @@ def collect(backend, archive, manifest, sample, prepared, output, timeout, log):
                 print(f"node {step:03d} {node['kind']} tensor={tid} exact={metrics['byte_identical']} "
                       f"different={metrics['different_elements']}/{metrics['count']} "
                       f"max_abs={metrics['max_absolute_difference']:.8g}",flush=True)
+            raw=snapshot.pop('_raw_hex',None)
+            record={'version':1,'snapshot':snapshot,'inputs':evidence,
+                    'outputs':[{'id':r['tensor'],'sha256':r['sha256_actual']} for r in rows if r['node']==step]}
+            if raw is not None:
+                raw=bytes.fromhex(raw)
+                (snapshot_dir/f'{step:04d}.bin').write_bytes(raw)
+                record['snapshot_sha256']=digest(raw)
+            (snapshot_dir/f'{step:04d}.json').write_text(json.dumps(record,indent=2)+'\n',encoding='utf-8')
             if backend._status(deadline)!=state:
                 raise ValueError('Board node changed before host acknowledgement')
             backend._submit(3,0,snapshot['token'],deadline)
@@ -272,7 +296,7 @@ def collect(backend, archive, manifest, sample, prepared, output, timeout, log):
         archive.finish()
         backend._snapshot(time.monotonic()+timeout)
         return rows,first,result
-    except BaseException:
+    except BaseException as failure:
         # CTRL-C and host failures release a paused model through authenticated
         # ABORT. A halted core/tool failure may prevent this; report it explicitly.
         try:
@@ -293,6 +317,7 @@ def collect(backend, archive, manifest, sample, prepared, output, timeout, log):
                         break
                     backend._pause(deadline)
         except Exception as exc:
+            if getattr(exc,'pcie_operation',None)=='write': failure.capture_abort_write_failed=True
             log({'type':'capture_abort_error','message':str(exc)})
         (output/'partial-nodes.json').write_text(json.dumps(rows,indent=2)+'\n',encoding='utf-8')
         write_csv(output/'nodes.csv',rows)
@@ -340,13 +365,15 @@ def main():
                 diagnostics.stream.write(json.dumps(event)+'\n'); diagnostics.stream.flush()
         else:
             diagnostics.emit(event)
-    summary={'status':'starting','sample':args.sample,'numerical_cause':'not established',
+    summary={'status':'starting','sample':args.sample,'evidence_version':1,'numerical_cause':'not established',
              'full_tensors_location':'tensors/ on host; excluded from return.zip'}
     backend=archive=None
     started=time.monotonic(); exit_code=1
     try:
         manifest=json.loads((ROOT/'reference/nodes/manifest.json').read_text(encoding='utf-8'))
         verify_reference_manifest(manifest)
+        summary['reference_manifest_sha256']=digest((ROOT/'reference/nodes/manifest.json').read_bytes())
+        summary['firmware_sha256']=digest((ROOT/'firmware/demo-pcie.bin').read_bytes())
         samples=json.loads((ROOT/'reference/prepared/manifest.json').read_text(encoding='utf-8'))['samples']
         sample=samples[args.sample]
         prepared=checked_file(sample['input'],sample['input_sha256'])
@@ -379,11 +406,15 @@ def main():
             normal=backend.infer_bytes(prepared)
             (output/'normal-candidates.bin').write_bytes(normal)
             summary['normal_repeat']={'byte_identical_to_capture':normal==raw,
+                                      'sha256':digest(normal),
                                       'reference':reference_result(normal,reference),'timing':backend.last_timing}
             print(f'Ordinary-mode repeat exact-to-capture={normal==raw}',flush=True)
         exit_code=0
     except BaseException as exc:
         summary.update(status='failed',error=str(exc),exception=type(exc).__name__)
+        summary['retryable_capture_failure']=(getattr(exc,'pcie_operation',None)=='read' and
+            (isinstance(exc,TimeoutError) or isinstance(exc,PCIeToolError) and exc.returncode==-signal.SIGSEGV) and
+            not getattr(exc,'capture_abort_write_failed',False))
         if backend is not None:
             summary.update(last_status=backend.last_status,last_diagnostic=backend.last_diagnostic)
         diagnostics.exception(exc)

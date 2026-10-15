@@ -93,6 +93,11 @@ class CollectionTests(unittest.TestCase):
                     self.assertEqual((output/'first-input-0000.bin').read_bytes(),prepared)
                     self.assertEqual((output/'tensors/0548.bin').read_bytes(),result)
                     self.assertFalse(rows[1]['same_input_reference_crc'])
+                    proof=json.loads((output/'snapshots/0001.json').read_text())
+                    self.assertTrue(proof['inputs'][0]['verified'])
+                    self.assertEqual(proof['inputs'][0]['sha256'],hashlib.sha256(changed).hexdigest())
+                    self.assertEqual(proof['outputs'][0]['sha256'],hashlib.sha256(result).hexdigest())
+                    self.assertEqual((output/'input.bin').read_bytes(),prepared)
                     self.assertEqual(backend.state,DONE)
 
     def test_complete_collection_and_overwritten_input_reconstruction(self):

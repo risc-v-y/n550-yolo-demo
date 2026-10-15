@@ -94,6 +94,41 @@ def probe_pages():
         if input('Enter: next/return; q: menu: ').strip().lower()=='q': break
 
 
+def launch_full():
+    directory=workspace()
+    with guard(directory/'control.lock') as lock:
+        with guard(board_lock()): pass
+        for name in ('pbcopy','pbload','reset1.sh','reset.sh'):
+            if not (Path('/rv/fpga/bin')/name).is_file():
+                raise ValueError('Missing /rv/fpga/bin/'+name)
+        base=ROOT/'yolo26_pc/outputs/full-check'; base.mkdir(parents=True,exist_ok=True)
+        result=Path(tempfile.mkdtemp(prefix='run-',dir=str(base)))
+        command=[sys.executable,'-u',str(ROOT/'tools/full_check.py'),'--output',str(result)]
+        probe=directory/'last-probe.json'
+        if probe.exists():
+            command+=['--probe',json.loads(probe.read_text(encoding='utf-8'))['directory']]
+        log=result/'terminal.log'
+        with log.open('wb') as stream:
+            child=subprocess.Popen(command,cwd=ROOT,stdin=subprocess.DEVNULL,stdout=stream,
+                                   stderr=subprocess.STDOUT,start_new_session=True,pass_fds=(lock.fileno(),))
+        save_json(directory/'last-full.json',{'directory':str(result)})
+        save_json(directory/'last-launch.json',{'pid':child.pid,'result':str(result),'log':str(log)})
+    print('Full BUS + ZIDANE check started in background. Normal firmware loads automatically.')
+    print('PID:',child.pid,'\nResult:',result,'\nOptions: 6 progress; 12 final three pages.')
+    return child
+
+
+def full_pages():
+    pointer=workspace()/'last-full.json'
+    if not pointer.exists(): raise ValueError('No full check started; use option 11.')
+    directory=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
+    if not (directory/'summary.json').exists(): progress(); return
+    for page in (1,2,3):
+        subprocess.run([sys.executable,str(ROOT/'tools/full_check.py'),'--report',str(directory),
+                        '--page',str(page)],cwd=ROOT,check=True)
+        if input('Enter: next/return; q: menu: ').strip().lower()=='q': break
+
+
 def restore():
     with guard(workspace()/'control.lock'):
         subprocess.run(['bash',str(ROOT/'tools/load_board.sh'),'--reset-dir','/rv/fpga/bin',
@@ -187,15 +222,15 @@ def progress():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','analysis','progress','probe','probe-report','restore'))
+    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','analysis','progress','probe','probe-report','restore','full-check','full-report'))
     args=parser.parse_args()
     if sys.platform!='linux':
         parser.error('Run this menu on the Linux host.')
     actions={'1':update,'2':lambda:pages('status'),'3':lambda:pages('difference'),
              '4':lambda:pages('analysis'),'5':launch,'6':progress,'7':choose,
-             '8':lambda:launch(probe=True),'9':probe_pages,'10':restore}
+             '8':lambda:launch(probe=True),'9':probe_pages,'10':restore,'11':launch_full,'12':full_pages}
     names={'update':'1','status':'2','difference':'3','analysis':'4','capture':'5','progress':'6',
-           'probe':'8','probe-report':'9','restore':'10'}
+           'probe':'8','probe-report':'9','restore':'10','full-check':'11','full-report':'12'}
     while True:
         try:
             if args.action:
@@ -205,12 +240,14 @@ def main():
                   '\n4 Analyze first convolution\n5 Start BUS capture (background)'
                   '\n6 Capture/probe progress/log\n7 Select saved result'
                   '\n8 Load + run 3-tile probe (background, replaces firmware)'
-                  '\n9 Reanalyze saved probe (offline, 3 pages)\n10 Reload normal demo firmware\n0 Exit')
+                  '\n9 Reanalyze saved probe (offline, 3 pages)\n10 Reload normal demo firmware'
+                  '\n11 Full BUS + ZIDANE check (background, auto-load normal firmware)'
+                  '\n12 Full check summary (3 pages, offline)\n0 Exit')
             answer=input('Choice: ').strip()
             if answer=='0':
                 return 0
             if answer not in actions:
-                print('Choose 0-10.'); continue
+                print('Choose 0-12.'); continue
             actions[answer]()
             if answer=='1':
                 # Reload updated menu code only after a successful fast-forward pull.

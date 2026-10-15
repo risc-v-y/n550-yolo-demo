@@ -122,6 +122,12 @@ class MenuTests(unittest.TestCase):
             self.assertEqual(command[-2:],['--page',str(page)])
             self.assertNotIn('--output',command)
 
+    def test_png_menu_only_runs_offline_exporter(self):
+        with patch('host_control.subprocess.run') as run:
+            host.export_png()
+        command=run.call_args.args[0]
+        self.assertEqual(command,[sys.executable,str(self.root/'tools/render_results.py'),'--latest'])
+
     def test_detached_capture_keeps_lock_and_saves_paths(self):
         script=self.root/'yolo26_pc/node_capture.py'; script.parent.mkdir(parents=True)
         script.write_text('''import json,sys,time,os

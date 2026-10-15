@@ -7,9 +7,10 @@ import subprocess
 import sys
 import time
 import traceback
-from full_replay import Replay,ROOT,sha
+from full_replay import Replay,ROOT,sha,source_sha
 from full_evidence import audit,reusable,read_json
 from node_capture import verify_reference_manifest
+from png_output import check_renderer
 import tile_probe
 
 
@@ -106,6 +107,7 @@ def run(args):
     if (output/'summary.json').exists(): raise ValueError('Output already has a final report; use a new directory')
     started=time.monotonic()
     report={'version':1,'status':'running','created':datetime.now().isoformat(),'samples':{},'errors':[],
+            'tile_gate':{'status':'not_run'},
             'scope':'Two fixed inputs only; split16 matches do not prove RTL equivalence for all inputs'}
     def progress(sample,node,status):
         save(output/'progress.json',{'sample':sample,'node':node,'status':status,
@@ -117,8 +119,10 @@ def run(args):
         prepared=read_json(ROOT/'reference/prepared/manifest.json')['samples']
         # Verify packaged binary, source hashes and native selftest before any reset.
         native=Replay(); native.close()
+        check_renderer()
         report['auditor']=read_json(ROOT/'firmware/host-verify.json')
-        report['reference_manifest_sha256']=sha((ROOT/'reference/nodes/manifest.json').read_bytes())
+        report['reference_manifest_sha256']=source_sha(ROOT/'reference/nodes/manifest.json')
+        report['reference_normalization']='CRLF-to-LF'
         try: report['tile_gate']=probe_gate(args.probe)
         except Exception as exc: report['tile_gate']={'status':'failed','error':str(exc)}
         save(output/'tile-gate.json',report['tile_gate'])
@@ -196,7 +200,7 @@ def render(report,page):
                       '{:.5g}'.format(q.get('max_coordinate_difference',0)),'{:.5g}'.format(q.get('max_score_difference',0)))]
             lines+=['  QEMU class sequence match: '+str(q.get('class_sequence_match','?'))]
             lines+=['  capture SHA256: '+f.get('capture_sha256','missing')[:48]]
-        lines+=['Drawing: each capture/full-check-annotated.svg (host).',
+        lines+=['Drawing: each capture/full-check-annotated.png (host).',
                 'Inspect drawings on host; no GUI needed for numeric checks.',
                 'Report retains all local differences; screenshot these 3 pages.']
     else: raise ValueError('Page must be 1, 2 or 3')

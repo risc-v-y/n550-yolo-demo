@@ -20,7 +20,11 @@ class FinalResultTests(unittest.TestCase):
             directory=Path(name); (directory/'tensors').mkdir()
             (directory/'tensors/0548.bin').write_bytes(raw)
             (directory/'normal-candidates.bin').write_bytes(raw)
-            return ev.final_check(directory,sample,{'normal_repeat':{'sha256':sha(raw),'byte_identical_to_capture':True}})
+            with patch.object(ev,'save_annotation') as drawing:
+                result=ev.final_check(directory,sample,{'normal_repeat':{'sha256':sha(raw),'byte_identical_to_capture':True}})
+                self.assertEqual(drawing.call_args.args[0].name,'full-check-annotated.png')
+                self.assertEqual(result['annotated'],'full-check-annotated.png')
+                return result
 
     def test_both_frozen_candidate_sets_and_drawings(self):
         samples=ev.read_json(ev.ROOT/'reference/prepared/manifest.json')['samples']
@@ -136,6 +140,18 @@ class EvidenceTests(unittest.TestCase):
         (prefix/'0001.bin').write_bytes((prefix/'0000.bin').read_bytes())
         self.assertEqual(self.audit()['rows'][1]['status'],'missing')
 
+    def test_capture_identity_accepts_normalized_line_endings_but_not_changed_graph(self):
+        path=self.root/'reference/nodes/manifest.json'
+        lf=(json.dumps(self.manifest,indent=2)+'\n').encode()
+        self.summary['reference_manifest_sha256']=sha(lf)
+        (self.directory/'summary.json').write_text(json.dumps(self.summary))
+        for data in (lf,lf.replace(b'\n',b'\r\n')):
+            path.write_bytes(data)
+            ev.identity(self.directory,'bus',self.manifest,self.prepared)
+        path.write_bytes(lf.replace(b'"COPY"',b'"ADD"',1))
+        with self.assertRaisesRegex(ValueError,'graph/sample/input evidence'):
+            ev.identity(self.directory,'bus',self.manifest,self.prepared)
+
 
 class WorkflowTests(unittest.TestCase):
     def run_job(self,stop=False,numerical_error=False):
@@ -150,7 +166,8 @@ class WorkflowTests(unittest.TestCase):
             def analyze(directory,sample,*args,**kwargs):
                 return {'passed':not numerical_error,'rows':[],'counts':{},'final':{},'errors':[],
                         'nodes_captured':334,'outputs_captured':335,'inputs_verified_nodes':334}
-            with patch.object(job,'ROOT',root),patch.object(job,'Replay'),patch.object(job,'verify_reference_manifest'), \
+            with patch.object(job,'ROOT',root),patch.object(job,'Replay'),patch.object(job,'check_renderer'), \
+                 patch.object(job,'verify_reference_manifest'), \
                  patch.object(job,'probe_gate',return_value={'status':'passed'}), \
                  patch.object(job,'find_reuse',return_value=None),patch.object(job,'audit',side_effect=analyze), \
                  patch.object(job,'capture',side_effect=collect) as capture:

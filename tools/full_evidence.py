@@ -6,13 +6,13 @@ from pathlib import Path
 import struct
 import sys
 import zlib
-from full_replay import Replay,ROOT,sha
+from full_replay import Replay,ROOT,sha,source_sha
 
 sys.path.insert(0,str(ROOT/'yolo26_pc'))
 from node_capture import HEADER,parse_snapshot
 from node_compare import compare_tensor
 from pcie_backend import PBTools,OUTPUT_BYTES
-from pcie_prepared import checked_file,detections,annotated_svg,reference_result
+from pcie_prepared import checked_file,detections,annotated_svg,save_annotation,reference_result
 
 
 def read_json(path): return json.loads(path.read_text(encoding='utf-8'))
@@ -32,7 +32,8 @@ def identity(directory,sample,manifest,prepared):
     if (summary.get('evidence_version')!=1 or summary.get('sample')!=sample or
             summary.get('input_sha256')!=prepared['input_sha256'] or
             summary.get('firmware_sha256')!=sha((ROOT/'firmware/demo-pcie.bin').read_bytes()) or
-            summary.get('reference_manifest_sha256')!=sha((ROOT/'reference/nodes/manifest.json').read_bytes())):
+            summary.get('reference_manifest_sha256') not in
+                (source_sha(ROOT/'reference/nodes/manifest.json'),sha((ROOT/'reference/nodes/manifest.json').read_bytes()))):
         raise ValueError('Capture lacks matching graph/sample/input evidence')
     saved(directory,'input.bin',prepared['input_sha256'],manifest['tensors'][0]['bytes'])
     return summary
@@ -83,7 +84,7 @@ def evidence(directory,node,tensors):
     return snap,inputs,outputs,issues
 
 
-def final_check(directory,prepared,summary):
+def final_check(directory,prepared,summary,render=True):
     raw=saved(directory,'tensors/0548.bin',size=OUTPUT_BYTES)
     normal_record=summary.get('normal_repeat',{})
     normal=saved(directory,'normal-candidates.bin',normal_record['sha256'],OUTPUT_BYTES)
@@ -99,10 +100,10 @@ def final_check(directory,prepared,summary):
     source=checked_file(prepared['source'],prepared['source_sha256'])
     svg=annotated_svg(source,prepared['transform'],found)
     if not svg or len(found)!=svg.count('fill="none" stroke='): raise ValueError('Drawing/box count mismatch')
-    (directory/'full-check-annotated.svg').write_text(svg,encoding='utf-8')
+    if render: save_annotation(directory/'full-check-annotated.png',source,prepared['transform'],found)
     reference=checked_file(prepared['reference'],prepared['reference_sha256'],7232)
     return {'valid':True,'normal_repeat_exact':normal==raw,'normal_sha256':sha(normal),
-            'capture_sha256':sha(raw),'detections':found,'annotated':'full-check-annotated.svg',
+            'capture_sha256':sha(raw),'detections':found,'annotated':'full-check-annotated.png',
             'qemu':reference_result(raw,reference)}
 
 
@@ -117,7 +118,7 @@ def reusable(directory,sample,manifest,prepared):
             key=(snap['session'],snap['frame'],snap['sequence']-node['id'])
             if issues or session is not None and key!=session: return False
             session=key
-        return final_check(directory,prepared,summary)['normal_repeat_exact']
+        return final_check(directory,prepared,summary,render=False)['normal_repeat_exact']
     except (OSError,ValueError,KeyError,TypeError,struct.error): return False
 
 
@@ -172,7 +173,7 @@ def audit(directory,sample,manifest,prepared,replay_factory=Replay,progress=None
             if progress: progress(sample,node['id'],row['status'])
     if replay is not None: replay.close()
     try: result['final']=final_check(directory,prepared,summary)
-    except (OSError,ValueError,KeyError,TypeError,struct.error) as exc: result['errors'].append(str(exc))
+    except (OSError,ValueError,KeyError,TypeError,RuntimeError,struct.error) as exc: result['errors'].append(str(exc))
     result['counts']=dict(Counter(r['status'] for r in rows))
     result['nodes_captured']=sum('captured_outputs' in r for r in rows)
     result['outputs_captured']=sum(r.get('captured_outputs',0) for r in rows)

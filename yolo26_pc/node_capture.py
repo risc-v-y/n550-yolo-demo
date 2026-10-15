@@ -22,7 +22,8 @@ from board_diagnostics import DiagnosticLog
 from node_compare import ReferenceArchive, compare_tensor, digest, replay_convolution
 from pcie_backend import (BASE, MAILBOX, MAGIC, INFO, STATUS, checked, PBTools,
                           PCIeBackend, PCIeToolError, READY, BUSY, DONE, ERROR, NODE, OUTPUT_BYTES)
-from pcie_prepared import checked_file, detections, annotated_svg, reference_result
+from pcie_prepared import checked_file, detections, save_annotation, reference_result
+from png_output import check_renderer
 
 ROOT=Path(__file__).resolve().parent.parent
 HEADER=struct.Struct('<4I2Q8I')
@@ -370,9 +371,11 @@ def main():
     backend=archive=None
     started=time.monotonic(); exit_code=1
     try:
+        check_renderer()
         manifest=json.loads((ROOT/'reference/nodes/manifest.json').read_text(encoding='utf-8'))
         verify_reference_manifest(manifest)
-        summary['reference_manifest_sha256']=digest((ROOT/'reference/nodes/manifest.json').read_bytes())
+        summary['reference_manifest_sha256']=digest((ROOT/'reference/nodes/manifest.json').read_bytes().replace(b'\r\n',b'\n'))
+        summary['reference_normalization']='CRLF-to-LF'
         summary['firmware_sha256']=digest((ROOT/'firmware/demo-pcie.bin').read_bytes())
         samples=json.loads((ROOT/'reference/prepared/manifest.json').read_text(encoding='utf-8'))['samples']
         sample=samples[args.sample]
@@ -391,12 +394,12 @@ def main():
             (output/'first_difference.json').write_text(json.dumps(first,indent=2)+'\n',encoding='utf-8')
         found=detections(raw,sample['transform'])
         source=checked_file(sample['source'],sample['source_sha256'])
-        (output/'annotated.svg').write_text(annotated_svg(source,sample['transform'],found),encoding='utf-8')
+        save_annotation(output/'annotated.png',source,sample['transform'],found)
         reference=checked_file(sample['reference'],sample['reference_sha256'],7232)
         summary.update(status='completed',nodes_captured=len({r['node'] for r in rows}),
                        tensors_captured=len(rows),different_nodes=len({r['node'] for r in rows if not r['byte_identical']}),
                        first_difference=None if first is None else {k:first[k] for k in ('node','kind','tensor','shape','same_input_full_bytes_verified')},
-                       final_reference=reference_result(raw,reference),detections=len(found),
+                       final_reference=reference_result(raw,reference),detections=len(found),annotated='annotated.png',
                        last_diagnostic=backend.last_diagnostic)
         if not args.skip_normal_check:
             backend.close(); backend=None

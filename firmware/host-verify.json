@@ -18,7 +18,8 @@
     "model/constants.bin": "ce4ce892ec5cc8b0f1bee0f4cb754535aa4932b5879da95ed01c3db9039ad1ce"
   },
   "source_normalization": "CRLF-to-LF",
-  "reference_manifest_sha256": "c9fa065edef58dcea284b76582daddf562bef02d69eb871ea37c3f396f3ae421",
+  "reference_manifest_sha256": "1dc7de270ecdb4c021fb96a32136cc7be243f861aeb2e9c36b007282fece0199",
+  "reference_normalization": "CRLF-to-LF",
   "qemu_gate": {
     "status": "passed",
     "nodes": 668,

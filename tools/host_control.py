@@ -135,6 +135,10 @@ def restore():
                         '--pbcopy','/rv/fpga/bin/pbcopy'],cwd=ROOT,check=True)
 
 
+def export_png():
+    subprocess.run([sys.executable,str(ROOT/'tools/render_results.py'),'--latest'],cwd=ROOT,check=True)
+
+
 def candidates():
     base=ROOT/'yolo26_pc/outputs'
     paths=[]
@@ -222,15 +226,15 @@ def progress():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','analysis','progress','probe','probe-report','restore','full-check','full-report'))
+    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','analysis','progress','probe','probe-report','restore','full-check','full-report','png'))
     args=parser.parse_args()
     if sys.platform!='linux':
         parser.error('Run this menu on the Linux host.')
     actions={'1':update,'2':lambda:pages('status'),'3':lambda:pages('difference'),
              '4':lambda:pages('analysis'),'5':launch,'6':progress,'7':choose,
-             '8':lambda:launch(probe=True),'9':probe_pages,'10':restore,'11':launch_full,'12':full_pages}
+             '8':lambda:launch(probe=True),'9':probe_pages,'10':restore,'11':launch_full,'12':full_pages,'13':export_png}
     names={'update':'1','status':'2','difference':'3','analysis':'4','capture':'5','progress':'6',
-           'probe':'8','probe-report':'9','restore':'10','full-check':'11','full-report':'12'}
+           'probe':'8','probe-report':'9','restore':'10','full-check':'11','full-report':'12','png':'13'}
     while True:
         try:
             if args.action:
@@ -242,12 +246,12 @@ def main():
                   '\n8 Load + run 3-tile probe (background, replaces firmware)'
                   '\n9 Reanalyze saved probe (offline, 3 pages)\n10 Reload normal demo firmware'
                   '\n11 Full BUS + ZIDANE check (background, auto-load normal firmware)'
-                  '\n12 Full check summary (3 pages, offline)\n0 Exit')
+                  '\n12 Full check summary (3 pages, offline)\n13 Export saved drawings to PNG (offline)\n0 Exit')
             answer=input('Choice: ').strip()
             if answer=='0':
                 return 0
             if answer not in actions:
-                print('Choose 0-12.'); continue
+                print('Choose 0-13.'); continue
             actions[answer]()
             if answer=='1':
                 # Reload updated menu code only after a successful fast-forward pull.

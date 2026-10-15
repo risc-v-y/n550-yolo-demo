@@ -4,12 +4,40 @@ import json
 import os
 from pathlib import Path
 import struct
+import subprocess
 import sys
+import tempfile
 import unittest
-from full_replay import Replay,ROOT
+from full_replay import Replay,ROOT,sha,verified_binary
 from tile_probe import fp32_rne
 
 BINARY=Path(os.environ.get('YOLO_AUDITOR',str(ROOT/'yolo26_riscv/build/host-verify/host-verify')))
+
+
+class CheckoutTests(unittest.TestCase):
+    def test_git_linux_checkout_and_windows_line_endings_share_release_hash(self):
+        blob=subprocess.check_output(['git','-c','safe.directory='+ROOT.as_posix(),
+                                      'show','HEAD:reference/nodes/manifest.json'],cwd=str(ROOT))
+        lf=blob.replace(b'\r\n',b'\n')
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name)
+            (root/'firmware').mkdir(); (root/'reference/nodes').mkdir(parents=True)
+            (root/'firmware/host-verify').write_bytes(b'binary')
+            binary_data=b'weights\r\nuntouched'
+            (root/'weights.bin').write_bytes(binary_data)
+            record={'version':1,'arch':'linux-x86_64','static':True,'qemu_gate':{'status':'passed'},
+                    'binary':'firmware/host-verify','sha256':sha(b'binary'),
+                    'sources':{'weights.bin':sha(binary_data)},'reference_manifest_sha256':sha(lf)}
+            (root/'firmware/host-verify.json').write_text(json.dumps(record))
+            path=root/'reference/nodes/manifest.json'
+            for data in (lf,lf.replace(b'\n',b'\r\n')):
+                path.write_bytes(data)
+                self.assertEqual(verified_binary(root),root/'firmware/host-verify')
+            path.write_bytes(lf.replace(b'"version": 1',b'"version": 2',1))
+            with self.assertRaisesRegex(ValueError,'reference manifest mismatch'): verified_binary(root)
+            path.write_bytes(lf)
+            (root/'weights.bin').write_bytes(binary_data.replace(b'\r\n',b'\n'))
+            with self.assertRaisesRegex(ValueError,'source/model mismatch'): verified_binary(root)
 
 
 @unittest.skipUnless(sys.platform=='linux' and BINARY.exists(),'Build the Linux static auditor first')

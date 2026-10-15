@@ -101,7 +101,8 @@ class PreparedTests(unittest.TestCase):
         self.assertFalse(result['byte_identical'])
         self.assertGreater(result['max_coordinate_difference'], 0)
 
-    def test_cli_writes_report_and_annotated_svg(self):
+    @unittest.skipUnless(sys.platform=='linux','Uses the Linux PNG renderer')
+    def test_cli_writes_report_and_annotated_png(self):
         record = self.manifest['samples']['bus']
         reference = (pcie_prepared.ROOT / record['reference']).read_bytes()
         raw = reference[pcie_prepared.REFERENCE_HEADER.size:]
@@ -130,7 +131,9 @@ class PreparedTests(unittest.TestCase):
             self.assertTrue(report['reference']['byte_identical'])
             self.assertEqual(len(report['detections']), 6)
             self.assertEqual((output / 'candidates.bin').read_bytes(), raw)
-            self.assertTrue((output / 'annotated.svg').is_file())
+            self.assertEqual(report['annotated'],'annotated.png')
+            self.assertTrue((output/'annotated.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n'))
+            self.assertFalse((output/'annotated.svg').exists())
             self.assertTrue((output / 'diagnostics.jsonl').is_file())
 
 

@@ -12,6 +12,7 @@ import struct
 
 from board_diagnostics import DiagnosticLog
 from pcie_backend import INPUT_BYTES, OUTPUT_BYTES, PCIeBackend
+from png_output import check_renderer,write_png
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -106,6 +107,10 @@ def annotated_svg(source, transform, found):
     return '\n'.join(lines) + '\n'
 
 
+def save_annotation(path,source,transform,found):
+    return write_png(annotated_svg(source,transform,found),path)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sample', choices=('bus', 'zidane'), required=True)
@@ -131,6 +136,7 @@ def main():
     backend = None
     report = {'status': 'starting', 'sample': args.sample, 'input_sha256': sample['input_sha256']}
     try:
+        check_renderer()
         backend = PCIeBackend(args.pbcopy, args.pbload, infer_timeout=args.infer_timeout,
                               tool_timeout=args.tool_timeout, progress=print, diagnostic=log.emit,
                               trace=args.board_trace, check_finite=args.check_intermediates)
@@ -139,10 +145,9 @@ def main():
         found = detections(raw, sample['transform'])
         comparison = reference_result(raw, reference)
         (output / 'candidates.bin').write_bytes(raw)
-        (output / 'annotated.svg').write_text(annotated_svg(source, sample['transform'], found),
-                                              encoding='utf-8')
+        save_annotation(output/'annotated.png',source,sample['transform'],found)
         report.update(status='completed', timing=backend.last_timing, reference=comparison,
-                      detections=found, annotated='annotated.svg')
+                      detections=found, annotated='annotated.png')
         print(f"{args.sample}: {len(found)} detections; reference byte-identical={comparison['byte_identical']}")
     except BaseException as exc:
         report.update(status='failed', error=str(exc))

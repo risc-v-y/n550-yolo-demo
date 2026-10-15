@@ -29,7 +29,8 @@ def package(binary,gate_path):
             raise ValueError('Incomplete/incompatible frozen QEMU gate: '+sample)
     record={'version':1,'arch':'linux-x86_64','static':True,'binary':'firmware/host-verify','sha256':sha(raw),
             'sources':{name:source_sha(ROOT/name) for name in SOURCES},
-            'source_normalization':'CRLF-to-LF','reference_manifest_sha256':sha((ROOT/'reference/nodes/manifest.json').read_bytes()),
+            'source_normalization':'CRLF-to-LF','reference_manifest_sha256':source_sha(ROOT/'reference/nodes/manifest.json'),
+            'reference_normalization':'CRLF-to-LF',
             'qemu_gate':{'status':'passed','nodes':668,'outputs':670,'operators':gate['operators'],
                          'full_report_sha256':sha(gate_path.read_bytes())}}
     (ROOT/'firmware/host-verify').write_bytes(raw)

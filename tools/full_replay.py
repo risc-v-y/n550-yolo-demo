@@ -18,6 +18,20 @@ def source_sha(path):
     return sha(data if path.suffix=='.bin' else data.replace(b'\r\n',b'\n'))
 
 
+def verified_binary(root):
+    record=json.loads((root/'firmware/host-verify.json').read_text(encoding='utf-8'))
+    if (record.get('version')!=1 or record.get('arch')!='linux-x86_64' or
+            record.get('static') is not True or record.get('qemu_gate',{}).get('status')!='passed'):
+        raise ValueError('Auditor release manifest is not verified')
+    binary=root/record['binary']
+    if sha(binary.read_bytes())!=record['sha256']: raise ValueError('Auditor binary SHA mismatch')
+    if source_sha(root/'reference/nodes/manifest.json')!=record['reference_manifest_sha256']:
+        raise ValueError('Auditor release gate/reference manifest mismatch')
+    for name,digest in record['sources'].items():
+        if source_sha(root/name)!=digest: raise ValueError('Auditor source/model mismatch: '+name)
+    return binary
+
+
 class Replay:
     def __init__(self,mode=16,binary=None,timeout=300):
         if mode not in (16,32): raise ValueError('Replay mode must be 16 or 32')
@@ -25,17 +39,7 @@ class Replay:
         if binary is None:
             if platform.system()!='Linux' or platform.machine() not in ('x86_64','amd64'):
                 raise ValueError('Packaged auditor requires Linux x86_64')
-            record=json.loads((ROOT/'firmware/host-verify.json').read_text())
-            if (record.get('version')!=1 or record.get('arch')!='linux-x86_64' or
-                    record.get('static') is not True or record.get('qemu_gate',{}).get('status')!='passed'):
-                raise ValueError('Auditor release manifest is not verified')
-            binary=ROOT/record['binary']
-            if sha(binary.read_bytes())!=record['sha256']: raise ValueError('Auditor binary SHA mismatch')
-            if sha((ROOT/'reference/nodes/manifest.json').read_bytes())!=record['reference_manifest_sha256']:
-                raise ValueError('Auditor release gate/reference manifest mismatch')
-            for name,digest in record['sources'].items():
-                if source_sha(ROOT/name)!=digest:
-                    raise ValueError('Auditor source/model mismatch: '+name)
+            binary=verified_binary(ROOT)
         self.process=subprocess.Popen([str(Path(binary).resolve()),'--serve'],stdin=subprocess.PIPE,
                                       stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
         try:

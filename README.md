@@ -21,7 +21,21 @@ bash tools/host.sh
 
 新采集保存原始节点快照、输入前CRC、完整输入/输出哈希及实际张量；旧采集缺少完整凭据时自动重新采集整张图。已完整采集且校验通过的图片可复用，失败的半帧从头采集。首层旧两轮分块由菜单8留下的位置自动读取并与新C程序交叉核对；缺失时汇总明确标为未完成，不会误报通过。
 
-结果位于 `yolo26_pc/outputs/full-check/run-*/`，每图的 `analysis.json` 保存全部节点的“一致、分段匹配、未解释、输入未核实、采集缺失”分类。普通推理复跑核对、候选框长度/有限值/类别/置信度/坐标检查、原图绘框均纳入报告；绘框保存在对应采集目录的 `full-check-annotated.svg`，可在host查看。三页汇总每页不超过22行、80列；完整异常和日志保留host，无需传大文件。
+结果位于 `yolo26_pc/outputs/full-check/run-*/`，每图的 `analysis.json` 保存全部节点的“一致、分段匹配、未解释、输入未核实、采集缺失”分类。普通推理复跑核对、候选框长度/有限值/类别/置信度/坐标检查、原图绘框均纳入报告；绘框默认保存为对应采集目录的 `full-check-annotated.png`，固定图片及单图采集保存为 `annotated.png`。三页汇总每页不超过22行、80列；完整异常和日志保留host，无需传大文件。
+
+PNG无需浏览器：在已有图形会话中使用eog打开，或通过远程桌面查看。PNG生成本身不需要DISPLAY、NumPy、OpenCV或Pillow，复用host现有的librsvg/Cairo图像库；缺库会在访问板子前明确报错。
+
+**旧SVG选菜单13离线导出PNG，无需重新推理。** 程序优先使用最近全模型报告及其实际采集目录；如果最近一次启动即失败、没有图片，会明确提示并查找此前保存的图片，打印实际来源路径，不会将旧图片标记为本次结果。保留原SVG、数值报告和原始数据，另存`png-export.json`。
+
+```bash
+# 指定旧结果目录或SVG文件，离线导出PNG；不会加载固件或访问PCIe
+python3 tools/render_results.py "实际结果目录"
+
+# 在可显示图形的终端打开生成的检测图，替换为程序打印的实际路径
+eog "实际结果目录/annotated.png"
+```
+
+若旧版本在启动时提示`Auditor release gate/reference manifest mismatch`，选1更新后重新选11。本版统一文本换行后计算哈希，兼容Git在Windows/Linux间的CRLF/LF转换；实际内容、二进制权重和固件仍严格核对。旧失败报告保留，更新不会改变其结论。
 
 仅当两图覆盖完整、所有输入已核实、重放数值逐位匹配、普通模式复跑一致且分块交叉核对通过，才显示 `STATUS: passed`。`not_passed` 会列出未解释或缺失项，不设经验误差阈值。此结论仅覆盖这两张输入，不能推广为所有输入或完整RTL等价证明。
 
@@ -109,7 +123,7 @@ python3 yolo26_pc/pcie_prepared.py --sample zidane --pbcopy /rv/fpga/bin/pbcopy 
 
 原始 JPEG、正式预处理流程生成的输入、坐标映射与哈希已交付，见 `reference/prepared/manifest.json`。输入是 RGB NCHW `[1,3,416,416]` 小端 FP32，2,076,672 字节；保留全部 334 节点和现有 RVV+AMU FP16 计算。返回 `[300,6]` FP32，7,200 字节，字段为输入图坐标下的 `x1,y1,x2,y2,score,class`。host 按 `score > 0.25` 过滤并还原坐标，不增加 NMS。
 
-结果在 `yolo26_pc/outputs/board-pcie/<时间>/`：报告、日志、`candidates.bin` 和内嵌原图的 `annotated.svg`。用浏览器查看 SVG；检查报告的 `status=completed`、`reference.byte_identical`、类别顺序、坐标/分数差异和绘框效果。完成状态仅表示收发及结果检查完成，数值仍须验收，不设经验阈值掩盖差异。
+结果在 `yolo26_pc/outputs/board-pcie/<时间>/`：报告、日志、`candidates.bin` 和包含原图的 `annotated.png`。用eog查看PNG；检查报告的 `status=completed`、`reference.byte_identical`、类别顺序、坐标/分数差异和绘框效果。完成状态仅表示收发及结果检查完成，数值仍须验收，不设经验阈值掩盖差异。
 
 首次验收保留上述逐节点打印和中间值检查。旧版 `5af2816` 在节点305存在常量输出检查误报，已修正；更新后须重新加载本包的 `demo-pcie.bin`，仅拉取源码不会替换板上程序。原因见 [诊断说明](docs/DIAGNOSTICS.md)。
 

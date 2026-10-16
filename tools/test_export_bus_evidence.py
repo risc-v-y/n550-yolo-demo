@@ -3,6 +3,8 @@ import hashlib
 import json
 from pathlib import Path
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -20,6 +22,17 @@ def sha(data):
 
 
 class ExportTests(unittest.TestCase):
+    def test_clean_process_loads_runtime_modules_without_pythonpath(self):
+        entry = Path(app.__file__).resolve()
+        code = ('import sys,runpy; sys.path.insert(0,{!r}); '
+                'runpy.run_path({!r},run_name="export_startup"); '
+                'import node_capture,full_evidence,tile_probe').format(str(entry.parent), str(entry))
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run([sys.executable, '-I', '-c', code], cwd=directory,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    universal_newlines=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -13,6 +13,7 @@ import time
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'yolo26_pc'))
 MAX_ARCHIVE_BYTES = 3_000_000_000
 REPORTS = ('bus-analysis.json', 'summary.json', 'checkpoint.json', 'bus/analysis.json')
 

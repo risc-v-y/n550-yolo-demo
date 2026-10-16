@@ -17,9 +17,16 @@ print("Video Python:", sys.executable, sys.version.split()[0])'
     sha256sum -c SHA256SUMS
 )
 
-# Bootstrap pip from its wheel, including hosts without a pip installation.
-# --isolated/--no-index keep user configuration and network sources out of this install.
-PYTHONPATH="$wheel_dir/pip-24.1.2-py3-none-any.whl" "$python_bin" -m pip \
+# Use pip's supported sysconfig switch in this process only. Python 3.8 hosts
+# can have incompatible system distutils files; neither they nor site-packages
+# need to be imported or modified for installing these prebuilt wheels.
+# --isolated/--no-index keep user configuration and network sources out.
+PYTHONPATH="$wheel_dir/pip-24.1.2-py3-none-any.whl" "$python_bin" -c '
+import runpy, sys, sysconfig
+sysconfig._PIP_USE_SYSCONFIG = True
+sys.argv[0] = "pip"
+runpy.run_module("pip", run_name="__main__")
+' \
     --isolated --disable-pip-version-check --no-cache-dir install \
     --no-index --no-deps --only-binary=:all: --upgrade --target "$target_dir" \
     "$wheel_dir/numpy-1.24.4-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" \

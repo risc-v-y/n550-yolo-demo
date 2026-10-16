@@ -9,6 +9,7 @@ from unittest.mock import patch
 import host_video as app
 import video_demo as video
 import video_report as review
+import video_golden
 
 
 class ReportTests(unittest.TestCase):
@@ -19,6 +20,7 @@ class ReportTests(unittest.TestCase):
         image = video.np.zeros((48, 64, 3), dtype=video.np.uint8)
         movie = app.writer(video, self.root / 'demo.mp4', 5, image)
         self.records = []
+        self.expected = {}
         for frame_id in range(3):
             source = image + frame_id * 70
             tensor, transform = video.prepare_input(source)
@@ -31,6 +33,7 @@ class ReportTests(unittest.TestCase):
             for name, pixels in (('source', source), ('detected', drawn)):
                 app.save_png(video, self.root / '{}-{:06d}.png'.format(name, frame_id), pixels)
             raw = candidates.tobytes()
+            self.expected[frame_id] = raw
             (self.root / 'candidates-{:06d}.bin'.format(frame_id)).write_bytes(raw)
             record = {'frame_id': frame_id, 'source_frame': frame_id,
                       'input_sha256': hashlib.sha256(tensor.tobytes()).hexdigest(),
@@ -43,6 +46,17 @@ class ReportTests(unittest.TestCase):
         self.report = {'status': 'completed', 'results': self.records, 'encoded_frames': 3,
                        'source': '/old/location/input.mp4', 'completion_reason': 'end of video'}
         self.save_report()
+        self.golden_calls = []
+        owner = self
+        class FixtureGolden:
+            identity = {'fixture': 'independent expected bytes'}
+            def check(self, frame_id, data, actual):
+                owner.golden_calls.append(frame_id)
+                return dict(video_golden.compare(actual, owner.expected[frame_id]), frame_id=frame_id)
+            def close(self): pass
+        self.fake_golden = FixtureGolden()
+        context = patch('video_golden.VideoGolden', return_value=self.fake_golden)
+        context.start(); self.addCleanup(context.stop)
 
     def save_report(self):
         review.save_json(self.root / 'report.json', self.report)
@@ -55,6 +69,9 @@ class ReportTests(unittest.TestCase):
         before = (self.root / 'report.json').read_bytes()
         summary = self.analyze()
         self.assertEqual(summary['functional'], 'PASSED')
+        self.assertEqual(summary['numeric']['status'], 'PASSED')
+        self.assertEqual(summary['numeric']['exact_frames'], 3)
+        self.assertEqual(summary['overall'], 'PASSED')
         self.assertEqual(summary['empty_detection_frames'], 1)
         self.assertEqual(summary['semantic_review'], 'NOT_CONFIRMED')
         self.assertEqual(summary['encoded'], 3)
@@ -165,6 +182,71 @@ class ReportTests(unittest.TestCase):
             for line in text.splitlines():
                 columns = sum(2 if unicodedata.east_asian_width(c) in ('W','F') else 1 for c in line)
                 self.assertLessEqual(columns, 80)
+
+    def test_single_bit_numerical_difference_is_not_hidden_by_functional_pass(self):
+        path = self.root / 'candidates-000000.bin'
+        raw = bytearray(path.read_bytes()); raw[3] = 0x80  # -0 instead of +0: same drawn box.
+        path.write_bytes(raw)
+        self.records[0]['output_sha256'] = review.digest(path)
+        review.save_json(self.root / 'result-000000.json', self.records[0]); self.save_report()
+        summary = self.analyze()
+        self.assertEqual(summary['functional'], 'PASSED')
+        self.assertEqual(summary['numeric']['status'], 'DIFFERENT')
+        self.assertEqual(summary['overall'], 'FAILED')
+        self.assertEqual(summary['numeric']['exact_frames'], 2)
+        self.assertEqual(self.golden_calls, [0, 1, 2])
+        text = review.render(summary, 2)
+        self.assertIn('got=0x80000000', text)
+        self.assertIn('golden=0x00000000', text)
+
+    def test_reference_error_blocks_numeric_pass_without_board_access(self):
+        with patch('video_golden.VideoGolden', side_effect=ValueError('reference SHA mismatch')):
+            summary = self.analyze()
+        self.assertEqual(summary['functional'], 'PASSED')
+        self.assertEqual(summary['numeric']['status'], 'ERROR')
+        self.assertEqual(summary['overall'], 'FAILED')
+        self.assertIn('reference SHA', review.render(summary, 2))
+
+    def test_interrupted_numeric_check_saves_incomplete_report(self):
+        original = self.fake_golden.check
+        def interrupt(frame_id, data, actual):
+            if frame_id == 1: raise KeyboardInterrupt()
+            return original(frame_id, data, actual)
+        with patch.object(self.fake_golden, 'check', side_effect=interrupt):
+            summary = self.analyze()
+        self.assertEqual(summary['functional'], 'PASSED')
+        self.assertEqual(summary['numeric']['exact_frames'], 1)
+        self.assertEqual(summary['numeric']['status'], 'INCOMPLETE')
+        self.assertEqual(summary['overall'], 'INCOMPLETE')
+        self.assertTrue(summary['numeric']['interrupted'])
+        # Reopening the report performs software checking only, with no board rerun.
+        self.assertEqual(self.analyze()['numeric']['status'], 'PASSED')
+
+    def test_bad_frame_evidence_prevents_full_numeric_pass_but_keeps_other_frames(self):
+        (self.root / 'source-000001.png').unlink()
+        summary = self.analyze()
+        self.assertEqual(summary['numeric']['status'], 'INCOMPLETE')
+        self.assertEqual(self.golden_calls, [0, 2])
+        self.assertEqual(summary['overall'], 'FAILED')
+
+    def test_one_frame_reference_error_continues_remaining_frames(self):
+        original = self.fake_golden.check
+        def failure(frame_id, data, actual):
+            if frame_id == 1: raise TimeoutError('reference process timeout')
+            return original(frame_id, data, actual)
+        with patch.object(self.fake_golden, 'check', side_effect=failure):
+            summary = self.analyze()
+        self.assertEqual(self.golden_calls, [0, 2])
+        self.assertEqual(summary['numeric']['exact_frames'], 2)
+        self.assertEqual(summary['numeric']['error_count'], 1)
+        self.assertEqual(summary['overall'], 'FAILED')
+
+    def test_reference_cleanup_failure_does_not_produce_false_pass(self):
+        with patch.object(self.fake_golden, 'close', side_effect=RuntimeError('cannot close reference')):
+            summary = self.analyze()
+        self.assertEqual(summary['numeric']['exact_frames'], 3)
+        self.assertEqual(summary['numeric']['status'], 'ERROR')
+        self.assertEqual(summary['overall'], 'FAILED')
 
 
 if __name__ == '__main__':

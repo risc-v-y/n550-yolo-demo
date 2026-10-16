@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import host_video as app
 import video_demo as video
+import video_golden
 
 
 class VideoTests(unittest.TestCase):
@@ -73,6 +74,15 @@ class VideoTests(unittest.TestCase):
             def close(self):
                 owner.closed = True
         self.fake = FakeBackend
+        class FixtureGolden:
+            identity = {'fixture': 'zero candidates for fake transport'}
+            def check(self, frame_id, data, actual):
+                expected = video.np.zeros((300, 6), dtype=video.np.float32).tobytes()
+                return dict(video_golden.compare(actual, expected), frame_id=frame_id)
+            def close(self): pass
+        self.fake_golden = FixtureGolden()
+        context = patch('video_golden.VideoGolden', return_value=self.fake_golden)
+        context.start(); self.addCleanup(context.stop)
 
     def run_video(self):
         with patch('pcie_backend.PCIeBackend', self.fake), \
@@ -88,6 +98,8 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(self.backend_calls, 1)
         self.assertTrue(self.closed)
         self.assertEqual(report['functional'], 'PASSED')
+        self.assertEqual(report['verification'], 'PASSED')
+        self.assertEqual(report['numeric_status'], 'PASSED')
         self.assertTrue((self.output / 'preview.png').is_file())
         cap = video.cv2.VideoCapture(str(self.source))
         for i, record in enumerate(report['results']):
@@ -257,6 +269,26 @@ class VideoTests(unittest.TestCase):
             bad = good.copy(); bad[0, index] = value
             with self.assertRaises(ValueError): app.validate_candidates(video, bad)
         with self.assertRaises(ValueError): app.validate_candidates(video, good[:299])
+
+    def test_numeric_error_cannot_be_reported_as_overall_video_pass(self):
+        with patch('video_golden.VideoGolden', side_effect=RuntimeError('reference unavailable')):
+            report = self.run_video()
+        self.assertEqual(report['status'], 'completed')
+        self.assertEqual(report['functional'], 'PASSED')
+        self.assertEqual(report['numeric_status'], 'ERROR')
+        self.assertEqual(report['verification'], 'FAILED')
+        self.assertTrue((self.output / 'demo.mp4').is_file())
+
+    def test_cli_requires_numeric_and_functional_pass_but_host_check_needs_no_golden(self):
+        for index, (result, check, expected) in enumerate((
+                ({'status': 'completed', 'functional': 'PASSED', 'verification': 'FAILED'}, False, 1),
+                ({'status': 'completed', 'verification': 'PASSED'}, False, 0),
+                ({'status': 'completed'}, True, 0))):
+            argv = ['host_video.py', '--no-display', '--output', str(self.root / ('cli-' + str(index)))]
+            if check: argv += ['--check']
+            with patch.object(app, 'ROOT', self.root), patch.object(app, 'run', return_value=result), \
+                 patch.object(sys, 'argv', argv):
+                self.assertEqual(app.main(), expected)
 
 
 if __name__ == '__main__':

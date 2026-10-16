@@ -1,6 +1,7 @@
 """Offline video evidence checks, manual flags and three screenshot-sized pages.
 
-Never accesses the board or runs inference. Original report/results stay intact.
+Never accesses the board. Software golden inference runs on the host CPU.
+Original report/results stay intact.
 """
 import argparse
 import hashlib
@@ -93,7 +94,7 @@ def analyze(directory, video):
     ids = [r.get('frame_id') for r in records]
     if ids != list(range(len(records))) or any(r.get('source_frame') != i for i, r in enumerate(records)):
         issue('sequence', 'Expected unique, consecutive source/frame IDs from zero')
-    shapes = []
+    shapes, eligible = [], set()
     png_hashes_missing = False
     for record in records:
         frame_id = record.get('frame_id')
@@ -129,6 +130,7 @@ def analyze(directory, video):
             if not video.np.array_equal(drawn, images['detected']):
                 raise ValueError('Detection PNG differs from postprocessing/drawing replay')
             shapes.append(even_frame(video, drawn).shape)
+            eligible.add(frame_id)
         except (OSError, ValueError, TypeError, KeyError, OverflowError, video.cv2.error) as exc:
             issue('frame_evidence', exc, frame_id)
     if png_hashes_missing:
@@ -186,8 +188,13 @@ def analyze(directory, video):
             ('frame_total', lambda r: r.get('elapsed_seconds'))):
         values = [getter(r) for r in records if isinstance(getter(r), (int, float))]
         timings[key] = {'mean': sum(values) / len(values), 'max': max(values)} if values else None
-    summary = {'version': 1, 'id': report.get('id', directory.name), 'directory': str(directory),
+    from video_golden import verify_frames
+    numeric = verify_frames(directory, records, eligible, video)
+    overall = ('FAILED' if status == 'FAILED' or numeric['status'] in ('DIFFERENT', 'ERROR') else
+               'PASSED' if status == 'PASSED' and numeric['status'] == 'PASSED' else 'INCOMPLETE')
+    summary = {'version': 2, 'id': report.get('id', directory.name), 'directory': str(directory),
                'report_sha256': digest(source), 'functional': status, 'run_status': state,
+               'overall': overall, 'numeric': numeric,
                'completion_reason': report.get('completion_reason'), 'stage': report.get('stage', 'legacy'),
                'active_frame': report.get('active_frame'), 'completed': len(records), 'encoded': encoded,
                'empty_detection_frames': sum(not r['detections'] for r in records),
@@ -204,8 +211,12 @@ def analyze(directory, video):
 
 
 def render(summary, page):
+    numeric = summary['numeric']
     lines = ['VIDEO REPORT {} PAGE={}/3'.format(summary['id'], page),
-             'FUNCTIONAL: {} | run={}'.format(summary['functional'], summary['run_status'])]
+             'CHECK: {} | FUNCTIONAL: {} | run={}'.format(summary['overall'],summary['functional'],summary['run_status']),
+             'NUMERICAL: {} exact={}/{} checked={} diff={} error={}'.format(
+                 numeric['status'],numeric['exact_frames'],numeric['expected_frames'],
+                 numeric['checked_frames'],numeric['different_frames'],numeric['error_count'])]
     if page == 1:
         lines += ['Completed={} MP4={} empty-detection={}'.format(summary['completed'], summary['encoded'],
                                                                 summary['empty_detection_frames']),
@@ -213,12 +224,14 @@ def render(summary, page):
                   'Last stage={} active-frame={}'.format(summary['stage'], summary['active_frame']),
                   'Source: ' + Path(summary.get('source') or '?').name,
                   'Wall seconds: {}'.format(summary['wall_seconds']),
+                  'Golden check seconds: {:.2f}'.format(numeric['elapsed_seconds']),
                   'MP4 playback FPS: {} (not inference FPS)'.format(summary['playback_fps']),
                   'Visual review: {} | flagged={}'.format(summary['semantic_review'], len(summary['flags'])),
                   'Evidence checks: IDs, input/output hashes, mapping, drawing, MP4.',
                   'Transport: runtime PCIe session/frame/CRC validation.',
-                  'PASSED means functional checks only; no video golden comparison.',
-                  'No detections can be valid; correctness needs visual review.']
+                  'Golden: independent 334-node forward, all 1800 FP32 words/frame.',
+                  'Rule: ' + numeric['numeric_rule'],
+                  'No tolerance; numeric match does not prove detection quality.']
         lines += summary['warnings'][:2]
     elif page == 2:
         lines += ['Saved diagnostics: diagnostics.jsonl; full details: video-summary.json',
@@ -233,11 +246,23 @@ def render(summary, page):
                       'Board error={} detail={} trap={} pc={} value={}'.format(
                 board.get('error'),board.get('detail'),board.get('trap_cause'),
                 hex(board.get('trap_pc',0)),hex(board.get('trap_value',0)))]
-        for item in summary['issues'][:2]:
+        for item in summary['issues'][:1]:
             lines += ['ERROR frame={} {}'.format(item['frame'], item['code']), item['detail'][:100]]
-        if not summary['issues']:
-            lines.append('No automatic-check errors in available evidence.')
-        for item in summary['flags'][:2]:
+        exceptions = [r for r in numeric['frames'] if r['status'] != 'EXACT']
+        for item in exceptions[:2]:
+            lines.append('NUM frame={} {} different={}/1800'.format(
+                item['frame_id'],item['status'],item.get('different_elements','?')))
+            first = item.get('first_difference')
+            if first:
+                lines += ['candidate={} field={} got={} golden={}'.format(
+                    first['candidate'],first['field'],first['actual_bits'],first['golden_bits']),
+                          'max coord={:.8g} score={:.8g} class-diff={}'.format(
+                    item['max_coordinate_difference'],item['max_score_difference'],item['field_differences']['class'])]
+            elif item.get('error'): lines.append(item['error'][:100])
+        if not summary['issues'] and not exceptions:
+            lines.append('No reported errors; completed-frame golden comparison is bit-exact.'
+                         if numeric['status']=='PASSED' else 'Numerical check not complete; no numeric pass claimed.')
+        for item in summary['flags'][:1]:
             lines.append('FLAG frame={}: {}'.format(item['frame_id'], item['note'][:60]))
         lines += ['All issue/flag details stay on host; summary may show only a subset.',
                   'Source frame IDs start at 0; PCIe/board frame IDs start at 1.',
@@ -252,6 +277,7 @@ def render(summary, page):
                   'Screenshot these 3 pages and preview.png.',
                   'For wrong boxes: send flagged detected-NNNNNN.png + frame ID.',
                   'Originals: source-NNNNNN.png; raw output: candidates-NNNNNN.bin.',
+                  'Golden cache is verified; menu 17 resumes unfinished frames.',
                   'Offline recheck does not access/reset/re-run the board.']
     else:
         raise ValueError('Page must be 1, 2 or 3')
@@ -287,7 +313,7 @@ def main():
         summary = analyze(args.directory, dependencies())
         for page in (args.page,) if args.page else (1, 2, 3):
             print(render(summary, page), end='')
-        return 0
+        return 0 if summary['overall'] == 'PASSED' else 1
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print('VIDEO REPORT ERROR: {}: {}'.format(type(exc).__name__, exc))
         return 1

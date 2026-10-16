@@ -352,8 +352,12 @@ def run(args, output):
         if not args.check and video is not None:
             try:
                 from video_report import analyze
+                print('VIDEO FRAMES SAVED: {}. Starting offline golden checks (host CPU; no board).'.format(
+                    len(report['results'])), flush=True)
                 summary = analyze(output, video)
                 report['functional'] = summary['functional']
+                report['verification'] = summary['overall']
+                report['numeric_status'] = summary['numeric']['status']
             except Exception as exc:
                 report['report_error'] = '{}: {}'.format(type(exc).__name__, exc)
                 save_json(output / 'report.json', report)
@@ -365,7 +369,10 @@ def run(args, output):
         print('Output: ' + str(output), flush=True)
         if summary is not None:
             print('VIDEO CHECK {} | run={} | visual review={}'.format(
-                summary['functional'], summary['id'], summary['semantic_review']), flush=True)
+                summary['overall'], summary['id'], summary['semantic_review']), flush=True)
+            print('VIDEO NUMERICAL {}: exact={}/{}; golden check {:.1f}s'.format(
+                summary['numeric']['status'], summary['numeric']['exact_frames'],
+                summary['numeric']['expected_frames'], summary['numeric']['elapsed_seconds']), flush=True)
             print('Menu 17: three report pages, preview.png and saved-frame flags.', flush=True)
         elif not args.check:
             print('VIDEO CHECK FAILED | run={} | report unavailable; see error above'.format(output.name), flush=True)
@@ -400,7 +407,7 @@ def main():
         base.mkdir(parents=True, exist_ok=True)
         save_json(base / 'latest.json', {'directory': str(output)})
     report = run(args, output)
-    return 0 if report['status'] == 'completed' and report.get('functional') != 'FAILED' and not report.get('report_error') else 1
+    return 0 if report['status'] == 'completed' and (args.check or report.get('verification') == 'PASSED') else 1
 
 
 if __name__ == '__main__':

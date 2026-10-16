@@ -14,6 +14,34 @@ from pcie_backend import MAGIC
 from full_replay import sha
 
 
+class SavedReportTests(unittest.TestCase):
+    def test_explicit_failed_reanalysis_is_not_hidden_by_original_report(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory=Path(name)
+            (directory/'summary.json').write_text('{"status":"passed"}')
+            (directory/'bus-analysis.json').write_text('{"id":"latest","status":"failed","errors":["damaged input"]}')
+            report=job.saved_report(directory)
+            self.assertEqual(report['status'],'failed')
+            self.assertIn('damaged input',job.render(report,2))
+
+    def test_incomplete_bus_never_inherits_parent_pass_and_pages_are_bounded(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory=Path(name)
+            bus={'passed':True,'nodes_captured':333,'rows':[],
+                 'outputs_captured':334,'inputs_verified_nodes':333,'final':{'normal_repeat_exact':True}}
+            path=directory/'summary.json'
+            path.write_text(json.dumps({'status':'passed','samples':{'bus':bus},'tile_gate':{'status':'passed'}}))
+            original=path.read_bytes()
+            report=job.saved_report(directory)
+            self.assertEqual(report['status'],'not_passed')
+            self.assertEqual(job.saved_report(directory)['id'],report['id'])
+            for page in (1,2,3):
+                lines=job.render(report,page).splitlines()
+                self.assertLessEqual(len(lines),22)
+                self.assertTrue(all(len(line)<=80 for line in lines))
+            self.assertEqual(path.read_bytes(),original)
+
+
 class FinalResultTests(unittest.TestCase):
     def check(self,raw,sample):
         with tempfile.TemporaryDirectory() as name:

@@ -1,5 +1,6 @@
 """Host menu lifecycle tests use a temporary repository and no physical board."""
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -110,42 +111,78 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(full['directory'],job['result'])
         self.assertTrue(Path(job['result']).is_dir())
 
-    def test_full_pages_reaudit_bus_once_without_board_access(self):
-        directory=self.root/'full'; directory.mkdir(); (directory/'summary.json').write_text('{}')
-        host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
-        with patch('host_control.subprocess.run') as run,patch('builtins.input',return_value=''):
-            host.full_pages()
-        self.assertEqual(run.call_count,3)
-        for page,call in enumerate(run.call_args_list,1):
-            command=call.args[0]
-            self.assertIn('--report',command)
-            self.assertEqual(command[4:6],['--page',str(page)])
-            self.assertEqual('--reanalyze' in command,page==1)
-            self.assertNotIn('--output',command)
-            self.assertNotIn('--pbcopy',command)
-            self.assertNotIn('--pbload',command)
+    def saved_bus(self, directory, name='summary.json'):
+        bus={'passed':True,'nodes_captured':334,'outputs_captured':335,
+             'inputs_verified_nodes':334,'final':{'normal_repeat_exact':True,'valid':True},
+             'rows':[{'node':i,'kind':'COPY','status':'exact','outputs':[]} for i in range(334)]}
+        report={'id':'old-paired','status':'failed','tile_gate':{'status':'passed'},
+                'samples':{'bus':bus,'zidane':{'passed':False}}}
+        (directory/name).write_text(json.dumps(report))
+        return report
 
-    def test_full_pages_accept_completed_bus_before_legacy_parent_finishes(self):
-        directory=self.root/'full'; capture=directory/'bus/attempt-1'; capture.mkdir(parents=True)
-        (capture/'summary.json').write_text('{"sample":"bus","status":"completed"}')
+    def test_full_pages_read_saved_bus_without_replay_and_preserve_source(self):
+        directory=self.root/'full'; directory.mkdir()
+        self.saved_bus(directory)
+        original=(directory/'summary.json').read_bytes()
+        host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
+        with patch('host_control.subprocess.run') as run,patch('builtins.input',return_value=''), \
+             patch('sys.stdout',new_callable=io.StringIO) as output:
+            host.full_pages()
+        run.assert_not_called()
+        text=output.getvalue()
+        for page in range(1,4): self.assertIn('PAGE={}/3'.format(page),text)
+        self.assertEqual(text.count('STATUS: passed'),3)
+        self.assertNotIn('zidane',text)
+        self.assertEqual(original,(directory/'summary.json').read_bytes())
+
+    def test_full_pages_accept_checkpoint_before_parent_finishes(self):
+        directory=self.root/'full'; directory.mkdir()
+        self.saved_bus(directory,'checkpoint.json')
         host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
         with patch('host_control.subprocess.run') as run,patch('builtins.input',return_value=''), \
              patch.object(host,'progress') as progress:
             host.full_pages()
-        self.assertEqual(run.call_count,3); progress.assert_not_called()
+        run.assert_not_called(); progress.assert_not_called()
 
-    def test_full_pages_wait_when_bus_capture_not_completed(self):
+    def test_full_pages_missing_analysis_replays_raw_once_offline(self):
+        directory=self.root/'full'; capture=directory/'bus/attempt-1'; capture.mkdir(parents=True)
+        (capture/'summary.json').write_text('{"sample":"bus","status":"completed"}')
+        host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
+        def offline(*args,**kwargs):
+            report=self.saved_bus(directory,'bus-analysis.json')
+            report.update(id='offline',status='passed')
+            (directory/'bus-analysis.json').write_text(json.dumps(report))
+        with patch('host_control.subprocess.run',side_effect=offline) as run, \
+             patch('builtins.input',return_value=''):
+            host.full_pages()
+            host.full_pages()
+        self.assertEqual(run.call_count,1)
+        command=run.call_args.args[0]
+        self.assertIn('--reanalyze',command)
+        for forbidden in ('--output','--pbcopy','--load'): self.assertNotIn(forbidden,command)
+
+    def test_full_pages_incomplete_data_reports_missing_without_restart(self):
         directory=self.root/'full'; directory.mkdir()
         host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
         with patch('host_control.subprocess.run') as run,patch.object(host,'progress') as progress:
-            host.full_pages()
-        run.assert_not_called(); progress.assert_called_once()
+            with self.assertRaisesRegex(ValueError,'missing'): host.full_pages()
+        run.assert_not_called(); progress.assert_not_called()
 
     def test_png_menu_only_runs_offline_exporter(self):
         with patch('host_control.subprocess.run') as run:
             host.export_png()
         command=run.call_args.args[0]
         self.assertEqual(command,[sys.executable,str(self.root/'tools/render_results.py'),'--latest'])
+
+    def test_video_menu_and_host_check_respect_controller_lock(self):
+        with patch('host_control.subprocess.run') as run:
+            host.video(check=True)
+            self.assertEqual(run.call_args.args[0][-2:],['--check','--no-display'])
+            host.video()
+            self.assertEqual(run.call_args.args[0][-2:],[str(self.root/'tools/host_video.py'),'--load'])
+        with host.guard(host.workspace()/'control.lock'),patch('host_control.subprocess.run') as run:
+            with self.assertRaises(RuntimeError): host.video()
+            run.assert_not_called()
 
     def test_detached_capture_keeps_lock_and_saves_paths(self):
         script=self.root/'yolo26_pc/node_capture.py'; script.parent.mkdir(parents=True)

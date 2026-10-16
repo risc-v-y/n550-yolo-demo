@@ -122,14 +122,20 @@ def full_pages():
     pointer=workspace()/'last-full.json'
     if not pointer.exists(): raise ValueError('No full check started; use option 11.')
     directory=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
-    if not (directory/'summary.json').exists():
-        from full_check import bus_capture
-        if not (bus_capture(directory)/'summary.json').is_file(): progress(); return
+    from full_check import saved_report,render,bus_capture
+    try: report=saved_report(directory)
+    except LookupError:
+        raw=bus_capture(directory)
+        if not (raw/'summary.json').is_file():
+            raise ValueError('BUS analysis and complete capture are missing in '+str(directory)+
+                             '. Existing files were preserved; no new inference was started.')
+        print('BUS raw capture exists; computing its missing analysis once, offline.',flush=True)
+        subprocess.run([sys.executable,str(ROOT/'tools/full_check.py'),'--report',str(directory),
+                        '--reanalyze'],cwd=ROOT,check=True,stdout=subprocess.DEVNULL)
+        report=json.loads((directory/'bus-analysis.json').read_text(encoding='utf-8'))
+    print('BUS report source:',report.get('source',{}).get('path',str(directory)))
     for page in (1,2,3):
-        command=[sys.executable,str(ROOT/'tools/full_check.py'),'--report',str(directory),
-                 '--page',str(page)]
-        if page==1: command.append('--reanalyze')
-        subprocess.run(command,cwd=ROOT,check=True)
+        print(render(report,page),end='',flush=True)
         if input('Enter: next/return; q: menu: ').strip().lower()=='q': break
 
 
@@ -141,6 +147,14 @@ def restore():
 
 def export_png():
     subprocess.run([sys.executable,str(ROOT/'tools/render_results.py'),'--latest'],cwd=ROOT,check=True)
+
+
+def video(check=False):
+    with guard(workspace()/'control.lock'):
+        command=[sys.executable,str(ROOT/'tools/host_video.py')]
+        if check: command+=['--check','--no-display']
+        else: command+=['--load']
+        subprocess.run(command,cwd=ROOT,check=True)
 
 
 def candidates():
@@ -230,15 +244,17 @@ def progress():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','analysis','progress','probe','probe-report','restore','full-check','full-report','png'))
+    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','analysis','progress','probe','probe-report','restore','full-check','full-report','png','video-check','video'))
     args=parser.parse_args()
     if sys.platform!='linux':
         parser.error('Run this menu on the Linux host.')
     actions={'1':update,'2':lambda:pages('status'),'3':lambda:pages('difference'),
              '4':lambda:pages('analysis'),'5':launch,'6':progress,'7':choose,
-             '8':lambda:launch(probe=True),'9':probe_pages,'10':restore,'11':launch_full,'12':full_pages,'13':export_png}
+             '8':lambda:launch(probe=True),'9':probe_pages,'10':restore,'11':launch_full,'12':full_pages,'13':export_png,
+             '14':lambda:video(check=True),'15':video}
     names={'update':'1','status':'2','difference':'3','analysis':'4','capture':'5','progress':'6',
-           'probe':'8','probe-report':'9','restore':'10','full-check':'11','full-report':'12','png':'13'}
+           'probe':'8','probe-report':'9','restore':'10','full-check':'11','full-report':'12','png':'13',
+           'video-check':'14','video':'15'}
     while True:
         try:
             if args.action:
@@ -250,12 +266,14 @@ def main():
                   '\n8 Load + run 3-tile probe (background, replaces firmware)'
                   '\n9 Reanalyze saved probe (offline, 3 pages)\n10 Reload normal demo firmware'
                   '\n11 Full BUS-only check (background, reuse complete evidence)'
-                  '\n12 Reanalyze BUS + summary (3 pages, offline)\n13 Export saved drawings to PNG (offline)\n0 Exit')
+                  '\n12 Saved BUS summary (3 pages, offline)\n13 Export saved drawings to PNG (offline)'
+                  '\n14 Check host video processing (no board access)'
+                  '\n15 Run sequential video (3 frames, PCIe, display + PNG + MP4)\n0 Exit')
             answer=input('Choice: ').strip()
             if answer=='0':
                 return 0
             if answer not in actions:
-                print('Choose 0-13.'); continue
+                print('Choose 0-15.'); continue
             actions[answer]()
             if answer=='1':
                 # Reload updated menu code only after a successful fast-forward pull.

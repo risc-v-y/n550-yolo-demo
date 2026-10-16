@@ -1,4 +1,4 @@
-"""Safely replace an old paired job after its BUS ordinary repeat completes.
+"""Stop the selected running job, or skip an ended job, then show saved BUS results.
 
 Standalone Python 3.8+ bootstrap: this file can run from /tmp before git pull.
 It never reads or writes the board and never treats a derived report as proof.
@@ -6,7 +6,6 @@ It never reads or writes the board and never treats a derived report as proof.
 import argparse
 import ast
 from contextlib import contextmanager
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -45,55 +44,6 @@ def selected_job(repo):
     return run, pid
 
 
-def complete_bus(run, outputs=None):
-    """Return original capture only after the final ordinary-repeat evidence."""
-    outputs = outputs or run.parent.parent
-    inside(run, outputs)
-    bus = inside(run / 'bus', run)
-    candidates = [inside(path.parent, bus) for path in sorted(bus.glob('attempt-*/summary.json'), reverse=True)]
-    for name in ('checkpoint.json', 'summary.json'):
-        path = inside(run / name, run)
-        if not path.is_file():
-            continue
-        try:
-            pointer = read_json(path).get('samples', {}).get('bus', {}).get('directory')
-        except json.JSONDecodeError:
-            continue
-        if pointer:
-            # A prior paired job may itself have reused an older BUS capture.
-            # Its derived analysis is only a pointer; validate the originals.
-            directory = inside(pointer, outputs)
-            if directory not in candidates:
-                candidates.append(directory)
-    for directory in candidates:
-        path = inside(directory / 'summary.json', directory)
-        if not path.is_file():
-            continue
-        try:
-            report = read_json(path)
-        except json.JSONDecodeError:
-            # Legacy collectors publish their final JSON with a single write.
-            continue
-        if report.get('status') != 'completed':
-            continue
-        if (report.get('sample') != 'bus' or report.get('evidence_version') != 1 or
-                report.get('nodes_captured') != 334 or report.get('tensors_captured') != 335):
-            raise ValueError('Completed BUS capture has incomplete graph evidence: ' + str(directory))
-        repeat = report.get('normal_repeat', {})
-        if repeat.get('byte_identical_to_capture') is not True:
-            raise ValueError('BUS ordinary repeat is missing or differs; old job will not be stopped')
-        raw = inside(directory / 'tensors/0548.bin', directory).read_bytes()
-        normal = inside(directory / 'normal-candidates.bin', directory).read_bytes()
-        if len(raw) != 7200 or len(normal) != 7200:
-            raise ValueError('BUS captured/ordinary candidates must each be 7200 bytes')
-        if hashlib.sha256(normal).hexdigest() != repeat.get('sha256'):
-            raise ValueError('BUS ordinary-repeat SHA256 mismatch; old job will not be stopped')
-        if raw != normal:
-            raise ValueError('BUS captured and ordinary candidate bytes differ')
-        return directory
-    return None
-
-
 def process_identity(repo, run, pid, proc_root=Path('/proc')):
     """Return start time, or None for a terminated process; reject PID reuse."""
     directory = proc_root / str(pid)
@@ -127,22 +77,6 @@ def process_identity(repo, run, pid, proc_root=Path('/proc')):
     return fields[19]
 
 
-def wait_bus(repo, run, pid, seconds, poll):
-    deadline = time.monotonic() + seconds
-    print('Waiting for complete BUS capture and ordinary repeat; no board commands are issued.', flush=True)
-    while True:
-        identity = process_identity(repo, run, pid)
-        directory = complete_bus(run, inside(repo / 'yolo26_pc/outputs', repo))
-        if directory is not None:
-            print('BUS repeat checked byte-for-byte: ' + str(directory), flush=True)
-            return identity
-        if identity is None:
-            raise ValueError('Old job ended before complete BUS ordinary-repeat evidence was saved')
-        if time.monotonic() >= deadline:
-            raise TimeoutError('BUS is still incomplete; old job was left running. Run this command again later.')
-        time.sleep(min(poll, max(0, deadline - time.monotonic())))
-
-
 def stop_old(repo, run, pid, expected, seconds, poll):
     current = process_identity(repo, run, pid)
     if current is None:
@@ -150,7 +84,7 @@ def stop_old(repo, run, pid, expected, seconds, poll):
         return
     if expected is None or current != expected:
         raise ValueError('Saved PID identity changed; refusing to signal')
-    print('BUS is complete. Requesting old job shutdown with SIGINT (PID {}).'.format(pid), flush=True)
+    print('Requesting old job shutdown with SIGINT (PID {}).'.format(pid), flush=True)
     try:
         os.killpg(pid, signal.SIGINT)
     except ProcessLookupError:
@@ -208,30 +142,28 @@ def run(args):
     if not (repo / 'tools/full_check.py').is_file() or not (repo / '.git').exists():
         raise ValueError('--repo must name the YOLO Git working directory')
     run_directory, pid = selected_job(repo)
-    expected = wait_bus(repo, run_directory, pid, args.wait_seconds, args.poll_seconds)
+    expected = process_identity(repo, run_directory, pid)
     stop_old(repo, run_directory, pid, expected, args.stop_timeout, args.poll_seconds)
     locks = (inside(repo / 'yolo26_pc/outputs/host-menu/control.lock', repo), Path('/tmp/yolo26-pcie.lock'))
     with update_locks(locks, args.stop_timeout, args.poll_seconds):
         print('Both locks released. Updating repository with git pull --ff-only.', flush=True)
         subprocess.run(['git', 'pull', '--ff-only'], cwd=repo, check=True)
         require_single_image(repo)
-    print('Starting the BUS-only job; saved original BUS evidence will be revalidated and reused.', flush=True)
-    subprocess.run([sys.executable, str(repo / 'tools/host_control.py'), 'full-check'], cwd=repo, check=True)
+    print('Reading saved BUS results; no new inference is started.', flush=True)
+    subprocess.run([sys.executable, str(repo / 'tools/host_control.py'), 'full-report'], cwd=repo, check=True)
     return 0
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, required=True)
-    parser.add_argument('--wait-seconds', type=float, default=14400,
-                        help='Maximum wait for BUS ordinary repeat, default 4 hours')
     parser.add_argument('--stop-timeout', type=float, default=120,
                         help='Maximum wait for graceful shutdown and released locks')
     parser.add_argument('--poll-seconds', type=float, default=5)
     args = parser.parse_args()
     if sys.platform != 'linux':
         parser.error('Run this standalone bootstrap on the Linux host')
-    if min(args.wait_seconds, args.stop_timeout, args.poll_seconds) <= 0:
+    if min(args.stop_timeout, args.poll_seconds) <= 0:
         parser.error('Waits and polling interval must be positive')
     try:
         return run(args)

@@ -145,6 +145,31 @@ def bus_capture(directory):
     return directory/'bus/not-collected'
 
 
+def saved_report(directory):
+    """Display an existing BUS analysis without replaying nodes or touching the board."""
+    for name in ('bus-analysis.json','summary.json','checkpoint.json','bus/analysis.json'):
+        path=directory/name
+        if not path.is_file(): continue
+        raw=path.read_bytes(); source=json.loads(raw)
+        if name=='bus-analysis.json' and source.get('status')=='failed':
+            return dict(source,mode='saved analysis',source={'path':str(path),'sha256':sha(raw)})
+        result=source if name=='bus/analysis.json' else source.get('samples',{}).get('bus')
+        if not result or not isinstance(result.get('rows'),list): continue
+        gate=source.get('tile_gate')
+        if gate is None:
+            gate=read_json(directory/'tile-gate.json') if (directory/'tile-gate.json').is_file() else {'status':'missing'}
+        complete=(result.get('passed') is True and result.get('nodes_captured')==334 and
+                  result.get('outputs_captured')==335 and result.get('inputs_verified_nodes')==334 and
+                  len(result['rows'])==334 and result.get('final',{}).get('normal_repeat_exact') is True and
+                  result.get('final',{}).get('valid') is True)
+        return {'version':BUS_ONLY_VERSION,'sample':'bus','id':sha(raw+b'bus-saved-view')[:12],
+                'status':'passed' if complete and gate.get('status')=='passed' else 'not_passed',
+                'samples':{'bus':result},'tile_gate':gate,'errors':result.get('errors',[]),
+                'elapsed_seconds':source.get('elapsed_seconds',0),'mode':'saved analysis',
+                'source':{'path':str(path),'id':source.get('id'),'sha256':sha(raw)}}
+    raise LookupError('No saved BUS node analysis in '+str(directory))
+
+
 def reanalyze(args):
     """Re-audit raw BUS data without modifying any original reports or board state."""
     directory=args.report; started=time.monotonic(); report=new_report()
@@ -224,6 +249,7 @@ def run(args):
 
 def render(report,page):
     lines=['FULL MODEL CHECK ID={} PAGE={}/3'.format(report['id'],page),'STATUS: '+report['status']]
+    if report.get('mode')=='saved analysis': lines.append('Saved analysis; no new inference or numerical replay.')
     samples={k:v for k,v in report.get('samples',{}).items() if k=='bus'}
     if page==1:
         lines+=['Coverage: nodes / valid outputs / verified-input nodes']
@@ -289,10 +315,8 @@ def main():
         if args.output or args.fresh: p.error('--report cannot be combined with --output/--fresh')
         if args.reanalyze: report=reanalyze(args)
         else:
-            path=args.report/'bus-analysis.json'
-            report=read_json(path if path.is_file() else args.report/'summary.json')
-            if report.get('version')!=2 or report.get('sample')!='bus':
-                p.error('Legacy report: use --reanalyze to audit BUS independently')
+            try: report=saved_report(args.report)
+            except LookupError as exc: p.error(str(exc)+'; --reanalyze can analyze existing raw captures offline')
         print(render(report,args.page),end=''); return 0
     if sys.platform!='linux': p.error('Run collection on the Linux x86_64 host')
     if not args.output: p.error('--output is required for collection')

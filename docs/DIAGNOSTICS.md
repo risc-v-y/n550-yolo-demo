@@ -26,7 +26,7 @@ UART 等待有上限，初始化验证失败或发送超时后禁用后续日志
 
 ## host 日志与 DDR 快照
 
-单图日志在 `yolo26_pc/outputs/board-pcie/<时间>/`，视频在 `outputs/live-demo/<时间>/`，部署日志在 `outputs/deploy-*/load.log`。`diagnostics.jsonl` 包括 PCIe 工具参数、退出码、输出尾部、状态变化和完成/失败时的板端快照。Python 异常保存 traceback。UART 文字不自动写入 JSONL，需使用终端会话日志另存。
+单图日志在 `yolo26_pc/outputs/board-pcie/<时间>/`，顺序视频在 `yolo26_pc/outputs/host-video/run-*/`（旧摄像头入口仍在 `outputs/live-demo/<时间>/`），部署日志在 `outputs/deploy-*/load.log`。`diagnostics.jsonl` 包括 PCIe 工具参数、退出码、输出尾部、状态变化和完成/失败时的板端快照。Python 异常保存 traceback。UART 文字不自动写入 JSONL，需使用终端会话日志另存。
 
 `board_diag` 为 816 字节、64 字节对齐、版本 1 的固定结构，经缓存 clean 发布，可由 PCIe 或已有调试器读取；地址见 `firmware/pcie-symbols.txt`。保留旧 RX/RPC 计数字段以兼容布局，当前不再使用。主要信息为阶段、帧号、节点/形状、子阶段、错误/detail、AMU flags、异常 CSR 和 x0–x31。
 
@@ -71,7 +71,7 @@ AMU 等待前记录阶段，返回后记录原始 `xmfflags`，不将所有非�
 
 旧诊断在找到首差异后重算少量位置。当前菜单11仅对bus全部334节点、335个有效输出重放，使用对应节点的实板输入；先逐节点采集一次，再普通推理复跑一次，正常共两次模型推理。原始512字节快照保存在`snapshots/`，记录输入前CRC、实际输入文件及SHA-256、完整输出SHA-256。输入被输出覆盖时，从此前完整输出重建并核对原CRC；无法核实则标记`input_unverified`，不能通过验收。正式固件、冻结图和原始图片输入的哈希须匹配，旧版/缺失/损坏采集不能复用。
 
-菜单12仅汇总bus；对旧任务目录按原始bus采集和普通复跑证据离线重分析，另存含逐节点明细和来源哈希的`bus-analysis.json`，保留原报告，不将旧zidane失败计入bus结论。证据完整且校验通过时无需再次运行板子，缺失则明确报告；菜单11会自动重采不完整的bus。旧任务活跃时不能选1更新，应使用单图迁移脚本确认bus证据后安全停止旧控制程序并迁移，操作入口见README。
+菜单12直接显示已有bus分析，不重放已完成分析、不把旧zidane失败计入bus结论。缺少分析但有完整原始采集时才离线补分析一次，另存bus-analysis.json；没有完整采集则明确报错，不启动推理。旧报告和数据保留。停止/更新脚本先判断进程，运行中则SIGINT结束，已结束则跳过，再显示已有报告；不启动新的查验。操作入口见README。
 
 新查验程序覆盖21类算子。AMU普通卷积按实际FP16值每16项与前次FP32累加值精确求和、RNE舍入，偏置最后单独FP32相加；非AMU路径保持现有运算顺序。分类为`exact`、`split16_match`、`unexplained`、`input_unverified`、`missing`；本节点按实际输入重放一致、但与QEMU不同的非AMU输出另标`upstream_propagation`，避免把上游差异当作本节点错误。全部异常保存在bus的`analysis.json`，菜单12统一显示三页摘要。不运行或保留两图查验入口。
 

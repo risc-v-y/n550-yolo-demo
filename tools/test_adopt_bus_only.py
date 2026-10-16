@@ -44,63 +44,6 @@ class BootstrapTests(unittest.TestCase):
     def write_summary(self):
         (self.capture / 'summary.json').write_text(json.dumps(self.summary))
 
-    def test_original_bus_evidence_is_required_not_derived_analysis(self):
-        self.assertEqual(switch.complete_bus(self.run), self.capture)
-        (self.capture / 'summary.json').unlink()
-        (self.run / 'bus/analysis.json').write_text('{"passed":true}')
-        (self.run / 'checkpoint.json').write_text('{"samples":{"bus":{"passed":true}}}')
-        self.assertIsNone(switch.complete_bus(self.run))
-
-    def test_summary_and_checkpoint_may_point_to_original_reused_bus(self):
-        import shutil
-        old = self.repo / 'yolo26_pc/outputs/node-capture/old-bus'
-        old.parent.mkdir(parents=True)
-        shutil.move(str(self.capture), str(old))
-        for name in ('checkpoint.json', 'summary.json'):
-            with self.subTest(name=name):
-                path = self.run / name
-                path.write_text(json.dumps({'status': 'failed', 'errors': ['zidane failed'],
-                                            'samples': {'bus': {'passed': True, 'directory': str(old)}}}))
-                self.assertEqual(switch.complete_bus(self.run), old)
-                path.unlink()
-        (old / 'normal-candidates.bin').write_bytes(bytes(7200))
-        (self.run / 'checkpoint.json').write_text(json.dumps({'samples': {'bus': {'directory': str(old)}}}))
-        with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
-            switch.complete_bus(self.run)
-
-    def test_reused_bus_path_cannot_escape_repository_outputs(self):
-        outside = self.repo / 'outside'
-        outside.mkdir()
-        (self.run / 'checkpoint.json').write_text(json.dumps({'samples': {'bus': {'directory': str(outside)}}}))
-        with self.assertRaisesRegex(ValueError, 'escapes allowed directory'):
-            switch.complete_bus(self.run)
-
-    def test_missing_repeat_different_bytes_and_bad_hash_are_rejected(self):
-        variants = ({}, {'byte_identical_to_capture': False},
-                    {'byte_identical_to_capture': True, 'sha256': '0' * 64})
-        for repeat in variants:
-            with self.subTest(repeat=repeat):
-                self.summary['normal_repeat'] = repeat
-                self.write_summary()
-                with self.assertRaises(ValueError):
-                    switch.complete_bus(self.run)
-        normal = b'abcdefgh' * 900
-        self.summary['normal_repeat'] = {'byte_identical_to_capture': True,
-                                        'sha256': hashlib.sha256(normal).hexdigest()}
-        self.write_summary()
-        (self.capture / 'normal-candidates.bin').write_bytes(normal)
-        with self.assertRaisesRegex(ValueError, 'candidate bytes differ'):
-            switch.complete_bus(self.run)
-
-    def test_missing_or_wrong_length_repeat_file_is_rejected(self):
-        path = self.capture / 'normal-candidates.bin'
-        path.unlink()
-        with self.assertRaises(FileNotFoundError):
-            switch.complete_bus(self.run)
-        path.write_bytes(bytes(7196))
-        with self.assertRaisesRegex(ValueError, '7200'):
-            switch.complete_bus(self.run)
-
     def test_paths_must_stay_in_selected_repository_full_check(self):
         self.assertEqual(switch.selected_job(self.repo), (self.run, self.pid))
         for directory in (self.repo / 'outside', self.repo / 'yolo26_pc/outputs/full-check'):
@@ -124,7 +67,10 @@ class BootstrapTests(unittest.TestCase):
             events.append('unlock')
 
         def command(argv, **kwargs):
-            events.append('pull' if argv[0] == 'git' else 'launch')
+            events.append('pull' if argv[0] == 'git' else 'report')
+            if argv[0] != 'git':
+                self.assertEqual(argv[-1], 'full-report')
+                self.assertNotIn('full-check', argv)
 
         with patch.object(switch, 'process_identity', return_value=None), \
              patch.object(switch.os, 'killpg', create=True) as kill, \
@@ -132,18 +78,21 @@ class BootstrapTests(unittest.TestCase):
              patch.object(switch.subprocess, 'run', side_effect=command):
             self.assertEqual(switch.run(self.args), 0)
             kill.assert_not_called()
-        self.assertEqual(events, ['lock', 'pull', 'unlock', 'launch'])
+        self.assertEqual(events, ['lock', 'pull', 'unlock', 'report'])
 
-    def test_incomplete_bus_is_not_interrupted_even_if_wait_expires(self):
+    def test_incomplete_bus_is_stopped_without_waiting_for_capture(self):
         (self.capture / 'summary.json').unlink()
-        with patch.object(switch, 'process_identity', return_value='start'), \
-             patch.object(switch.time, 'monotonic', side_effect=[0, 2]), \
+        @contextmanager
+        def locks(*args):
+            yield
+        with patch.object(switch, 'process_identity', side_effect=['start', 'start', None]), \
              patch.object(switch.os, 'killpg', create=True) as kill, \
+             patch.object(switch, 'update_locks', side_effect=locks), \
              patch.object(switch.subprocess, 'run') as command:
-            with self.assertRaisesRegex(TimeoutError, 'left running'):
-                switch.run(self.args)
-            kill.assert_not_called()
-            command.assert_not_called()
+            self.assertEqual(switch.run(self.args), 0)
+            kill.assert_called_once_with(self.pid, signal.SIGINT)
+            self.assertEqual(command.call_args.args[0][-1], 'full-report')
+            self.assertEqual(switch.selected_job(self.repo), (self.run, self.pid))
 
     def test_complete_bus_requests_only_sigint_then_waits_for_exit(self):
         with patch.object(switch, 'process_identity', side_effect=['start', 'start', None]), \

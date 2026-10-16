@@ -6,7 +6,7 @@ from pathlib import Path
 import struct
 import sys
 import zlib
-from full_replay import Replay,ROOT,sha,source_sha
+from full_replay import Replay,ROOT,sha,source_sha,NUMERIC_RULE
 
 sys.path.insert(0,str(ROOT/'yolo26_pc'))
 from node_capture import HEADER,parse_snapshot
@@ -124,7 +124,7 @@ def reusable(directory,sample,manifest,prepared):
 
 def audit(directory,sample,manifest,prepared,replay_factory=Replay,progress=None):
     directory=Path(directory); rows=[]; replay=None; session=None
-    result={'sample':sample,'directory':str(directory),'rows':rows,'final':{},'errors':[]}
+    result={'numeric_rule':NUMERIC_RULE,'sample':sample,'directory':str(directory),'rows':rows,'final':{},'errors':[]}
     result['original_qemu_metrics']='nodes.json' if (directory/'nodes.json').is_file() else 'partial-nodes.json'
     try:
         summary=identity(directory,sample,manifest,prepared)
@@ -163,7 +163,7 @@ def audit(directory,sample,manifest,prepared,replay_factory=Replay,progress=None
                         detail['difference']=compare_tensor(data,predicted,t['dtype'],t['shape'])
                 match=all(d['equal'] for d in row['outputs'])
                 amu=node['kind']=='CONV' and node['params'][4]==1
-                row['status']=('split16_match' if amu and any(not d['qemu_equal'] for d in row['outputs'])
+                row['status']=('rtl_match' if amu and any(not d['qemu_equal'] for d in row['outputs'])
                                else 'exact') if match else 'unexplained'
                 row['upstream_propagation']=match and not amu and any(not d['qemu_equal'] for d in row['outputs'])
             row['captured_outputs']=len(actual)

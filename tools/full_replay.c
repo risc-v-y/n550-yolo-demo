@@ -1,6 +1,7 @@
 /* Linux x86_64 numerical auditor. Never linked into board firmware.
  * Non-AMU operations use our existing scalar definitions, validated against
- * every frozen QEMU tensor. AMU has two explicitly separate comparators. */
+ * every frozen QEMU tensor. Mode 16 reproduces the finite-window RTL PE;
+ * mode 32 preserves the independent historical QEMU comparison. */
 #include <fenv.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,74 @@ static I128 round_fixed(I128 n) {
     }
     return n<0 ? -(I128)a : (I128)a;
 }
+/* Finite FP16 path of pe_top.sv at AMU e9c0aa3.
+ * P2: 29 main fractional bits + 5 residual bits; signed tails.
+ * P4/P5: normalize to bit 34. RTL does not jam right-shifted-out
+ * normalization bits into sticky. NaN/Inf/BF16 are outside this capture.
+ * Integers use the exact FP16-product grid, 2^-48. */
+static int half_exp_fixed(int64_t v) {
+    uint64_t a=v<0 ? (uint64_t)-v : (uint64_t)v;
+    int e=63-__builtin_clzll(a)-24;
+    return e < -14 ? -14 : e;
+}
+static I128 pe_round(I128 n,int tail) {
+    if(!n) return 0;
+    U128 a=n<0 ? (U128)-n : (U128)n;
+    unsigned bits=length(a);
+    if(bits>24) {
+        unsigned shift=bits-24;
+        U128 q=a>>shift,r=a-(q<<shift),h=(U128)1<<(shift-1);
+        q+=r>h || (r==h && (tail || (q&1)));
+        a=q<<shift;
+    }
+    return n<0 ? -(I128)a : (I128)a;
+}
+static I128 pe16_step(const int64_t *w,const int64_t *x,size_t stride,size_t count,I128 acc) {
+    I128 products[17]; int exponents[17]; size_t used=0;
+    int maximum=-1000;
+    for(size_t j=0;j<count;++j) {
+        int64_t a=w[j],b=x[j*stride];
+        if(!a || !b) continue;
+        products[used]=(I128)a*b;
+        exponents[used]=half_exp_fixed(a)+half_exp_fixed(b);
+        if(exponents[used]>maximum) maximum=exponents[used];
+        ++used;
+    }
+    if(acc) {
+        products[used]=acc;
+        U128 a=acc<0 ? (U128)-acc : (U128)acc;
+        exponents[used]=(int)length(a)-1-48;
+        if(exponents[used]>maximum) maximum=exponents[used];
+        ++used;
+    }
+    if(!used) return 0;
+    int shift=maximum+48-34;
+    unsigned quant_shift=shift>0 ? (unsigned)shift : 0;
+    U128 mask=((U128)1<<quant_shift)-1;
+    I128 sum=0; int pos_tail=0,neg_tail=0;
+    for(size_t j=0;j<used;++j) {
+        I128 n=products[j]; U128 a=n<0 ? (U128)-n : (U128)n;
+        int diff=maximum-exponents[j];
+        U128 q=a>>quant_shift;
+        int tail=(a&mask)!=0;
+        /* P2 drops main data for exponent difference >29, saturates
+         * the 5-bit residual if it overflows, and keeps tail at >=37. */
+        if(diff>=37) { q=0; tail=1; }
+        else if(diff>29 && q>31) { q=31; tail=1; }
+        sum+=n<0 ? -(I128)q : (I128)q;
+        if(tail) { if(n<0) neg_tail=1; else pos_tail=1; }
+    }
+    sum*=((I128)1<<quant_shift);
+    if(!sum) return 0;
+    U128 mag=sum<0 ? (U128)-sum : (U128)sum;
+    unsigned bits=length(mag);
+    unsigned discarded=bits>35 ? bits-35 : 0;
+    mag=(mag>>discarded)<<discarded;
+    I128 truncated=sum<0 ? -(I128)mag : (I128)mag;
+    int tail=sum<0 ? neg_tail&&!pos_tail : pos_tail&&!neg_tail;
+    return pe_round(truncated,tail);
+}
+
 static float fixed_float(I128 n) {
     if(!n) return 0.0f;
     U128 a=n<0 ? (U128)-n : (U128)n;
@@ -110,8 +179,7 @@ static int amu_conv(const ModelNode *node,const ModelTensor *t,unsigned char *ar
             for(size_t first=0;first<k;first+=mode) {
                 size_t end=first+mode<k ? first+mode : k;
                 if(mode==16) {
-                    for(size_t j=first;j<end;++j) exact+=(I128)weights[oc*k+j]*patch[j*area+pos];
-                    exact=round_fixed(exact);
+                    exact=pe16_step(weights+oc*k+first,patch+first*area+pos,area,end-first,exact);
                 } else {
                     double sum=0;
                     for(size_t j=first;j<end;++j) sum+=(double)weights[oc*k+j]*(double)patch[j*area+pos];
@@ -132,6 +200,12 @@ static int selftest(void) {
     if(word(fixed_float(round_fixed(one+halfway)))!=0x3f800000 ||
        word(fixed_float(round_fixed(one+halfway+1)))!=0x3f800001 ||
        word(fixed_float(round_fixed(-one-halfway-1)))!=0xbf800001) return 1;
+    /* Captured node 2: losing normalization sticky changes c084d0ab
+     * into c084d0aa. Preserve RTL behavior independently of exact RNE. */
+    const uint16_t ah[16]={0x3995,0x3e29,0x3e55,0x3fc4,0x3f6f,0x418d,0x4327,0x3ef5,0x418a,0x4358,0x8004,0x801b,0x8013,0x434f,0x3edc,0x3f09},bh[16]={0x2db6,0xa06d,0x9e66,0xa0a6,0xa0d5,0x1e11,0x2cce,0x1a41,0xa9fb,0xa94c,0x9d18,0x3218,0xad5b,0xb4b7,0xb93d,0x20d9};
+    int64_t aa[16],bb[16];
+    for(unsigned i=0;i<16;++i) { aa[i]=fixed(ah[i]); bb[i]=fixed(bh[i]); }
+    if(word(fixed_float(pe16_step(aa,bb,1,16,(I128)-557377971552256LL)))!=0xc084d0aa) return 1;
     puts("{\"version\":1,\"arch\":\"linux-x86_64\",\"nodes\":334,\"operators\":21,\"selftest\":\"passed\"}"); return 0;
 }
 int main(int argc,char **argv) {

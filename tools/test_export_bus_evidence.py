@@ -26,7 +26,7 @@ class ExportTests(unittest.TestCase):
         entry = Path(app.__file__).resolve()
         code = ('import sys,runpy; sys.path.insert(0,{!r}); '
                 'runpy.run_path({!r},run_name="export_startup"); '
-                'import node_capture,full_evidence,tile_probe').format(str(entry.parent), str(entry))
+                'import node_capture,full_evidence').format(str(entry.parent), str(entry))
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run([sys.executable, '-I', '-c', code], cwd=directory,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -149,13 +149,11 @@ class ExportTests(unittest.TestCase):
             self.export()
         self.assertEqual(list(self.outputs.glob('export/*.zip')), [])
 
-    def test_missing_probe_and_changed_probe_hash_are_explicit(self):
-        path = self.probe / 'probe-2.bin'
-        path.unlink()
-        with self.assertRaisesRegex(ValueError, 'Missing 1 required'): self.export()
-        path.write_bytes(b'x' * 25024)
-        with self.assertRaises(ValueError): self.export()
-        self.assertEqual(list(self.outputs.glob('export/*.zip')), [])
+    def test_obsolete_probe_files_are_not_needed_or_exported(self):
+        for path in self.probe.iterdir(): path.unlink()
+        archive=self.export()
+        with zipfile.ZipFile(archive) as bundle:
+            self.assertFalse(any(name.startswith('probe/') for name in bundle.namelist()))
 
     def test_report_pointer_is_used_instead_of_an_unrelated_new_capture(self):
         other = self.check / 'bus/attempt-2'; other.mkdir()
@@ -163,7 +161,7 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(app.locate()[1], self.bus)
         self.gate['directory'] = str(self.root / 'outside')
         self.save(self.check / 'tile-gate.json', self.gate)
-        with self.assertRaisesRegex(ValueError, 'allowed directory'): app.locate()
+        self.assertEqual(app.locate()[1],self.bus)
 
     def test_source_change_during_zip_and_size_limit_leave_no_finished_output(self):
         source = self.root / 'source.bin'; source.write_bytes(b'original')
@@ -192,11 +190,11 @@ class ExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'): self.export()
 
     def test_all_missing_dependencies_are_reported_together(self):
-        for path in (self.bus / 'snapshots/0000.bin', self.bus / 'tensors/0548.bin', self.probe / 'probe-1.bin'):
+        for path in (self.bus / 'snapshots/0000.bin', self.bus / 'tensors/0548.bin', self.bus / 'input.bin'):
             path.unlink()
         with self.assertRaisesRegex(ValueError, 'Missing 3 required') as caught:
-            app.require_files(self.bus, self.probe, self.manifest)
-        for name in ('snapshots', '0548.bin', 'probe-1.bin'):
+            app.require_files(self.bus, self.manifest)
+        for name in ('snapshots', '0548.bin', 'input.bin'):
             self.assertIn(name, str(caught.exception))
 
     @unittest.skipUnless(__import__('sys').platform == 'linux', 'Uses Linux flock')

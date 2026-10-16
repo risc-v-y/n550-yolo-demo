@@ -52,10 +52,6 @@ void board_pcie_init(void) {
         .diagnostic_address=(uintptr_t)&board_diag,.input_bytes=board_model_input_size(),
         .output_bytes=board_model_output_size(),.diagnostic_bytes=sizeof(board_diag),.nodes=334,
         .reserved2=(uint32_t)(uintptr_t)&board_node_snapshot};
-#ifdef BOARD_TILE_PROBE
-    /* A diagnostic image must never be accepted as a complete detector. */
-    info.reserved=2; info.nodes=1; info.reserved2=0;
-#endif
     info.crc=board_crc32(&info,60);
     copy_to(&board_pcie_mailbox.info,&info,sizeof(info));
     board_clean((const void *)&board_pcie_mailbox.info,sizeof(info));

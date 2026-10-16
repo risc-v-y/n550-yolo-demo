@@ -15,7 +15,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'yolo26_pc'))
 MAX_ARCHIVE_BYTES = 3_000_000_000
-REPORTS = ('bus-analysis.json', 'summary.json', 'checkpoint.json', 'bus/analysis.json')
+REPORTS = ('bus-rtl-analysis.json', 'bus-analysis.json', 'summary.json', 'checkpoint.json', 'bus/analysis.json')
 
 
 def read_json(path):
@@ -46,10 +46,6 @@ def locate(report=None):
         report = Path(read_json(outputs / 'host-menu/last-full.json')['directory'])
     report = contained(report, outputs)
     bus = None
-    gate = None
-    gate_file = report / 'tile-gate.json'
-    if gate_file.is_file():
-        gate = read_json(gate_file)
     for name in REPORTS:
         path = report / name
         if not path.is_file():
@@ -59,16 +55,10 @@ def locate(report=None):
         if bus is None and result.get('directory'):
             candidate = Path(result['directory'])
             bus = contained(candidate if candidate.is_absolute() else ROOT / candidate, outputs)
-        if gate is None and value.get('tile_gate', {}).get('directory'):
-            gate = value['tile_gate']
     if bus is None:
         from full_check import bus_capture
         bus = contained(bus_capture(report), outputs)
-    if not gate or not gate.get('directory'):
-        raise ValueError('Original tile-probe directory is missing from the report/tile-gate.json')
-    probe_path = Path(gate['directory'])
-    probe = contained(probe_path if probe_path.is_absolute() else ROOT / probe_path, outputs)
-    return report, bus, probe, gate
+    return report, bus
 
 
 def validate_capture(directory, manifest, prepared):
@@ -93,9 +83,8 @@ def validate_capture(directory, manifest, prepared):
             'capture_sha256': final['capture_sha256']}
 
 
-def require_files(bus, probe, manifest):
-    required = {bus / 'summary.json', bus / 'input.bin', bus / 'normal-candidates.bin',
-                probe / 'summary.json', probe / 'probe-1.bin', probe / 'probe-2.bin'}
+def require_files(bus, manifest):
+    required = {bus / 'summary.json', bus / 'input.bin', bus / 'normal-candidates.bin'}
     for node in manifest['nodes']:
         snapshot = bus / 'snapshots/{:04d}.json'.format(node['id'])
         required.update((snapshot, snapshot.with_suffix('.bin')))
@@ -109,18 +98,7 @@ def require_files(bus, probe, manifest):
         raise ValueError('Missing {} required file(s):\n{}'.format(len(missing), '\n'.join(missing)))
 
 
-def validate_probe(directory, gate):
-    from tile_probe import saved_inputs
-    original, source, raws = saved_inputs(directory)
-    digest = hashlib.sha256(original).hexdigest()
-    hashes = [hashlib.sha256(raw).hexdigest() for raw in raws]
-    if (source.get('mode') != 'physical board' or
-            gate.get('source_report_sha256') != digest or gate.get('raw_sha256') != hashes):
-        raise ValueError('Tile-probe evidence differs from the saved gate: ' + str(directory))
-    return {'source_report_sha256': digest, 'raw_sha256': hashes}
-
-
-def inventory(report, bus, probe):
+def inventory(report, bus):
     entries = {}
     def add(path, name):
         if path.is_symlink():
@@ -128,7 +106,7 @@ def inventory(report, bus, probe):
         if not path.is_file():
             raise ValueError('Not a regular evidence file: ' + str(path))
         entries[name] = path
-    for base, prefix in ((bus, 'bus'), (probe, 'probe')):
+    for base, prefix in ((bus, 'bus'),):
         if not base.is_dir():
             raise ValueError('Evidence directory missing: ' + str(base))
         for path in sorted(base.rglob('*')):
@@ -207,23 +185,22 @@ def make_archive(entries, manifest, directory):
 
 def export(report=None, output_dir=None):
     started = time.monotonic()
-    report, bus, probe, gate = locate(report)
-    print('CHECK:', report, '\nBUS:', bus, '\nPROBE:', probe, flush=True)
-    entries = inventory(report, bus, probe)
+    report, bus = locate(report)
+    print('CHECK:', report, '\nBUS:', bus, flush=True)
+    entries = inventory(report, bus)
     from node_capture import verify_reference_manifest
     manifest = read_json(ROOT / 'reference/nodes/manifest.json')
     verify_reference_manifest(manifest)
-    require_files(bus, probe, manifest)
+    require_files(bus, manifest)
     prepared = read_json(ROOT / 'reference/prepared/manifest.json')['samples']['bus']
     capture = validate_capture(bus, manifest, prepared)
-    physical_probe = validate_probe(probe, gate)
-    metadata = {'version': 1, 'status': 'complete', 'sample': 'bus',
+    metadata = {'version': 2, 'status': 'complete', 'sample': 'bus',
                 'scope': 'File integrity/completeness only; numerical acceptance is unchanged',
-                'origins': {'check': str(report), 'bus': str(bus), 'probe': str(probe)},
-                'relocation': {'actual_bus': 'bus/', 'physical_probe': 'probe/', 'parent_reports': 'check/'},
-                'capture': capture, 'probe': physical_probe, 'git': git_metadata()}
+                'origins': {'check': str(report), 'bus': str(bus)},
+                'relocation': {'actual_bus': 'bus/', 'parent_reports': 'check/'},
+                'capture': capture, 'git': git_metadata()}
     output_dir = output_dir or ROOT / 'yolo26_pc/outputs/evidence-export'
-    for source in (report, bus, probe):
+    for source in (report, bus):
         try:
             output_dir.resolve().relative_to(source.resolve())
         except ValueError:

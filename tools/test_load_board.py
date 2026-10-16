@@ -19,7 +19,7 @@ class LoadTests(unittest.TestCase):
         self.reset.mkdir()
         shutil.copyfile(Path(__file__).with_name('load_board.sh'), self.root / 'tools/load_board.sh')
         entries = []
-        for name in ('demo-pcie.bin', 'selftest.bin', 'clp-selftest.bin', 'tile-probe.bin'):
+        for name in ('demo-pcie.bin', 'clp-selftest.bin'):
             blob = name.encode()
             (self.root / 'firmware' / name).write_bytes(blob)
             entries.append(f'{hashlib.sha256(blob).hexdigest()}  firmware/{name}\n')
@@ -63,10 +63,6 @@ fi
         self.assertEqual(len(logs), 1)
         self.assertIn('Deployment completed', logs[0].read_text())
 
-    def test_selftest_image(self):
-        result = self.run_load('--selftest')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('selftest.bin:0x0', Path(self.env['ARGUMENT']).read_text())
 
     def test_clp_selftest_image_and_order(self):
         result = self.run_load('--clp-selftest')
@@ -77,16 +73,14 @@ fi
         self.assertIn('PCIe offset 0x70000000', result.stdout)
 
     def test_conflicting_images_do_not_touch_hardware(self):
-        self.assertEqual(self.run_load('--clp-selftest', '--selftest').returncode, 2)
+        self.assertEqual(self.run_load('--clp-selftest', '--clp-selftest').returncode, 2)
         self.assertEqual(self.events(), [])
 
-    def test_tile_probe_selection_and_conflict(self):
-        result=self.run_load('--tile-probe')
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertIn('tile-probe.bin:0x0',Path(self.env['ARGUMENT']).read_text())
-        self.assertEqual(self.events(),['hold','load','release'])
-        self.assertEqual(self.run_load('--tile-probe','--clp-selftest').returncode,2)
-        self.assertEqual(self.events(),['hold','load','release'])
+
+    def test_retired_images_are_rejected_before_board_access(self):
+        for flag in ('--selftest','--tile-probe'):
+            self.assertEqual(self.run_load(flag).returncode,2)
+        self.assertEqual(self.events(),[])
 
     def test_hold_failure_never_loads(self):
         self.assertNotEqual(self.run_load(FAIL_AT='hold').returncode, 0)

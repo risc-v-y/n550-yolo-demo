@@ -1,11 +1,27 @@
 {
+  "numeric_rule": "n550-pe-fp16-e9c0aa3-v1",
+  "board_gate": {
+    "sample": "bus",
+    "nodes": 334,
+    "outputs": 335,
+    "status": "passed",
+    "full_report_sha256": "178602e0789e66fef53fa7bf456916874fa36b5c8fc2cf044ac1b65ccf7ca009",
+    "evidence_manifest_sha256": "7cd946db21c02839a7f404d0c6ab84cd4cb842c187c83913c369134780ff0ddc",
+    "rtl_commit": "e9c0aa34d8c2dc4ad900225060edfb18b34ef6ea",
+    "rtl_sources": {
+      "step1/rtl/exu_ma/pe_top.sv": "96f60e1f21791e1401a3377a79d9dedcac4805bec2350dc5c927388d87bd6b7a",
+      "step1/rtl/exu_ma/pe_partialsum_tree.sv": "88543b072189055e2ffd8f1cc53f90921120b557169d3aa69c98fd2771019c7a",
+      "step1/rtl/exu_ma/ma_pe_array.sv": "da7b9b3fecb0639513b521f1454eeb7c35860a43fc324bb3e09654a5af19389e",
+      "step1/docs/lld/MA/N550_AMU_PE_TOP_LLD.md": "70ec9bc1fc50e67a7cf84c04756ddedf7263849a5aaeae0600c7d714ef42ecb1"
+    }
+  },
   "version": 1,
   "arch": "linux-x86_64",
   "static": true,
   "binary": "firmware/host-verify",
-  "sha256": "fc90c8175235092ec7859f4324ce41edbeeb68278e81113618e32ab678ab482e",
+  "sha256": "64b8ca28a86b6f172e0e18046a6a898fc9db56df4c901077cb1f9c619af6cea3",
   "sources": {
-    "tools/full_replay.c": "98f8c9ef72b9d7958be3c18a8b0ba35335bffb7f6ecca5024ab87226b3926717",
+    "tools/full_replay.c": "f6d634338fd17edc4235011da79ad99fd2fc07b835add0a27fb6ed3e094de9d4",
     "yolo26_riscv/scalar_model.c": "6b6077a4e4ec7740c6ed5910dfc000d9e3a5edd97513f60d1a80afb24799dba6",
     "yolo26_riscv/scalar_model.h": "d3e7e56f7f65ee2b3510652c041a49549f45c24631fb37d4d71b3a4a82bd3e5b",
     "yolo26_riscv/basic.c": "0465ed4bf7451e498ee520358a8269b0032c0b6b468903d613cf6494b4c12e0a",
@@ -48,6 +64,6 @@
       "CAST": 1,
       "FLOORDIV": 1
     },
-    "full_report_sha256": "fe21a84dc3f96eeeca191c86341e7795b4d8a9739299ce210819b49c28f2b6c6"
+    "full_report_sha256": "e7c1fc27daa0ec9aa58229dcfae28161704bca73b5480d1ffca6bbc2f402a88e"
   }
 }

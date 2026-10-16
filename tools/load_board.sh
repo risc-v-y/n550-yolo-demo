@@ -6,7 +6,7 @@ reset_dir=''
 pbcopy='pbcopy'
 firmware='demo-pcie.bin'
 usage() {
-    echo 'Usage: bash tools/load_board.sh --reset-dir /path/to/s2c [--pbcopy /path/to/pbcopy] [--selftest | --clp-selftest | --tile-probe]'
+    echo 'Usage: bash tools/load_board.sh --reset-dir /path/to/s2c [--pbcopy /path/to/pbcopy] [--clp-selftest]'
     echo 'reset1.sh holds reset; reset.sh releases reset. Upload failure keeps reset asserted.'
     echo 'CLP probe uses exclusive DDR 0xf0000000..0xf0000fff (RVV 0x10000000..0x10000fff).'
 }
@@ -16,11 +16,9 @@ while (( $# )); do
             if (( $# < 2 )); then usage >&2; exit 2; fi
             if [[ "$1" == --reset-dir ]]; then reset_dir="$2"; else pbcopy="$2"; fi
             shift 2 ;;
-        --selftest|--clp-selftest|--tile-probe)
+        --clp-selftest)
             if [[ "$firmware" != demo-pcie.bin ]]; then echo 'Select only one selftest image' >&2; exit 2; fi
-            if [[ "$1" == --selftest ]]; then firmware='selftest.bin'
-            elif [[ "$1" == --tile-probe ]]; then firmware='tile-probe.bin'
-            else firmware='clp-selftest.bin'; fi
+            firmware='clp-selftest.bin'
             shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
@@ -82,12 +80,8 @@ if ! run_step 'RELEASE RESET: reset.sh' reset_script reset.sh; then
 fi
 held=0
 echo "Deployment completed. Log: $log" | tee -a "$log"
-if [[ "$firmware" == tile-probe.bin ]]; then
-    echo 'Diagnostic image only: use tools/tile_probe.py; reload default demo-pcie before full inference.'
-elif [[ "$firmware" == clp-selftest.bin ]]; then
+if [[ "$firmware" == clp-selftest.bin ]]; then
     echo 'Check CLP PASS/FAIL on UART; collect with tools/collect_board_diag.py --firmware clp-selftest --samples 1.'
-elif [[ "$firmware" == selftest.bin ]]; then
-    echo 'Check CACHE/RVV/AMU PASS/FAIL on UART; this legacy cached-RVV selftest needs correction for the current platform.'
 else
     echo 'Check UART startup/selftest text, then use the PCIe client to verify READY and inference.'
 fi

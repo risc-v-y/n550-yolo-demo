@@ -8,6 +8,7 @@ import subprocess
 import threading
 
 ROOT=Path(__file__).resolve().parents[1]
+NUMERIC_RULE='n550-pe-fp16-e9c0aa3-v1'
 
 
 def sha(data): return hashlib.sha256(data).hexdigest()
@@ -23,6 +24,8 @@ def verified_binary(root):
     if (record.get('version')!=1 or record.get('arch')!='linux-x86_64' or
             record.get('static') is not True or record.get('qemu_gate',{}).get('status')!='passed'):
         raise ValueError('Auditor release manifest is not verified')
+    if record.get('numeric_rule')!=NUMERIC_RULE:
+        raise ValueError('Auditor numeric rule is outdated; update the complete software package')
     binary=root/record['binary']
     if sha(binary.read_bytes())!=record['sha256']: raise ValueError('Auditor binary SHA mismatch')
     if source_sha(root/'reference/nodes/manifest.json')!=record['reference_manifest_sha256']:

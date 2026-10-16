@@ -139,6 +139,8 @@ def elf_symbols(data):
 
 
 def firmware_info(root, name):
+    if name not in ('demo-pcie','clp-selftest'):
+        raise ValueError('Unsupported firmware; use demo-pcie or clp-selftest')
     sums = {}
     for line in (root / 'firmware/SHA256SUMS').read_text(encoding='utf-8').splitlines():
         digest, path = line.split(maxsplit=1)
@@ -295,7 +297,7 @@ def git_metadata(root):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--firmware', required=True, choices=('selftest', 'demo-pcie', 'clp-selftest'),
+    parser.add_argument('--firmware', required=True, choices=('demo-pcie', 'clp-selftest'),
                         help='Must match the BIN currently loaded; never resets or reloads the board')
     parser.add_argument('--pbload', default='pbload')
     parser.add_argument('--tool-cwd', type=Path, default=Path.cwd(),

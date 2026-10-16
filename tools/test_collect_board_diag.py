@@ -69,7 +69,7 @@ class FirmwareTests(unittest.TestCase):
 
     def test_shipped_firmware_addresses_and_distinct_prefixes(self):
         prefixes = []
-        for name in ('selftest', 'demo-pcie'):
+        for name in ('clp-selftest', 'demo-pcie'):
             info, symbols, prefix = diag.firmware_info(diag.ROOT, name)
             self.assertEqual(set(symbols), set(diag.SYMBOLS))
             self.assertEqual(symbols['board_diag'] % 64, 0)
@@ -78,7 +78,7 @@ class FirmwareTests(unittest.TestCase):
         self.assertNotEqual(*prefixes)
 
     def test_malformed_or_wrong_architecture_elf(self):
-        blob = bytearray((diag.ROOT / 'firmware/selftest.elf').read_bytes())
+        blob = bytearray((diag.ROOT / 'firmware/demo-pcie.elf').read_bytes())
         with self.assertRaisesRegex(ValueError, 'Truncated'):
             diag.elf_symbols(blob[:63])
         struct.pack_into('<H', blob, 18, 62)  # x86-64 is not an N550 image.
@@ -86,7 +86,7 @@ class FirmwareTests(unittest.TestCase):
             diag.elf_symbols(blob)
 
     def test_missing_symbol(self):
-        blob = (diag.ROOT / 'firmware/selftest.elf').read_bytes()
+        blob = (diag.ROOT / 'firmware/demo-pcie.elf').read_bytes()
         blob = blob.replace(b'board_test_stage\0', b'other_test_stage\0')
         with self.assertRaisesRegex(ValueError, 'Missing ELF symbols: board_test_stage'):
             diag.elf_symbols(blob)
@@ -107,14 +107,14 @@ class CollectorTests(unittest.TestCase):
         firmware = self.root / 'firmware'
         firmware.mkdir(parents=True)
         entries = []
-        for name in ('selftest', 'clp-selftest'):
+        for name in ('demo-pcie', 'clp-selftest'):
             for suffix in ('elf', 'bin'):
                 relative = f'firmware/{name}.{suffix}'
                 blob = (diag.ROOT / relative).read_bytes()
                 (self.root / relative).write_bytes(blob)
                 entries.append(f'{hashlib.sha256(blob).hexdigest()}  {relative}\n')
         (firmware / 'SHA256SUMS').write_text(''.join(entries))
-        info, self.symbols, prefix = diag.firmware_info(self.root, 'selftest')
+        info, self.symbols, prefix = diag.firmware_info(self.root, 'demo-pcie')
         values = {'board_uart_status': 0, 'board_uart_baud': 114942, 'board_uart_dlf_bits': 4,
                   'board_test_stage': 3, 'board_error': 0, 'board_trap_cause': 0,
                   'board_trap_pc': 0, 'board_trap_value': 0}
@@ -174,7 +174,7 @@ Path(destination).write_bytes(data)
 
     def run_collect(self, *extra, output=True):
         (self.cwd / 'fixture.json').write_text(json.dumps(self.config))
-        args = ['--firmware', 'selftest', '--pbload', str(self.pbload),
+        args = ['--firmware', 'demo-pcie', '--pbload', str(self.pbload),
                 '--tool-cwd', str(self.cwd), '--samples', '2', '--interval', '0', *extra]
         if output:
             args += ['--output', str(self.out)]
@@ -266,7 +266,7 @@ Path(destination).write_bytes(data)
         self.assertEqual((self.out / '001-program-prefix.bin').stat().st_size, 256)
 
     def test_checksum_failure_prevents_any_pcie_access(self):
-        (self.root / 'firmware/selftest.bin').write_bytes(b'wrong image')
+        (self.root / 'firmware/demo-pcie.bin').write_bytes(b'wrong image')
         self.assertEqual(self.run_collect(), 1)
         self.assertEqual(self.events(), [])
         self.assertIn('checksum', self.report()['error'])
@@ -359,9 +359,9 @@ Path(destination).write_bytes(data)
 
 @unittest.skipUnless(sys.platform == 'linux', 'README upload commands use Bash')
 class UploadTests(unittest.TestCase):
-    def test_readme_upload_creates_then_appends_without_changing_source(self):
-        readme = (diag.ROOT / 'README.md').read_text(encoding='utf-8')
-        block = readme.split('```bash\nRUN_DIR=', 1)[1].split('```', 1)[0]
+    def test_upload_script_creates_then_appends_without_changing_source(self):
+        script_text = (diag.ROOT / 'tools/upload_diagnostics.sh').read_text(encoding='utf-8')
+        block = script_text.split('RUN_DIR=', 1)[1]
         lines = ('RUN_DIR=' + block).splitlines()
         lines[:2] = ['RUN_DIR="$UPLOAD_RUN_DIR"', 'UPLOAD_DIR="$UPLOAD_WORK_DIR"']
         script = '\n'.join(lines).replace('git@github.com:risc-v-y/n550-yolo-demo.git', '"$UPLOAD_REMOTE"')

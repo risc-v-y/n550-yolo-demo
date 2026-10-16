@@ -7,9 +7,6 @@
 #include "model_io.h"
 #include "diagnostics.h"
 #include "pcie.h"
-#ifdef BOARD_TILE_PROBE
-#include "tile_probe.h"
-#endif
 extern const unsigned char model_weights[], model_weights_end[];
 static unsigned char arena[MODEL_ARENA_BYTES] BOARD_CLP_DATA;
 /* Inspect these symbols with the team's debugger when UART cannot start. */
@@ -53,19 +50,11 @@ __attribute__((noreturn)) void platform_trap(uintptr_t cause,uintptr_t pc,uintpt
 }
 unsigned char *board_model_input(void) { return arena+model_tensors[0].offset; }
 const unsigned char *board_model_output(void) {
-#ifdef BOARD_TILE_PROBE
-    return (const unsigned char *)&board_tile_probe;
-#else
     return arena+model_tensors[MODEL_OUTPUT_ID].offset;
-#endif
 }
 uint32_t board_model_input_size(void) { return model_tensors[0].bytes; }
 uint32_t board_model_output_size(void) {
-#ifdef BOARD_TILE_PROBE
-    return sizeof(board_tile_probe);
-#else
     return model_tensors[MODEL_OUTPUT_ID].bytes;
-#endif
 }
 int board_model_run(void) {
     if(startup_failure) return -3;
@@ -87,17 +76,6 @@ int board_model_run(void) {
         }
     }
     accel_rvv_nodes=accel_amu_nodes=accel_scalar_nodes=accel_alias_nodes=0;
-#ifdef BOARD_TILE_PROBE
-    tile_probe_begin(input,board_model_input_size(),model_weights,MODEL_CONSTANT_BYTES);
-    board_current_node=0;
-    board_diag_node(0,model_nodes,model_tensors);
-    board_clean(input,board_model_input_size());
-    board_clean(model_weights,MODEL_CONSTANT_BYTES);
-    int result=accel_model_node(model_nodes,model_tensors,arena,model_weights);
-    if(result || tile_probe_finish()) { board_diag_error(0x35,result); return -2; }
-    board_diag_stage(DIAG_DONE);
-    return 0;
-#endif
     for(size_t step=0;step<MODEL_NODE_COUNT;++step) {
         board_current_node=(uint32_t)step;
         const ModelNode *node=model_nodes+step;
@@ -152,11 +130,7 @@ int main(void) {
     }
     if((size_t)(model_weights_end-model_weights)!=MODEL_CONSTANT_BYTES) platform_exit(1);
     if(model_tensors[0].dtype!=1 || board_model_input_size()!=3*416*416*4 ||
-#ifdef BOARD_TILE_PROBE
-       board_model_output_size()!=sizeof(board_tile_probe)) platform_exit(2);
-#else
        board_model_output_size()!=7200) platform_exit(2);
-#endif
     initialize_clp();
     board_diag_stage(DIAG_AMU_INIT);
     status=amu_init();

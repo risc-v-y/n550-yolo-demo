@@ -5,9 +5,6 @@
 #include "rvv_model_ops.h"
 #include "model_profile.h"
 #include <riscv_vector.h>
-#ifdef BOARD_TILE_PROBE
-#include "board/tile_probe.h"
-#endif
 
 uint32_t accel_rvv_nodes, accel_amu_nodes, accel_scalar_nodes, accel_alias_nodes;
 enum { CONV_COLUMNS = 32, MAX_CONV_K = 4096 };
@@ -79,9 +76,6 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
                 continue;
             }
             for (size_t first = 0; first < area; first += CONV_COLUMNS) {
-#ifdef BOARD_TILE_PROBE
-                if (!tile_probe_select(first)) continue;
-#endif
                 size_t count = area - first < CONV_COLUMNS ? area - first : CONV_COLUMNS;
                 uint64_t start = model_ticks();
                 size_t inner = 0;
@@ -103,9 +97,6 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
                 model_profile_end(PROFILE_INPUT_IM2COL, start);
                 if (matmul(amu, weights, conv_scratch, dest + first, ocg, count, k, k, CONV_COLUMNS, area)) return -1;
                 add_bias(dest + first, biases, ocg, count, area);
-#ifdef BOARD_TILE_PROBE
-                tile_probe_bias(dest + first, biases, area);
-#endif
             }
         }
     }

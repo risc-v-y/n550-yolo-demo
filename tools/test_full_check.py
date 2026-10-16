@@ -19,10 +19,19 @@ class SavedReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as name:
             directory=Path(name)
             (directory/'summary.json').write_text('{"status":"passed"}')
-            (directory/'bus-analysis.json').write_text('{"id":"latest","status":"failed","errors":["damaged input"]}')
+            (directory/'bus-rtl-analysis.json').write_text(json.dumps({'numeric_rule':job.NUMERIC_RULE,'id':'latest','status':'failed','errors':['damaged input']}))
             report=job.saved_report(directory)
             self.assertEqual(report['status'],'failed')
             self.assertIn('damaged input',job.render(report,2))
+
+    def test_legacy_pass_is_not_accepted_as_current_rtl_analysis(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory=Path(name)
+            original=json.dumps({'status':'passed','samples':{'bus':{'passed':True,'rows':[]}}})
+            (directory/'summary.json').write_text(original)
+            with self.assertRaisesRegex(LookupError,'old PE reference'):
+                job.saved_report(directory)
+            self.assertEqual((directory/'summary.json').read_text(),original)
 
     def test_incomplete_bus_never_inherits_parent_pass_and_pages_are_bounded(self):
         with tempfile.TemporaryDirectory() as name:
@@ -30,7 +39,7 @@ class SavedReportTests(unittest.TestCase):
             bus={'passed':True,'nodes_captured':333,'rows':[],
                  'outputs_captured':334,'inputs_verified_nodes':333,'final':{'normal_repeat_exact':True}}
             path=directory/'summary.json'
-            path.write_text(json.dumps({'status':'passed','samples':{'bus':bus},'tile_gate':{'status':'passed'}}))
+            path.write_text(json.dumps({'numeric_rule':job.NUMERIC_RULE,'status':'passed','samples':{'bus':bus}}))
             original=path.read_bytes()
             report=job.saved_report(directory)
             self.assertEqual(report['status'],'not_passed')
@@ -206,7 +215,6 @@ class WorkflowTests(unittest.TestCase):
                         'nodes_captured':334,'outputs_captured':335,'inputs_verified_nodes':334}
             with patch.object(job,'ROOT',root),patch.object(job,'Replay'),patch.object(job,'check_renderer'), \
                  patch.object(job,'verify_reference_manifest'), \
-                 patch.object(job,'probe_gate',return_value={'status':'passed'}), \
                  patch.object(job,'find_reuse',return_value=root/'old/bus/attempt-1' if reuse else None), \
                  patch.object(job,'audit',side_effect=analyze), \
                  patch.object(job,'capture',side_effect=collect) as capture:
@@ -282,7 +290,6 @@ class LegacyBusTests(unittest.TestCase):
         args=argparse.Namespace(report=self.directory,probe=None)
         result={'passed':passed,'rows':[],'counts':{},'final':{},'errors':[]}
         with patch.object(job,'assets',return_value=({},{})), \
-             patch.object(job,'probe_gate',return_value={'status':'passed'}), \
              patch.object(job,'audit',return_value=result) as audit, \
              patch.object(job,'capture') as capture,patch.object(job,'load') as load:
             report=job.reanalyze(args)
@@ -296,7 +303,7 @@ class LegacyBusTests(unittest.TestCase):
         self.assertEqual(raw,self.capture); self.assertEqual(report['status'],'passed')
         self.assertEqual(report['errors'],[]); self.assertEqual(set(report['samples']),{'bus'})
         self.assertEqual((self.directory/'summary.json').read_text(),original)
-        self.assertTrue((self.directory/'bus-analysis.json').is_file())
+        self.assertTrue((self.directory/'bus-rtl-analysis.json').is_file())
         for page in (1,2,3): self.assertNotIn('zidane',job.render(report,page).lower())
 
     def test_completed_bus_is_found_before_parent_summary_exists(self):

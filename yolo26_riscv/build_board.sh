@@ -5,18 +5,8 @@ src="$root/yolo26_riscv"
 out="$src/build/n550-board"
 tc="${TOOLCHAIN_PREFIX:-$root/toolchain/riscv-elf-toolchain/bin/riscv64-unknown-elf}"
 image=demo-pcie
-extra=()
-probe_sources=()
-case "${1:-}" in
-    --tile-probe) image=tile-probe; extra=(-DBOARD_TILE_PROBE=1); probe_sources=(board/tile_probe.c); shift ;;
-    --tile-probe-qemu)
-        image=tile-probe-qemu
-        extra=(-DBOARD_TILE_PROBE=1 -DBOARD_CLP_SIM=1 -DBOARD_UART_TEST=1 -DCLP_MODEL_QEMU=1
-               -Wl,--defsym=board_clp_sim=1 -Wl,--wrap=board_pcie_loop)
-        probe_sources=(board/tile_probe.c board/tests/tile_probe_qemu.c board/tests/clp_qemu.c); shift ;;
-esac
 if [[ "${1:-}" == --help ]]; then
-    echo 'Build N550 ELF; optional --tile-probe or --tile-probe-qemu. Does not run hardware.'
+    echo 'Build N550 PCIe model ELF. Does not run hardware.'
     exit 0
 fi
 if [[ $# != 0 ]]; then exit 2; fi
@@ -30,7 +20,7 @@ flags=(-march=rv64gcv_zicbom_zifencei_xewmatrix1p0 -mabi=lp64d -mcmodel=medany -
        -fno-tree-vectorize -mstringop-strategy=scalar -ffp-contract=off -fno-stack-protector -fno-pic -fno-pie
        -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables
        -DYOLO_N550_BOARD=1 -DMODEL_PRECISION=1 -DMODEL_PROFILE=0
-       -I "$src" -I "$root/model" "${extra[@]}")
+       -I "$src" -I "$root/model")
 "$tc-gcc" "${flags[@]}" -c board/start.S -o "$out/start.o"
 cat > "$out/weights.S" <<EOF
 .section .rodata.weights,"a",@progbits
@@ -47,13 +37,13 @@ sources=(matmul.c conv2d.c activation.c basic.c basic_rvv.c scalar_model.c
          "$root/model/model_generated.c")
 "$tc-gcc" "${flags[@]}" -DCLP_PROBE_EMBEDDED=1 -include board/coherent_rvv.h -nostdlib -nostartfiles \
     -Wl,--gc-sections -Wl,-Map="$out/$image.map" -T board/ddr.ld \
-    "$out/start.o" "$out/weights.o" "${sources[@]}" "${probe_sources[@]}" board/pcie.c -o "$out/$image.elf"
+    "$out/start.o" "$out/weights.o" "${sources[@]}" board/pcie.c -o "$out/$image.elf"
 "$tc-objdump" -d "$out/$image.elf" > "$out/$image.disasm"
 "$tc-size" "$out/$image.elf" | tee "$out/$image-size.txt"
 for instruction in cbo.clean cbo.flush cbo.inval mfmacc.s.h; do
     grep -Fq "$instruction" "$out/$image.disasm"
 done
-if [[ "$image" != tile-probe-qemu ]] && grep -Eq '\bq_call\b|\bq_open\b|\bebreak\b' "$out/$image.disasm"; then
+if grep -Eq '\bq_call\b|\bq_open\b|\bebreak\b' "$out/$image.disasm"; then
     echo 'Unexpected semihosting/debug trap in board ELF' >&2; exit 1
 fi
 symbols="$image-symbols.txt"

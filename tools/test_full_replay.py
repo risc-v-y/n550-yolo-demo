@@ -8,8 +8,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from full_replay import Replay,ROOT,sha,verified_binary
-from tile_probe import fp32_rne
+from full_replay import Replay,ROOT,sha,verified_binary,NUMERIC_RULE
+
+
+def fp32_rne(value):
+    # Directed tests below have exactly representable binary64 intermediates.
+    return struct.unpack('<f',struct.pack('<f',float(value)))[0]
 
 BINARY=Path(os.environ.get('YOLO_AUDITOR',str(ROOT/'yolo26_riscv/build/host-verify/host-verify')))
 
@@ -27,7 +31,7 @@ class CheckoutTests(unittest.TestCase):
             (root/'weights.bin').write_bytes(binary_data)
             record={'version':1,'arch':'linux-x86_64','static':True,'qemu_gate':{'status':'passed'},
                     'binary':'firmware/host-verify','sha256':sha(b'binary'),
-                    'sources':{'weights.bin':sha(binary_data)},'reference_manifest_sha256':sha(lf)}
+                    'numeric_rule':NUMERIC_RULE,'sources':{'weights.bin':sha(binary_data)},'reference_manifest_sha256':sha(lf)}
             (root/'firmware/host-verify.json').write_text(json.dumps(record))
             path=root/'reference/nodes/manifest.json'
             for data in (lf,lf.replace(b'\n',b'\r\n')):
@@ -93,8 +97,12 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(raw,bytes(len(raw)))
 
     def test_first_layer_five_saved_screenshot_words(self):
-        from tile_probe import assets
-        manifest,inputs,_,_=assets(); replay=Replay(16,binary=BINARY)
+        manifest=self.manifest; tensors=manifest['tensors']
+        constants=(ROOT/'model/constants.bin').read_bytes()
+        inputs={0:(ROOT/'reference/prepared/bus-input-fp32.bin').read_bytes()}
+        for tid in (1,2):
+            t=tensors[tid]; inputs[tid]=constants[t['offset']:t['offset']+t['bytes']]
+        replay=Replay(16,binary=BINARY)
         try: raw=replay.run(manifest['nodes'][0],manifest['tensors'],inputs)[3]
         finally: replay.close()
         expected={28:0x3fa9d738,29:0x3f2baaf4,30:0x3fdca53e,15357:0x38570000,624567:0x4280f2e9}

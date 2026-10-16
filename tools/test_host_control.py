@@ -52,58 +52,17 @@ class MenuTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): host.restore()
             run.assert_not_called()
 
-    def test_probe_report_reanalyzes_once_then_displays_same_saved_analysis(self):
-        directory=self.root/'saved-probe'; directory.mkdir()
-        (directory/'summary.json').write_text('{"status":"completed"}')
-        host.save_json(host.workspace()/'last-probe.json',{'directory':str(directory)})
-        with patch('host_control.subprocess.run') as run,patch('builtins.input',return_value=''):
-            host.probe_pages()
-        self.assertEqual(run.call_count,3)
-        for page,call in enumerate(run.call_args_list,1):
-            command=call.args[0]
-            self.assertEqual(command[:4],[sys.executable,str(self.root/'tools/tile_probe.py'),'--report',str(directory)])
-            self.assertEqual(command[4:6],['--page',str(page)])
-            self.assertEqual('--reanalyze' in command,page==1)
-            self.assertNotIn('--load',command)
-            self.assertNotIn('--pbcopy',command)
-            self.assertNotIn('--pbload',command)
 
-    def test_failed_reanalysis_does_not_display_old_cached_pages(self):
-        directory=self.root/'saved-probe'; directory.mkdir()
-        (directory/'summary.json').write_text('{"status":"completed"}')
-        host.save_json(host.workspace()/'last-probe.json',{'directory':str(directory)})
-        with patch('host_control.subprocess.run',side_effect=subprocess.CalledProcessError(1,['analysis'])) as run, \
-             patch('builtins.input') as prompt:
-            with self.assertRaises(subprocess.CalledProcessError): host.probe_pages()
-        self.assertEqual(run.call_count,1)
-        prompt.assert_not_called()
 
-    def test_probe_launch_uses_loader_and_records_report_pointer(self):
-        previous=self.root/'old-capture'; previous.mkdir()
-        (previous/'summary.json').write_text('{"sample":"bus"}')
-        with patch('host_control.Path.is_file',return_value=True), \
-             patch.object(host,'selected',return_value=previous), \
-             patch('host_control.subprocess.Popen') as popen:
-            popen.return_value.pid=123
-            host.launch(probe=True)
-        command=popen.call_args.args[0]
-        self.assertIn('--load',command)
-        self.assertIn('tile_probe.py',command[2])
-        self.assertEqual(command[-2:],['--capture',str(previous)])
-        self.assertTrue(popen.call_args.kwargs['start_new_session'])
-        self.assertEqual(len(popen.call_args.kwargs['pass_fds']),1)
-        job=json.loads((host.workspace()/'last-launch.json').read_text())
-        saved=json.loads((host.workspace()/'last-probe.json').read_text())
-        self.assertEqual(saved['directory'],job['result'])
 
-    def test_full_launch_is_detached_and_passes_saved_probe(self):
+    def test_full_launch_is_detached_without_obsolete_probe(self):
         host.save_json(host.workspace()/'last-probe.json',{'directory':'/saved/probe'})
         with patch('host_control.Path.is_file',return_value=True),patch('host_control.subprocess.Popen') as popen:
             popen.return_value.pid=321
             host.launch_full()
         command=popen.call_args.args[0]
         self.assertEqual(command[2],str(self.root/'tools/full_check.py'))
-        self.assertEqual(command[-2:],['--probe','/saved/probe'])
+        self.assertNotIn('--probe',command)
         self.assertTrue(popen.call_args.kwargs['start_new_session'])
         self.assertEqual(len(popen.call_args.kwargs['pass_fds']),1)
         full=json.loads((host.workspace()/'last-full.json').read_text())
@@ -115,7 +74,7 @@ class MenuTests(unittest.TestCase):
         bus={'passed':True,'nodes_captured':334,'outputs_captured':335,
              'inputs_verified_nodes':334,'final':{'normal_repeat_exact':True,'valid':True},
              'rows':[{'node':i,'kind':'COPY','status':'exact','outputs':[]} for i in range(334)]}
-        report={'id':'old-paired','status':'failed','tile_gate':{'status':'passed'},
+        report={'numeric_rule':__import__('full_replay').NUMERIC_RULE,'id':'old-paired','status':'failed','tile_gate':{'status':'passed'},
                 'samples':{'bus':bus,'zidane':{'passed':False}}}
         (directory/name).write_text(json.dumps(report))
         return report
@@ -149,9 +108,9 @@ class MenuTests(unittest.TestCase):
         (capture/'summary.json').write_text('{"sample":"bus","status":"completed"}')
         host.save_json(host.workspace()/'last-full.json',{'directory':str(directory)})
         def offline(*args,**kwargs):
-            report=self.saved_bus(directory,'bus-analysis.json')
+            report=self.saved_bus(directory,'bus-rtl-analysis.json')
             report.update(id='offline',status='passed')
-            (directory/'bus-analysis.json').write_text(json.dumps(report))
+            (directory/'bus-rtl-analysis.json').write_text(json.dumps(report))
         with patch('host_control.subprocess.run',side_effect=offline) as run, \
              patch('builtins.input',return_value=''):
             host.full_pages()

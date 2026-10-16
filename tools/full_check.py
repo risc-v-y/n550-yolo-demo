@@ -7,50 +7,18 @@ import subprocess
 import sys
 import time
 import traceback
-from full_replay import Replay,ROOT,sha,source_sha
+from full_replay import Replay,ROOT,sha,source_sha,NUMERIC_RULE
 from full_evidence import audit,reusable,read_json
 from node_capture import verify_reference_manifest
 from png_output import check_renderer
-import tile_probe
 
-BUS_ONLY_VERSION = 2
+BUS_ONLY_VERSION = 3
 
 
 def save(path,value):
     temp=path.with_suffix('.tmp')
     temp.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     temp.replace(path)
-
-
-def probe_gate(directory):
-    """Compare native first-layer predictions to both saved physical probes."""
-    if directory is None:
-        return {'status':'missing','error':'No saved two-run physical tile probe; numerical acceptance remains incomplete'}
-    original,source,raws=tile_probe.saved_inputs(directory)
-    if source.get('mode')!='physical board': raise ValueError('Probe is not recorded as physical board data')
-    fixture=tile_probe.assets(); manifest,inputs,_,_=fixture
-    replay=Replay(16)
-    try: native=replay.run(manifest['nodes'][0],manifest['tensors'],inputs)[3]
-    finally: replay.close()
-    runs=[]
-    for raw in raws:
-        result=tile_probe.analyze(raw,fixture)
-        _,records=tile_probe.decode(raw)
-        mismatch=0
-        for record in records:
-            first=record['meta'][0]
-            for oc in range(16):
-                for col in range(32):
-                    pos=4*(oc*43264+first+col); i=4*(oc*32+col)
-                    mismatch+=native[pos:pos+4]!=record['after'][i:i+4]
-        result['native_post_mismatches']=mismatch
-        runs.append(result)
-    keys=('weight_bad','input_bad','bias_bad','pre_vs_split16','post_vs_split16')
-    passed=raws[0]==raws[1] and all(not r['native_post_mismatches'] and
-                  all(not t[k] for t in r['tiles'] for k in keys) for r in runs)
-    return {'status':'passed' if passed else 'unexplained','source_report_id':source.get('id'),
-            'source_report_sha256':sha(original),
-            'directory':str(directory),'raw_sha256':[sha(r) for r in raws],'runs':runs}
 
 
 def command(args,log):
@@ -105,7 +73,7 @@ def capture(args,sample,output):
 
 def new_report():
     return {'version':BUS_ONLY_VERSION,'sample':'bus','status':'running','created':datetime.now().isoformat(),
-            'samples':{},'errors':[],'tile_gate':{'status':'not_run'},
+            'samples':{},'errors':[],'numeric_rule':NUMERIC_RULE,
             'scope':'One fixed bus input only; matches do not prove equivalence for all inputs'}
 
 
@@ -147,24 +115,23 @@ def bus_capture(directory):
 
 def saved_report(directory):
     """Display an existing BUS analysis without replaying nodes or touching the board."""
-    for name in ('bus-analysis.json','summary.json','checkpoint.json','bus/analysis.json'):
+    for name in ('bus-rtl-analysis.json','bus-analysis.json','summary.json','checkpoint.json','bus/analysis.json'):
         path=directory/name
         if not path.is_file(): continue
         raw=path.read_bytes(); source=json.loads(raw)
-        if name=='bus-analysis.json' and source.get('status')=='failed':
+        if source.get('numeric_rule')!=NUMERIC_RULE:
+            raise LookupError('Saved analysis uses the old PE reference; offline reanalysis is required')
+        if name=='bus-rtl-analysis.json' and source.get('status')=='failed':
             return dict(source,mode='saved analysis',source={'path':str(path),'sha256':sha(raw)})
         result=source if name=='bus/analysis.json' else source.get('samples',{}).get('bus')
         if not result or not isinstance(result.get('rows'),list): continue
-        gate=source.get('tile_gate')
-        if gate is None:
-            gate=read_json(directory/'tile-gate.json') if (directory/'tile-gate.json').is_file() else {'status':'missing'}
         complete=(result.get('passed') is True and result.get('nodes_captured')==334 and
                   result.get('outputs_captured')==335 and result.get('inputs_verified_nodes')==334 and
                   len(result['rows'])==334 and result.get('final',{}).get('normal_repeat_exact') is True and
                   result.get('final',{}).get('valid') is True)
         return {'version':BUS_ONLY_VERSION,'sample':'bus','id':sha(raw+b'bus-saved-view')[:12],
-                'status':'passed' if complete and gate.get('status')=='passed' else 'not_passed',
-                'samples':{'bus':result},'tile_gate':gate,'errors':result.get('errors',[]),
+                'status':'passed' if complete else 'not_passed','numeric_rule':NUMERIC_RULE,
+                'samples':{'bus':result},'errors':result.get('errors',[]),
                 'elapsed_seconds':source.get('elapsed_seconds',0),'mode':'saved analysis',
                 'source':{'path':str(path),'id':source.get('id'),'sha256':sha(raw)}}
     raise LookupError('No saved BUS node analysis in '+str(directory))
@@ -181,20 +148,15 @@ def reanalyze(args):
             if path.is_file(): source_files[name]=sha(path.read_bytes())
         report['source']={'directory':str(directory),'files_sha256':source_files}
         manifest,prepared=assets(report)
-        gate=read_json(directory/'tile-gate.json') if (directory/'tile-gate.json').is_file() else {}
-        probe=Path(gate['directory']) if gate.get('directory') else args.probe
-        try: report['tile_gate']=probe_gate(probe)
-        except Exception as exc: report['tile_gate']={'status':'failed','error':str(exc)}
         raw=bus_capture(directory)
         if (raw/'summary.json').is_file():
             report['source']['capture_summary_sha256']=sha((raw/'summary.json').read_bytes())
         report['samples']['bus']=audit(raw,'bus',manifest,prepared)
-        report['status']='passed' if (report['tile_gate']['status']=='passed' and
-                                     report['samples']['bus']['passed']) else 'not_passed'
+        report['status']='passed' if report['samples']['bus']['passed'] else 'not_passed'
     except Exception as exc:
         report.update(status='failed'); report['errors'].append(type(exc).__name__+': '+str(exc))
     finish(report,started)
-    save(directory/'bus-analysis.json',report)
+    save(directory/'bus-rtl-analysis.json',report)
     return report
 
 
@@ -211,9 +173,6 @@ def run(args):
             print('AUDIT {} node={:03d} {}'.format(sample,node,status),flush=True)
     try:
         manifest,prepared=assets(report)
-        try: report['tile_gate']=probe_gate(args.probe)
-        except Exception as exc: report['tile_gate']={'status':'failed','error':str(exc)}
-        save(output/'tile-gate.json',report['tile_gate'])
         directory=None; sample_output=output/'bus'; sample_output.mkdir(exist_ok=True)
         if not args.fresh: directory=find_reuse('bus',manifest,prepared,output)
         if directory is not None:
@@ -233,7 +192,7 @@ def run(args):
         report['samples']['bus']=result
         save(sample_output/'analysis.json',result)
         save(output/'checkpoint.json',report)
-        report['status']='passed' if (not report['errors'] and report['tile_gate']['status']=='passed'
+        report['status']='passed' if (not report['errors']
                            and all(r['passed'] for r in report['samples'].values())) else 'not_passed'
     except BaseException as exc:
         report.update(status='failed'); report['errors'].append(type(exc).__name__+': '+str(exc))
@@ -257,16 +216,13 @@ def render(report,page):
             r=samples.get(sample,{})
             lines+=['{}: {}/334 {}/335 {}/334'.format(sample,r.get('nodes_captured',0),r.get('outputs_captured',0),r.get('inputs_verified_nodes',0))]
             c=r.get('counts',{})
-            lines+=['  exact={} split16={} unexplained={}'.format(c.get('exact',0),c.get('split16_match',0),c.get('unexplained',0)),
+            lines+=['  exact={} rtl-match={} unexplained={}'.format(c.get('exact',0),c.get('rtl_match',0),c.get('unexplained',0)),
                     '  input-unverified={} missing={}'.format(c.get('input_unverified',0),c.get('missing',0 if r else 334))]
-        lines+=['Saved physical tile gate: '+report.get('tile_gate',{}).get('status','missing'),
+        lines+=['PE rule: '+report.get('numeric_rule','legacy'),
                 'Elapsed seconds: {:.1f}'.format(report.get('elapsed_seconds',0)),
                 'No tolerance; every element compared. Match covers this input only.']
     elif page==2:
         lines+=['Exceptions (full details in host analysis.json):']
-        tile=report.get('tile_gate',{})
-        if tile.get('status')!='passed':
-            lines+=['Tile gate: '+tile.get('status','missing'),tile.get('error','See tile-gate.json')[:78]]
         for sample,r in samples.items():
             bad=[n for n in r['rows'] if n['status'] in ('unexplained','input_unverified','missing')]
             lines+=['{}: {} exceptional nodes'.format(sample,len(bad))]
@@ -301,15 +257,11 @@ def main():
     p.add_argument('--report',type=Path)
     p.add_argument('--reanalyze',action='store_true',help='Re-audit saved BUS raw evidence offline')
     p.add_argument('--page',type=int,choices=(1,2,3),default=1)
-    p.add_argument('--probe',type=Path)
     p.add_argument('--fresh',action='store_true',help='Recapture BUS even if old evidence is complete')
     p.add_argument('--reset-dir',default='/rv/fpga/bin')
     p.add_argument('--pbcopy',default='/rv/fpga/bin/pbcopy'); p.add_argument('--pbload',default='/rv/fpga/bin/pbload')
     p.add_argument('--node-timeout',type=float,default=300); p.add_argument('--tool-timeout',type=float,default=30)
     args=p.parse_args()
-    if args.probe is None:
-        pointer=ROOT/'yolo26_pc/outputs/host-menu/last-probe.json'
-        if pointer.is_file(): args.probe=Path(read_json(pointer)['directory'])
     if args.reanalyze and not args.report: p.error('--reanalyze requires --report')
     if args.report:
         if args.output or args.fresh: p.error('--report cannot be combined with --output/--fresh')

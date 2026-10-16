@@ -1,414 +1,130 @@
-# N550 YOLO26 板端验证操作指南
+# N550 YOLO26 板端演示
 
-在物理连接 S2C 的 Linux 实验室电脑（下称 **host**）运行：**host 采集/预处理 → PCIe 写 DDR → N550 RVV+AMU 推理 → PCIe 读结果 → host 绘框、显示和录像**。开发机通过已有远程桌面查看 host。**UART 只输出调试文字，已删除 UART 图片/结果传输方案。**
+链路：**host 采集/预处理 → PCIe 写 DDR → N550 RVV+AMU 推理 → PCIe 读结果 → host 绘框、显示、录像**。host 是物理连接 S2C 的 Linux 电脑；开发机远程查看其桌面。UART 只输出调试文字。
 
-仓库提供源码、预编译固件、样例和数值基准。本机检查不代表实板通过；加载、缓存可见性、模型数值及吞吐仍须现场验收。以下命令均在 host 的仓库根目录执行。
+固定 YOLO26n、416×416、完整334节点；不新增优化、量化、NMS或跟踪。
 
-**当前先查看已有 bus 三页结果，再推进视频：菜单 12 → 14 检查 host → 15 视频三帧。已有结果不重新采集或重放。** 首层已采集的三个分块与16项分段规则匹配；完整模型的实板数值验收以本次查验结果为准。不再运行或要求第二张图验证。
+## 当前状态
 
-### 已有 bus 结果与查验入口
+BUS 完整采集已完成离线定位：94个AMU卷积、6,766,084个输出按最新RTL行为逐位一致，其余240个节点按实际输入重放一致；普通推理与采集推理的最终7200字节完全一致。正式查验程序已更新，保留原QEMU对照。范围和证据见 [验收状态](docs/VALIDATION.md)。
 
-```bash
-# 在 host 仓库根目录打开菜单；后续由菜单完成更新、加载和查验
-bash tools/host.sh
-```
+本轮不需重新采集BUS。下一步在host验证视频解码、前后处理、显示及实板连续帧。
 
-已有任务使用下方停止/更新命令，随后选 **12** 查看已有报告。**只有明确需要重新查验时才选11**。程序仅采集 bus 全部334节点、335个有效输出，再运行一次普通推理核对最终7200字节是否一致：正常共两次模型推理，之后在host离线重放。存在证据完整且校验通过的bus采集和普通复跑结果时直接复用，无需重跑板子；否则自动加载正式固件后重新采集。数值差异不打断后续节点；写入、启动自测或 trap 失败则停止实板操作，保留已有结果。可恢复的 PCIe 读取失败最多额外重试一次整帧；单次读取仍沿用有限重试。
+## 1. 更新和查看现有结果
 
-程序后台运行，普通 SSH 断线后继续；重新打开菜单，**6** 查看进度，完成后 **12** 逐页查看并截图。无需先选5、8或10。UART仅作调试，可保留 minicom；关闭其他 PCIe 控制程序并让 GDB 中的CPU继续运行。
-
-随包附静态 Linux x86_64 C 查验程序 `firmware/host-verify`，host只需 Python 3.8+ 标准库，无需编译器。启动前核对程序及来源哈希并自测。发布门禁按原QEMU规则核对bus全部334节点、335个有效输出逐字节一致；实板重放使用**对应节点的实际输入**，依据运算前CRC核实，区分本节点计算差异与上游传播。覆盖全部21类算子：AMU采用FP16实际打包值、每16项与前次FP32累加值一起求和并舍入，跨32项指令和尾段同样处理；偏置最后单独FP32相加。非AMU路径遵守当前运算顺序，保留原QEMU差异统计。
-
-新采集保存原始节点快照、输入前CRC、完整输入/输出哈希及实际张量；旧采集缺少完整凭据时自动重新采集整张图。已完整采集且校验通过的图片可复用，失败的半帧从头采集。首层旧两轮分块由菜单8留下的位置自动读取并与新C程序交叉核对；缺失时汇总明确标为未完成，不会误报通过。
-
-结果位于 `yolo26_pc/outputs/full-check/run-*/`，bus的 `analysis.json` 保存全部节点的“一致、分段匹配、未解释、输入未核实、采集缺失”分类。普通推理复跑核对、候选框长度/有限值/类别/置信度/坐标检查、原图绘框均纳入报告；绘框默认保存为对应采集目录的 `full-check-annotated.png`，固定图片及单图采集保存为 `annotated.png`。菜单12直接读取已有bus分析，旧zidane失败不影响bus结论；旧报告及全部采集保留。只有分析缺失但存在完整原始采集时，才补做一次离线分析，另存bus-analysis.json；不会重新推理。三页汇总每页不超过22行、80列；完整异常和日志保留host，无需传大文件。
-
-旧任务仍在运行时，菜单1会拒绝更新。以下命令判断旧进程：仍在运行则发送SIGINT并等待退出；已经结束就跳过停止。随后更新代码并直接显示已有bus三页结果，不等待第二张图、不启动新查验、不改变原结果目录。进程身份或锁不符时明确报错，保留现场。
+以下命令均在host仓库根目录执行。已有后台任务运行时，菜单1会拒绝更新；先等待任务结束。
 
 ```bash
-# 在host仓库根目录执行：停止仍在运行的旧任务（已结束则跳过），更新并读取已有三页结果
-git fetch origin main && git show origin/main:tools/adopt_bus_only.py > /tmp/yolo-bus-only.py && python3 /tmp/yolo-bus-only.py --repo "$PWD"
-
-# 打开更新后的菜单；14检查host，15运行视频，12可再次查看已有三页结果
-bash tools/host.sh
-```
-
-也可指定旧任务目录直接显示；原summary.json保持不变。
-
-```bash
-# 直接读取已有bus报告第一页，不重新推理或重放数值
-python3 tools/full_check.py --report "实际结果目录" --page 1
-
-# 仅在需要重新核验原始文件时使用：离线重放，另存bus-analysis.json，不访问PCIe
-python3 tools/full_check.py --reanalyze --report "实际结果目录" --page 1
-```
-
-PNG无需浏览器：在已有图形会话中使用eog打开，或通过远程桌面查看。PNG生成本身不需要DISPLAY、NumPy、OpenCV或Pillow，复用host现有的librsvg/Cairo图像库；缺库会在访问板子前明确报错。
-
-**旧SVG选菜单13离线导出PNG，无需重新推理。** 程序优先使用最近全模型报告及其实际采集目录；如果最近一次启动即失败、没有图片，会明确提示并查找此前保存的图片，打印实际来源路径，不会将旧图片标记为本次结果。保留原SVG、数值报告和原始数据，另存`png-export.json`。
-
-```bash
-# 指定旧结果目录或SVG文件，离线导出PNG；不会加载固件或访问PCIe
-python3 tools/render_results.py "实际结果目录"
-
-# 在可显示图形的终端打开生成的检测图，替换为程序打印的实际路径
-eog "实际结果目录/annotated.png"
-```
-
-若旧版本在启动时提示`Auditor release gate/reference manifest mismatch`，选1更新后重新选11。本版统一文本换行后计算哈希，兼容Git在Windows/Linux间的CRLF/LF转换；实际内容、二进制权重和固件仍严格核对。旧失败报告保留，更新不会改变其结论。
-
-仅当bus全部334节点、335个有效输出覆盖完整、所有输入已核实、重放数值逐位匹配、普通模式复跑一致且分块交叉核对通过，才显示 `STATUS: passed`。`not_passed` 会列出未解释或缺失项，不设经验误差阈值。此结论仅覆盖当前bus输入，不能推广为所有输入或完整RTL等价证明。已有结果用于判断数值差异；视频功能开发同时推进。视频流程完成不等于数值验收通过。
-
-### 一次导出数值分析材料
-
-三页报告存在未解释差异时，先导出已有完整bus证据。当前不需要重新采集或执行菜单15。
-
-```bash
-# 更新已发布的导出工具；不加载固件或启动推理
+# 拉取最新程序、固件与文档；旧系统时间下使用已配置的Git SSH
 git pull --ff-only
 
-# 自动跟随最近报告中的实际bus采集和首层分块目录，校验并打包；仅用Python3.8标准库
-python3 tools/export_bus_evidence.py
-```
-
-完成标志为 **`EXPORT COMPLETED`**，终端打印ZIP的完整路径、大小和SHA256。输出位于 `yolo26_pc/outputs/evidence-export/bus-evidence-*.zip`，将这个ZIP导出即可；包内已含文件清单。旁边的 `.manifest.json` 和 `.zip.sha256` 便于核对，不必额外传输。
-
-包内 `check/` 保存本次报告与日志；`bus/` 保存实际使用的完整采集（包括复用在其他目录的输入、335个输出、节点快照、普通推理结果）；`probe/` 保存原首层分块证据；`metadata/` 保存模型/参考/查验程序清单，并记录Git版本及原始路径。包含实板读回的权重输入，排除zidane张量和旧return.zip，不另带仓库中的model/constants.bin及QEMU参考。单包上限3GB。
-
-导出会核对334节点的快照、输入/输出哈希与CRC、普通复跑文件以及两轮分块的来源哈希，然后重新读取ZIP逐文件验证。**完整只表示证据齐全，不表示数值验收通过。** 缺失、损坏、源文件变化或控制任务仍活跃时明确报错，保留原数据，不自动重跑板子。需指定旧报告时，在同一命令后加 `--report "实际full-check目录"`；修改保存位置使用 `--output-dir "目标目录"`。
-
-收到完整包后集中完成全部异常分类、最早差异点的转换/累加/偏置分析及最终框匹配。若查验规则修正即可解释全部差异，直接对旧数据重算；若缺少AMU指令内部阶段证据，再一次组织代表性最小用例。板端程序或硬件修复后才重跑bus回归，之后再接视频验证。
-
-## 1. 准备与查看调试串口
-
-```bash
-git clone https://github.com/risc-v-y/n550-yolo-demo.git
-cd n550-yolo-demo
+# 核对交付文件完整性，不访问板子
 sha256sum -c firmware/SHA256SUMS
-python3 --version
-command -v pbcopy
-command -v pbload
-python3 yolo26_pc/serial_probe.py
-```
 
-固定图片验证、逐节点自动采集及截图报告支持 Python 3.8+ 标准库及现场已有的 PCIe 工具；无需 PyTorch、NumPy、OpenCV、pyserial、pip 或 venv。host 使用 Python 3.8.10 时可直接执行文中的 `python3` 命令。串口枚举不发送数据，需结合接线或 USB 序列号确认实际端口。
-
-**先打开串口终端，再加载固件**，才能看到启动信息。例如另一终端执行：
-
-```bash
-minicom -D /dev/ttyUSB2 -b 115200
-```
-
-按实际接线替换端口，在 minicom/PuTTY 设置 **115200、8N1、关闭硬件及软件流控**。它可以与 PCIe 演示同时运行；UART 不响应 HELLO/ping，也不接收模型任务。端口排查见 [串口说明](docs/SERIAL_PROBE.md)。
-
-host 时间因 S2C 许可回调时，已配置 SSH 公钥的设备改用 SSH 拉取和推送，避免 HTTPS 证书时间冲突：
-
-```bash
-git remote set-url origin git@github.com:risc-v-y/n550-yolo-demo.git
-git pull --ff-only
-```
-
-`ssh -T git@github.com` 出现 `successfully authenticated` 和 `does not provide shell access` 是正常认证结果。SSH 解决 Git 传输；PCIe 工具仍需有效的 S2C 许可环境。
-
-## 2. 复位、加载 DDR、释放复位
-
-平台方须保证 DDR 可用，程序/权重/栈所在 `0x80000000–0x81FFFFFF` 的32 MiB，以及模型数据所在 `0xF0000000–0xF0FFFFFF` 的16 MiB均独占，DCache开启；复位释放不会清除已写入的 DDR，CPU 从 `0x80000000` 启动。平台初始化和 JTAG 配置仍由板级同事负责，见 [板端条件](docs/BOARD.md)。
-
-将参数指向 **现场已有 `reset1.sh` 和 `reset.sh` 的目录**：
-
-```bash
-# 复位、加载正式模型固件、释放复位；按现场复位脚本和工具路径修改
-bash tools/load_board.sh --reset-dir /rv/fpga/bin --pbcopy /rv/fpga/bin/pbcopy
-```
-
-脚本核对 BIN 哈希并获取 PCIe 互斥锁，然后执行 **`reset1.sh` 保持复位 → `pbcopy -d 完整BIN路径:0x0` → `reset.sh` 释放复位**。在复位脚本所在目录调用它们，保留相对路径依赖。每步检查退出码和失败文字，日志在 `yolo26_pc/outputs/deploy-*/load.log`。加载失败不会调用 `reset.sh`；释放失败报错，由平台方确认板卡状态。脚本成功只表示部署命令完成，启动与推理还需验证。
-
-默认加载 `firmware/demo-pcie.bin`，包含程序、模型图及权重，不用单独上传 `.pt`。PCIe 偏移 `0x0` 对应 CPU `0x80000000`；`demo-pcie.elf` 供符号和 JTAG 调试，不能改名为 BIN 加载。
-
-模型数据实际占8,143,104字节（约7.77 MiB）。高地址数据为 NOLOAD，不写入 BIN，由启动代码通过 RVV CLP 清零；BIN 约9.31 MiB，不会包含两个地址区之间的大空洞。标量使用全局 DDR 地址，参与交接时仍做缓存维护；权重及栈上索引数组使用正常缓存路径。
-
-UART 应依次出现 BOOT、CLP 数据地址、四种 SHAPES、`32 ROUNDS PASS`、READY。模型启动复用已在现场通过的32轮CLP自测；自测失败会发布PCIe ERROR并保留诊断。看到READY后再执行第3节。
-
-### 独立 CLP 自测：按需复验
-
-提交 `9e253cf` 的四种形状、32轮自测已由现场报告全部成功。独立 `clp-selftest.bin/elf` 保持该已验证版本；旧 `selftest.bin/elf` 仅供历史缓存定位，不用于模型启动。
-
-```bash
-# 可选：加载独立4 KiB自测，会替换当前运行的模型
-bash tools/load_board.sh --reset-dir /rv/fpga/bin \
-  --pbcopy /rv/fpga/bin/pbcopy --clp-selftest
-
-# 读取自测诊断及完整4 KiB，逐字核对；不是模型图像推理
-python3 tools/collect_board_diag.py --firmware clp-selftest --samples 1 \
-  --pbload /rv/fpga/bin/pbload --tool-cwd "$PWD"
-
-# 复验后重新加载正式模型，等待READY再提交图像
-bash tools/load_board.sh --reset-dir /rv/fpga/bin --pbcopy /rv/fpga/bin/pbcopy
-```
-
-独立自测的数据布局、错误字段和最终 `clp_probe_halt` 停点见 [诊断说明](docs/DIAGNOSTICS.md)。每次只需一个临时硬件断点，不依赖人工追赶UART。它只验证四种矩阵形状，完整模型仍须实板单图及连续帧验收。
-
-## 3. 固定图片：免安装验证
-
-```bash
-# 查看固件描述并建立PCIe会话，不运行图像推理
-python3 yolo26_pc/pcie_backend.py --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
-
-# 上传bus输入、推理并保存原始结果、参考差异和绘框图
-python3 yolo26_pc/pcie_prepared.py --sample bus --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload --board-trace --check-intermediates
-
-```
-
-原始 JPEG、正式预处理流程生成的输入、坐标映射与哈希已交付，见 `reference/prepared/manifest.json`。输入是 RGB NCHW `[1,3,416,416]` 小端 FP32，2,076,672 字节；保留全部 334 节点和现有 RVV+AMU FP16 计算。返回 `[300,6]` FP32，7,200 字节，字段为输入图坐标下的 `x1,y1,x2,y2,score,class`。host 按 `score > 0.25` 过滤并还原坐标，不增加 NMS。
-
-结果在 `yolo26_pc/outputs/board-pcie/<时间>/`：报告、日志、`candidates.bin` 和包含原图的 `annotated.png`。用eog查看PNG；检查报告的 `status=completed`、`reference.byte_identical`、类别顺序、坐标/分数差异和绘框效果。完成状态仅表示收发及结果检查完成，数值仍须验收，不设经验阈值掩盖差异。
-
-首次验收保留上述逐节点打印和中间值检查。旧版 `5af2816` 在节点305存在常量输出检查误报，已修正；更新后须重新加载本包的 `demo-pcie.bin`，仅拉取源码不会替换板上程序。原因见 [诊断说明](docs/DIAGNOSTICS.md)。
-
-### 3.1 自动采集并在 host 上比较
-
-仍只需 Python 3.8+ 标准库及已有PCIe工具，无需GDB断点。停止其他PCIe控制程序，让CPU保持运行；minicom可继续查看日志。
-
-推荐用 host 菜单，首次获取脚本后不必重复输入长命令：
-
-```bash
-# 首次下载菜单及分析工具；以后可从菜单选择更新
-git pull --ff-only
-
-# 打开菜单：更新、已有报告、首层分析、后台采集、进度、选择结果
+# 打开统一操作菜单
 bash tools/host.sh
 ```
 
-菜单编号：**1 更新仓库，2 查看采集报告，3 查看首差异，4 离线分析首层，5 后台采集 bus，6 查看进度/日志，7 选择已有结果，8 加载并运行首层分块诊断，9 离线重分析分块报告（三页），10 恢复正常模型固件，11 bus单图完整查验，12 bus三页汇总/离线重分析，13 旧SVG转PNG，0 退出**。页面之间按回车，输入 `q` 返回菜单。默认选最近结束的节点采集；通过7手动选择后会记住该目录。更新仅执行 `git pull --ff-only`，不会自动加载固件；菜单任务运行期间禁止更新和重复启动。
+选 **12** 查看BUS三页结果。旧报告使用旧参考规则时，自动对完整旧数据离线重分析一次，另存 `bus-rtl-analysis.json`；不重新加载固件、不访问PCIe、不修改原summary.json。之后重复查看直接读新报告。缺原始采集时明确报错，不自动重跑板子。
 
-选5自动带上 `--recover-paused`，解除旧采集的等待后从头采集，不是断点续采。程序独立于SSH终端运行，菜单退出或普通断线不会向它发送Ctrl+C。结果和日志位于 `yolo26_pc/outputs/host-menu/run-*/`，最新启动信息自动记录；选6查看末尾日志，可重复选择刷新。固件仍须已加载并正常运行。
-
-选4完全离线：使用已保存的首层输入、输出、参考及哈希，找到最大ULP和最大绝对误差的位置，分页显示27项乘法输入、重建FP16值和三种候选累加规则的结果。这里的缓冲区和偏置前输出是重建值；实测请用选8。共4页，完整值保存在原采集目录的 `first-node-analysis.json`。支持中途失败的旧采集，不必重新推理；输入缺失或哈希不符会报错。仅适用于第0层普通卷积、K=27。
-
-**已经完成分块采集：选1更新 → 选9离线重分析并截取三页。无需重新选8、烧录或运行板子。** 菜单9核对原报告和两份原始数据的哈希，再逐位比较两轮各1,536个输出。保留打包、一次舍入、RVV加偏置及QEMU的原有比较，增加16项分段预测：前16项乘积精确求和后舍入为FP32，再将该中间值与后11项精确求和、舍入，最后加偏置并舍入；后11项不提前单独舍入。计算采用精确有理数直接做FP32 RNE，避免分析程序引入额外舍入。
-
-首次采集才用 **8 → 6 → 9**：选8自动复位、加载 `firmware/tile-probe.bin`、释放复位，上传bus并重复运行两次。只计算空间起点0、15328、18848的三个原始分块（每块M=16/N=32/K=27、输出步长43264），采集实际打包FP16、AMU偏置前FP32、RVV偏置后FP32及偏置；有已选旧bus采集时，还比较同位置的旧实板输出。
-
-结果保存在菜单打印的 `run-*/capture/`。离线重分析保留 `probe-1.bin`、`probe-2.bin`、`summary.json` 和工具日志，另写 `analysis-v2.json`，绑定原报告ID/哈希、两轮数据哈希及来源信息；失败不会覆盖已有分析报告。第一页显示两轮各分块的 `split16 pre/post` 差异数，第二页显示五个重点位置的预测原始位，第三页保留状态/地址及原报告ID。缺文件或哈希不符会明确报错。三页均不超过22行/80列，截图即可回传。
-
-**completed只表示采集与分析完成，不表示数值通过。** 不使用经验误差阈值；即使全部匹配，也只解释当前输入的三个分块，不能证明所有输入与RTL普遍等价。恢复完整模型/视频/节点采集前选10，普通模型客户端会拒绝诊断固件。
+若需指定目录：
 
 ```bash
-# 指定已有结果目录，离线重分析并显示第一页；不访问板子
-python3 tools/tile_probe.py --reanalyze --report 结果目录 --page 1
+# 将路径替换为已有full-check结果目录；只离线重分析
+python3 tools/full_check.py --reanalyze --report "实际结果目录"
 
-# 查看同一分析的后两页；将页码改为3可查看第三页
-python3 tools/tile_probe.py --report 结果目录 --page 2
+# 查看保存的新分析第二页；第三页将2改为3
+python3 tools/full_check.py --report "实际结果目录" --page 2
 ```
 
-构建机验证：`bash yolo26_riscv/build_board.sh --tile-probe` 生成独立实板固件；`python3 yolo26_riscv/board/tests/test_tile_probe.py` 编译并运行两轮QEMU诊断。QEMU统一RAM验证运算与采集接口，不能替代实板缓存、CLP路由验证。
+保留菜单编号：1更新；2/3查看采集/首差异；5后台采集BUS；6进度；7选择旧采集；10加载正式模型；11完整BUS查验；12三页汇总；13旧SVG转PNG；14检查host视频能力；15运行视频三帧；0退出。旧首层专项菜单4/8/9已移除。
 
-以下保留直接命令供需要指定参数时使用。
+## 2. 视频依赖与演示
 
-```bash
-# 更新源码、采集基准及固件；fetch不会更新工作区，须执行pull
-git pull --ff-only
-
-# 重新加载新增采集接口的固件，等待UART出现READY
-bash tools/load_board.sh --reset-dir /rv/fpga/bin --pbcopy /rv/fpga/bin/pbcopy
-
-# 自动采集bus全部节点、逐张量比较、绘框，最后再跑一次普通模式检查采集影响
-python3 yolo26_pc/node_capture.py --sample bus \
-  --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
-```
-
-板端每完成一个节点自动暂停；host读取并核对CRC、比较完整张量，再自动通知板端继续。334节点全部处理完才结束，首个差异节点还会读取实际输入并尝试数值重算。无需人工赶UART或反复设置断点。采集增加CRC扫描、读回和握手开销，耗时不代表正常推理速度；最后的普通模式结果用于检查采集是否改变结果。
-
-采集结束自动显示第一页摘要。**优先回传以下三页的终端截图，无需传文件**；每页最多22行、80列，使用英文短标签以便终端显示和截图识别。三张图的 `ID` 应一致。
+host支持Linux x86_64、Python3.8。依赖随Git提供，安装不联网、不改系统时间，也不安装PyTorch。
 
 ```bash
-# 第一页：采集完整性、总体差异、普通推理重复结果
-python3 yolo26_pc/node_report.py --page 1
-
-# 第二页：首个差异节点、输入输出形状、实际值及参考原始位
-python3 yolo26_pc/node_report.py --page 2
-
-# 第三页：候选累加规则的数值重算与匹配结果
-python3 yolo26_pc/node_report.py --page 3
-```
-
-命令默认读取最近一次结束的采集报告，按完成顺序记录，不受host回调日期影响。失败时第二、三页优先显示错误与最后节点。已有旧版采集结果也可直接查看：`python3 yolo26_pc/node_report.py 结果目录 --page 1`，无需重跑；第二、三页替换页码即可。这些查看命令只读host文件，不访问板子。
-
-采集中途失败时，已保存的首差异仍可分析，无需重新采集：
-
-```bash
-# 查看已保存的首差异节点、输入形状、全张量误差与原始数值
-python3 yolo26_pc/node_report.py --view difference --page 2
-
-# 查看基于实际输入的候选计算规则重算结果
-python3 yolo26_pc/node_report.py --view difference --page 3
-```
-
-报告保留 `status=failed`，并标注 `PARTIAL CAPTURE`，不能作为完整模型精度结论。要查看指定旧结果，在脚本名后添加结果目录。
-
-PCIe 读取遇到 `pbload` 段错误（返回码 -11）时，最多重试两次，共三次尝试，并受原有超时限制。每次重读前删除旧文件，成功后仍校验长度，采集张量还须通过CRC校验才会继续。失败工具的完整输出和重试记录保存在 `diagnostics.jsonl`；写入命令、其他错误以及数据校验失败不自动重试。
-
-结果默认在 `yolo26_pc/outputs/node-capture/<时间>/`；完整张量、实际输入、参考和工具日志全部保留host，后续缺少某项证据可再提取。`return.zip`保留为可选的小包。`completed`表示采集完成，不能当作数值精度通过；规则重算匹配也不能独立证明FPGA采用该舍入规则。
-
-`reference/nodes/` 保存冻结的无损QEMU基准及历史资产，分片不超过24 MiB，清单绑定模型和输入哈希。当前查验仅使用bus，不删除已有历史样本。bus采集的完整输出约90 MiB。每节点默认超时300秒、单次工具30秒，可用 `--node-timeout`、`--tool-timeout` 调整。
-
-Ctrl-C或采集失败会尽力发送ABORT并生成已有结果的小包。进程被强杀导致板端停在 `state=5` 时，在同一命令后加 `--recover-paused`，自动终止旧采集并重新开始；无须重新加载固件。若核心被GDB暂停或PCIe工具不可用，先恢复现场通路。详细字段与限制见 [诊断说明](docs/DIAGNOSTICS.md)。
-
-## 4. 视频逐帧处理与显示
-
-菜单 **14** 检查host：视频解码、416×416 RGB/CHW/FP32预处理、bus输入与冻结输入逐字节一致、已知候选框后处理、PNG读写、MP4写入和重新解码。只检查本机，不访问板子。结束显示 `HOST VIDEO CHECK: passed`；菜单14不测试显示窗口。
-
-菜单 **15** 自动检查host及显示窗口，通过后加载一次正式固件、顺序处理样例视频的前3帧。每帧完成就更新窗口、保存原图与检测PNG，再送下一帧；等待推理时窗口仍可响应Q/Esc。没有跳帧、循环或重复录像，UART只输出调试文字。该入口在前台运行，需保持SSH/图形会话连接。
-
-视频依赖为NumPy和OpenCV，不需要PyTorch。host只能通过Git SSH取文件时，仓库已附官方Linux x86_64/Python3.8离线安装包（约78.3MiB）：NumPy1.24.4、OpenCV4.11.0.86及用于启动安装的pip24.1.2。保持host当前系统时间，无需访问pip软件源，也不要求已有pip。
-
-```bash
-# 通过已有Git SSH连接获取视频离线安装包
-git pull --ff-only
-
-# 校验安装包并安装到项目独立目录，自动检查视频解码、前后处理、PNG和MP4；不访问板子
+# 安装到项目本地目录，核对依赖哈希并测试解码、前后处理、PNG及MP4
 bash tools/setup_host_video.sh
 
-# 在可显示窗口的终端中运行：检查显示环境、加载固件、逐帧处理前三帧并生成demo.mp4
+# 在可用图形会话中运行：检查host、加载模型一次、按顺序处理三帧
 bash tools/host.sh video
 ```
 
-安装成功标志为`VIDEO SETUP COMPLETED`。依赖放在`yolo26_pc/.venv-host-video/lib/`，视频入口及其显示检查进程自动使用它，不替换系统Python包。安装时若提示缺少`libGL.so.1`或其他系统库，保留完整错误；离线Python包不能代替操作系统动态库。视频启动会在加载固件前检查图形会话，需沿用已能打开eog窗口的SSH/X11或桌面会话。
+也可在菜单依次选 **14 → 15**。显示要求有效DISPLAY；SSH终端需使用已打通的图形转发或host远程桌面。
 
-host能够正常访问pip软件源时，也可以使用与菜单相同的Python安装：
-
-```bash
-# 仅缺少视频依赖时执行；Python3.8/3.9选择NumPy1.24.4及OpenCV4.11.0.86
-python3 -m pip install -r yolo26_pc/requirements-board.txt
-```
-
-版本依据：[NumPy1.24.4](https://pypi.org/project/numpy/1.24.4/)、[OpenCV4.11.0.86](https://pypi.org/project/opencv-python/4.11.0.86/)。安装需要可用的软件源和正确的HTTPS时间；host环境是否可用以菜单14实际结果为准，不要求先升级Python。
+每帧完成推理后立即更新画面，并保存原帧、检测PNG、候选框和报告，最终生成可演示的 `demo.mp4`。终端打印实际输出目录 `yolo26_pc/outputs/host-video/run-*/`。只有实际处理成功的帧才进入结果；失败保留已完成帧和错误信息。
 
 ```bash
-# 对指定视频重新运行完整流程：host检查、加载固件、逐帧推理显示并保存；0表示处理到视频结束
-python3 tools/host_video.py --source /实际路径/input.mp4 --max-frames 0 --load
+# 自选视频并处理全片；一次只提交一帧，处理完再显示和继续下一帧
+python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames 0
 
-# 无图形会话时，处理样例前三帧并保存PNG/MP4；不打开窗口
-python3 tools/host_video.py --max-frames 3 --load --no-display
+# 无图形会话时仍可处理全片并生成检测PNG和演示视频
+python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames 0 --no-display
 ```
 
-结果在 `yolo26_pc/outputs/host-video/run-*/`，命令末尾打印准确路径：
+默认样本为 `yolo26_pc/samples/pexels-3796613.mp4`，来源与SHA记录在视频程序中。MP4播放帧率与板端实际处理速度分别记录，不代表推理实时帧率。
 
-- `source-000000.png` / `detected-000000.png`：每帧原图和检测图，编号从0开始。
-- `candidates-000000.bin`：该帧7200字节候选框，300×6、小端FP32，无文件头；`result-000000.json`保存坐标映射、框、输入/输出哈希和耗时。
-- `demo.mp4`：可演示的检测视频，每个完成结果恰好写入一帧，正常结束后核对可解码帧数。默认按原视频帧率播放；短演示可加 `--playback-fps 2`。
-- `report.json` / `diagnostics.jsonl`：处理状态、全部帧记录、PCIe日志。实际处理耗时与播放帧率分别记录，等待时间不写成重复画面。
+## 3. 加载模型与单图检查
 
-结束标志为 **`VIDEO COMPLETED: N frames`**；Q/Esc、Ctrl-C显示`VIDEO STOPPED`，异常显示`VIDEO FAILED`并保留已完成帧。`COMPLETED`表示请求的帧数或视频已处理完、录像核对完成，不表示模型数值精度已通过。窗口需有效DISPLAY和X11/桌面连接；缺失时在访问板子前报错，PNG/MP4仍可通过`--no-display`生成。
-
-摄像头仍保留原入口，采用持续预览、推理取最新帧的策略；与上述视频不跳帧模式不同：
+先打开UART终端，设置115200、8N1、软硬流控关闭。实际端口结合接线确认；串口扫描不发送数据。
 
 ```bash
-# 摄像头可用后使用；先通过菜单10加载正式固件
-PYTHONPATH="$PWD/yolo26_pc/.venv-host-video/lib${PYTHONPATH:+:$PYTHONPATH}" \
-python3 yolo26_pc/live_demo.py --backend pcie --camera 0 --save-frames \
-  --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
+# 列出串口身份和占用情况
+python3 yolo26_pc/serial_probe.py
+
+# 示例：查看调试日志，按实际接线替换端口
+minicom -D /dev/ttyUSB2 -b 115200
+
+# 使用现场复位脚本：保持复位、加载BIN到DDR、释放复位
+bash tools/load_board.sh --reset-dir /rv/fpga/bin --pbcopy /rv/fpga/bin/pbcopy
 ```
 
-## 5. 运行状态与故障
-
-UART 默认打印启动配置、AMU 初始化、自测、READY、每帧开始/结束、每 32 个节点的进度和错误。给 Python 命令加 `--board-trace`，打印每个节点开始/结束、形状及周期；`--check-intermediates` 增加中间 FP32 NaN/Inf 检查。详细打印会增加耗时。
-
-host 重复打印 `pbload: exit 0` 只表示读回工具正常退出，不表示模型完成。PCIe `state=1/2/3/4/5` 分别为READY/BUSY/DONE/ERROR/节点采集暂停；GDB若停住CPU，须先执行 `continue` 才能处理请求。
-
-UART 忙或发送超时后关闭文字输出，PCIe 模型继续运行；总线异常不属于可继续的超时。host 核对长度、CRC、会话和帧号，异常保存日志和 DDR 诊断。`--infer-timeout 900` 限制一帧，`--tool-timeout 30` 限制单次工具调用；退出或超时不复位板卡，也不能中断已开始的推理。
-
-### 单命令读取 DDR
-
-在 host 仓库根目录运行，Python 3.10 标准库即可。地址参数是 **全局 DDR 地址**，脚本减去 `0x80000000` 得到 PCIe 偏移。默认允许原32 MiB区；读模型数据时加 `--model-data`，额外允许已批准的 `0xF0000000–0xF0FFFFFF`，不要传RVV别名。
+默认 `firmware/demo-pcie.bin` 已含程序、模型图和权重。PCIe偏移0对应CPU地址0x80000000；ELF供符号调试，不能当BIN加载。每帧不复位、不重新加载权重。启动UART依次输出BOOT、CLP地址、自测、READY；等待READY后提交输入。
 
 ```bash
-# 读取目标区的16字节，按16位十六进制显示，保存原始数据和日志
-python3 tools/read_ddr.py 0x80003a40 16 --width 16
-
-# 读取源区的16字节，按16位十六进制显示，用于与目标区比较
-python3 tools/read_ddr.py 0x80003dc0 16 --width 16
-
-# 检查程序入口的16字节，按32位十六进制显示
-python3 tools/read_ddr.py 0x80000000 16 --width 32
-
-# 读取本版模型输入开头16字节，仅用于停核后定位，不判断整帧通过
-python3 tools/read_ddr.py 0xf0081000 16 --width 32 --model-data
-
-# 检查起始4KiB是否全零；屏幕默认只预览前256字节
-python3 tools/read_ddr.py 0x80000000 0x1000 --width 32
+# 固定BUS单图，保存结果、参考差异及检测PNG
+python3 yolo26_pc/pcie_prepared.py --sample bus --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
 ```
 
-`0x80003a40`、`0x80003dc0` 是当前独立 `selftest` 固件的 FP16 目标/源区；模型固件或新编译固件须按对应 ELF 确认地址。结果保存在终端打印的 `yolo26_pc/outputs/ddr-read/run-随机编号/`：`001-ddr.bin` 是完整读回数据，`001-ddr.log` 是平台工具输出，`data.txt` 是显示的预览，`report.json` 和 `diagnostics.jsonl` 记录地址、长度、哈希、耗时及失败原因。
+单图输出在 `yolo26_pc/outputs/board-pcie/`。host输入为等比例补边至416×416、RGB/NCHW、小端FP32、除以255，共2,076,672字节；输出为 `[300,6]` FP32，共7200字节，字段是 `x1,y1,x2,y2,score,class`。按score>0.25过滤、还原并裁剪坐标，不加NMS。
 
-`All bytes zero: True` 仅在完整读取且所有字节为零时出现，覆盖整段请求范围，不仅是预览；读取失败返回非零退出码并保留日志/已有数据。脚本复用现有 PCIe 互斥锁、短临时文件名、错误文字及长度检查，只读 DDR。需要改变显示长度时加 `--max-print 字节数`。工具从 PATH 查找，找不到时尝试 `/rv/fpga/bin/pbload`；也可加 `--pbload /绝对路径/pbload`。许可工作目录默认是当前目录，修改时加 `--tool-cwd /许可工作目录`。
+## 4. 通用查验与排障
 
-比较自测的不同阶段时先用已有 GDB 停住 CPU，再读取 DDR；CPU 运行中的读回不是原子快照。硬件断点每次只占用一个，`thbreak` 命中后自动删除；失败定位用断点自动停核，不依赖人工赶上 UART 输出。
-
-### 旧缓存定位入口
-
-`tools/rvv_store_probe.gdb` 仅对应旧 `selftest.bin/elf`，不能用于 CLP 固件。原方案将缓存 RVV 写入后直接 invalidate，可能丢弃脏数据，RVV→AMU 也缺少 clean；之前取消隐式 RVV 栈拷贝并不证明故障修复。当前模型已修正交接并接入CLP；旧固定地址不能用于本版模型。
-
-### UART 无输出：只读采集 DDR
-
-保留当前板端状态，停止其他 PCIe 控制程序，minicom 可以继续打开。`--firmware` 必须对应**当前已加载的 BIN**：CLP 测试选 `clp-selftest`，旧独立自测选 `selftest`，模型选 `demo-pcie`。
+- **11**：只在修改模型、算子、固件或硬件后需要回归时使用。完整旧证据优先复用；不足时加载正式固件，采集334节点后普通推理复跑一次。后台任务普通SSH断线后继续，6看进度、12看结果。
+- `firmware/host-verify`：静态Linux x86_64查验程序，host不需要编译器。RTL参考处理有限对齐窗口、16项累加、规格化和偏置；QEMU参考单独保留。分类为exact、rtl_match、unexplained、input_unverified、missing。
+- 仅当前规则下覆盖完整、输入已核实、输出逐位匹配、候选合法且普通复跑一致，才显示STATUS: passed。不使用经验误差阈值；结论仅覆盖该输入。
+- **13**：旧SVG离线转PNG。已有图形会话可用eog打开PNG，无需Firefox。
 
 ```bash
-# 只读采集当前正式模型的启动/节点/trap状态；日志换成本次实际目录
-python3 tools/collect_board_diag.py --firmware demo-pcie --samples 1 \
-  --tool-cwd "$PWD" \
-  --load-log yolo26_pc/outputs/deploy-实际目录/load.log
+# 只读取板端诊断及程序前缀，保存日志；不复位、不提交推理
+python3 tools/collect_board_diag.py --firmware demo-pcie --samples 1 --pbload /rv/fpga/bin/pbload --tool-cwd /rv/fpga/bin
+
+# 将已有完整BUS证据校验并导出；不推理、不要求首层专项数据
+python3 tools/export_bus_evidence.py
+
+# 查看通用DDR读取参数，后续按需指定地址与长度
+python3 tools/read_ddr.py --help
 ```
 
-`--tool-cwd` 是 PCIe 工具的工作目录，须可写并能找到许可，沿用此前 `pbcopy` 加载成功时的目录和环境；它不是复位脚本目录。当前 host 在仓库根目录通过许可检查，示例使用 `$PWD`。工具不在 PATH 时加 `--pbload /绝对路径/pbload`。`--load-log` 填本次加载日志；暂时没有可省略。已有终端录像文本可加 `--uart-log /路径/uart.log`，工具不会打开或抢占串口。今后可用 `minicom -C /路径/uart.log -D /dev/ttyUSB2 -b 115200` 留存文字，端口仍按实际接线确认。
-
-现场 `pbload` 在长输出路径下出现 `buffer overflow detected`；短文件名测试已执行到 `pbload end`，实际文件长度和内容仍须核验。采集工具在工作目录创建唯一的短文件名，传给 `pbload` 后将数据归档到结果目录并检查长度；失败或超时也归档已有数据，不把结果目录的长路径传给工具。
-
-默认采集 3 次，间隔 1 秒，单次工具超时 30 秒；可用 `--samples`、`--interval`、`--tool-timeout` 调整。仅调用 `pbload`，不写 DDR、不提交推理任务、不复位。先校验 BIN/ELF 哈希及 DDR 中的 256 字节程序前缀，再从对应 ELF 解析 UART、自测、异常和 816 字节诊断结构地址；该前缀检查不代表全固件/权重核验。各变量是顺序读取的现场观察，不是原子快照。
-
-终端打印结果目录 `yolo26_pc/outputs/host-diagnostics/run-随机编号/`，内含 `report.json`、`diagnostics.jsonl`、每次 `pbload` 的输出和原始 `.bin`，以及指定的加载/串口日志。`collected` 只表示采集完整，**不表示板端通过**；`partial`/`failed` 仍保留日志，应一并提交。CLP 固件还会归档完整测试区，单独报告 `clp_result.status`；只有 `passed` 才表示本最小测试及 PCIe 最终数据一致，失败或未完成返回非零退出码。重点看 `uart_status_name`、`test_stage_name`、诊断 `stage_name/error/trap_pc/trap_cause/trap_value`；启动太早失败或缓存不可见时，DDR 记录也可能未初始化，需结合平台调试器确认。
-
-### 通过 SSH 上传诊断
-
-将下面 `RUN_DIR` 换成采集工具打印的实际目录。使用独立临时 Git 目录，日志提交到 `host-diagnostics` 分支，保持当前源码工作区不变；此分支需要仓库写权限。
+通过Git SSH上传某次诊断时，使用封装脚本；只提交指定目录到host-diagnostics分支，源码工作区保持不变。
 
 ```bash
-RUN_DIR="$(realpath yolo26_pc/outputs/host-diagnostics/run-实际编号)"
-UPLOAD_DIR="$(mktemp -d)"
-(
-  set -e
-  test -f "$RUN_DIR/report.json"
-  git -C "$UPLOAD_DIR" init -q
-  git -C "$UPLOAD_DIR" config user.name "N550 host diagnostics"
-  git -C "$UPLOAD_DIR" config user.email "n550-host@users.noreply.github.com"
-  git -C "$UPLOAD_DIR" remote add origin git@github.com:risc-v-y/n550-yolo-demo.git
-  if git -C "$UPLOAD_DIR" ls-remote --exit-code --heads origin host-diagnostics; then
-    git -C "$UPLOAD_DIR" fetch --depth=1 origin host-diagnostics
-    git -C "$UPLOAD_DIR" checkout -b host-diagnostics FETCH_HEAD
-  else
-    test "$?" -eq 2
-    git -C "$UPLOAD_DIR" checkout --orphan host-diagnostics
-  fi
-  cp -R -- "$RUN_DIR" "$UPLOAD_DIR/"
-  git -C "$UPLOAD_DIR" add -- "$(basename "$RUN_DIR")"
-  git -C "$UPLOAD_DIR" commit -m "Collect N550 board diagnostics $(basename "$RUN_DIR")"
-  git -C "$UPLOAD_DIR" push origin HEAD:refs/heads/host-diagnostics
-)
+# 将路径替换为采集工具打印的诊断目录；需要仓库写权限
+bash tools/upload_diagnostics.sh "yolo26_pc/outputs/host-diagnostics/run-实际编号"
 ```
 
-推送成功后提供 `run-随机编号` 即可定位。若提示远程分支已前进，保留采集目录，重新执行上传步骤；不使用强制推送。
+独立CLP自测仍保留，必要时用加载脚本的 `--clp-selftest` 选择；测试后重新加载正式模型。历史缓存自测、首层三分块固件和一次性迁移工具已移除。
 
-| 文档 | 用途 |
-|---|---|
-| [BOARD.md](docs/BOARD.md) | DDR、UART、缓存和 AMU 平台条件 |
-| [PCIE.md](docs/PCIE.md) | 邮箱、收发及缓存交接协议 |
-| [DIAGNOSTICS.md](docs/DIAGNOSTICS.md) | 打印、错误码及调试器定位 |
-| [VALIDATION.md](docs/VALIDATION.md) | 已检查范围和实板待验收事项 |
+不要整目录删除outputs：旧报告可能引用其他运行目录中的张量。保留本次BUS原始证据、分析结论及有效运行输出。
 
-修改源码后，在现有 ESWIN 工具链的 Linux/WSL 构建机执行 `bash yolo26_riscv/build_board.sh`，可用 `TOOLCHAIN_PREFIX=/path/to/bin/riscv64-unknown-elf` 指定工具链。结果在 `yolo26_riscv/build/n550-board/`，不会自动替换交付目录 `firmware/`。
+平台与同步条件见 [BOARD](docs/BOARD.md)，PCIe协议见 [PCIE](docs/PCIE.md)，日志/错误字段见 [DIAGNOSTICS](docs/DIAGNOSTICS.md)。现场复位、PCIe驱动、DDR及JTAG由平台同事提供。
 
-CLP 独立固件的构建命令为 `bash yolo26_riscv/build_clp_selftest.sh`，输出在 `yolo26_riscv/build/clp-selftest/`；QEMU 回归命令为 `python3 yolo26_riscv/board/tests/test_clp.py`。均在配置现有 ESWIN 工具链/QEMU 的 Linux/WSL 构建机执行；QEMU 使用统一 RAM，只检查运算与故障报告，不验证真实 CLP 路由。
+## 构建机
 
-完整模型 QEMU 回归：`python3 yolo26_riscv/board/tests/test_model.py`；加 `--capture` 验证节点快照/握手并逐字节核对两帧全部输出。它执行实际启动、自测、PCIe 邮箱和两帧334节点，保存原图、候选框、绘框图和差异报告；使用统一RAM模拟地址，不证明实板缓存一致性。
+```bash
+# 在配置现有ESWIN工具链的Linux/WSL开发机重新构建；不访问板子
+bash yolo26_riscv/build_board.sh
+```
 
-街景视频两帧的开发验证也已完成，每帧11个框。复跑时，先在已有NumPy/OpenCV环境运行 `python tools/check_clp_video.py`，记录打印的清单路径；再在Linux/WSL运行 `python3 yolo26_riscv/board/tests/test_model.py --manifest 清单路径`。结束后在图像环境运行 `python tools/check_clp_video.py --render 本次结果目录`，生成原帧/检测PNG、`raw.mp4`、`demo.mp4`。视频将两个实际检测结果各停留2秒，播放帧率不代表推理速度；真实连续演示使用第4节的live_demo入口。
+构建结果在 `yolo26_riscv/build/n550-board/`，不会自动替换firmware交付文件。原QEMU和标量开发参考保留；当前不再要求第二张图验收。

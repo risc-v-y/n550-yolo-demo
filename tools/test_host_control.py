@@ -143,6 +143,50 @@ class MenuTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): host.video()
             run.assert_not_called()
 
+    def test_continuous_video_defaults_and_custom_headless_options(self):
+        with patch('builtins.input',side_effect=['','','']),patch('host_control.subprocess.run') as run:
+            host.video(continuous=True)
+        self.assertEqual(run.call_args.args[0][-3:],['--load','--max-frames','30'])
+        source=self.root/'my video.mp4'; source.touch()
+        with patch('builtins.input',side_effect=[str(source),'0','n']),patch('host_control.subprocess.run') as run:
+            host.video(continuous=True)
+        self.assertEqual(run.call_args.args[0][-5:],['--source',str(source),'--max-frames','0','--no-display'])
+
+    def test_continuous_invalid_options_never_launch_board(self):
+        for answers in (['','-1','y'],['missing.mp4','30','y']):
+            with patch('builtins.input',side_effect=answers),patch('host_control.subprocess.run') as run:
+                with self.assertRaises(ValueError): host.video(continuous=True)
+                run.assert_not_called()
+
+    def test_video_reports_reuse_old_results_and_respect_latest_pointer(self):
+        base=self.root/'yolo26_pc/outputs/host-video'
+        old=base/'2021-old'; old.mkdir(parents=True)
+        (old/'report.json').write_text('{"status":"completed","results":[{"frame_id":0}]}')
+        newer=base/'2026-new'; newer.mkdir()
+        (newer/'report.json').write_text('{"status":"failed","results":[]}')
+        host.save_json(base/'latest.json',{'directory':str(old)})
+        from types import SimpleNamespace
+        stub=SimpleNamespace(dependencies=lambda: 'fake video libraries')
+        with patch.dict(sys.modules,{'host_video':stub}), \
+             patch('video_report.analyze',return_value={'preview':None}) as analyze, \
+             patch('video_report.render',side_effect=lambda s,p:'PAGE={}/3\n'.format(p)), \
+             patch('builtins.input',side_effect=['','','','','']), \
+             patch('host_control.subprocess.run') as run,patch('sys.stdout',new_callable=io.StringIO) as output:
+            host.video_pages()
+        run.assert_not_called()
+        analyze.assert_called_once_with(old.resolve(),'fake video libraries')
+        for p in (1,2,3): self.assertIn('PAGE={}/3'.format(p),output.getvalue())
+
+    def test_video_report_rejects_unfinished_frame_before_any_flag_or_board_action(self):
+        directory=self.root/'video'; directory.mkdir()
+        (directory/'report.json').write_text('{"status":"failed","results":[]}')
+        from types import SimpleNamespace
+        with patch.dict(sys.modules,{'host_video':SimpleNamespace(dependencies=lambda: None)}), \
+             patch('builtins.input',side_effect=[str(directory),'0','bad box']), \
+             patch('video_report.flag_frame') as flag,patch('host_control.subprocess.run') as run:
+            with self.assertRaises(ValueError): host.video_pages()
+        flag.assert_not_called(); run.assert_not_called()
+
     def test_detached_capture_keeps_lock_and_saves_paths(self):
         script=self.root/'yolo26_pc/node_capture.py'; script.parent.mkdir(parents=True)
         script.write_text('''import json,sys,time,os

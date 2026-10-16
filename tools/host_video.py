@@ -162,7 +162,9 @@ def check_host(video, source, output, display=False):
 
 
 def run(args, output):
-    report = {'status': 'starting', 'source': str(args.source), 'results': [],
+    report = {'version': 2, 'id': output.name, 'status': 'starting',
+              'source': str(args.source), 'results': [], 'requested_frames': args.max_frames,
+              'stage': 'host_check', 'active_frame': None,
               'transport': 'PCIe DDR', 'policy': 'sequential; no skipped/repeated frames'}
     started = time.monotonic()
     stop = threading.Event()
@@ -173,24 +175,37 @@ def run(args, output):
     movie = None
     diagnostic = None
     video = None
-    window = 'YOLO PCIe: completed frame (Q/Esc exits)'
+    window = 'YOLO PCIe: B marks visible frame; Q/Esc exits'
     window_open = False
     movie_shape = None
+    displayed_id = None
+    summary = None
+    def handle_key(key):
+        if key & 255 in (27, ord('q'), ord('Q')):
+            report['completion_reason'] = 'user stopped'
+            stop.set()
+        elif key & 255 in (ord('b'), ord('B')) and displayed_id is not None:
+            from video_report import flag_frame
+            flag_frame(output, displayed_id)
+            print('FLAGGED run={} frame={} (currently displayed)'.format(output.name, displayed_id), flush=True)
     try:
+        from board_diagnostics import DiagnosticLog
+        diagnostic = DiagnosticLog(output)
+        save_json(output / 'report.json', report)
         video = dependencies()
         check = check_host(video, args.source, output, display=not args.no_display)
         if args.check:
             report.update(status='completed', host_check=check)
             return report
         if args.load:
+            report['stage'] = 'firmware_load'
+            save_json(output / 'report.json', report)
             subprocess.run(['bash', str(ROOT / 'tools/load_board.sh'), '--reset-dir', args.reset_dir,
                             '--pbcopy', args.pbcopy], cwd=ROOT, check=True)
         cv, np = video.cv2, video.np
         fps = args.playback_fps or check['source_fps'] or 25
         report.update(playback_fps=fps, host_check=check)
-        from board_diagnostics import DiagnosticLog
         from pcie_backend import PCIeBackend
-        diagnostic = DiagnosticLog(output)
         def infer(tensor):
             if backend[0] is None:
                 backend[0] = PCIeBackend(args.pbcopy, args.pbload, stop, args.infer_timeout,
@@ -207,7 +222,10 @@ def run(args, output):
         pool = ThreadPoolExecutor(max_workers=1)
         frame_id = 0
         last_display = np.zeros((360, 640, 3), dtype=np.uint8)
+        if window_open:
+            cv.imshow(window, last_display)
         while not stop.is_set():
+            report.update(stage='decode_prepare', active_frame=frame_id)
             decode_start = time.monotonic()
             ok, image = cap.read()
             if not ok:
@@ -219,15 +237,27 @@ def run(args, output):
             tensor, transform = video.prepare_input(image)
             prepared = time.monotonic()
             input_hash = hashlib.sha256(tensor.astype('<f4', copy=False).tobytes()).hexdigest()
-            save_png(video, output / 'source-{:06d}.png'.format(frame_id), image)
+            source_png = output / 'source-{:06d}.png'.format(frame_id)
+            save_png(video, source_png, image)
             progress[0] = 'Processing frame {}'.format(frame_id)
+            report['stage'] = 'inference_pcie'
+            save_json(output / 'report.json', dict(report, status='running'))
+            diagnostic.emit({'type': 'video_frame', 'message': 'VIDEO submit frame={}'.format(frame_id),
+                             'frame_id': frame_id, 'input_sha256': input_hash})
             future = pool.submit(infer, tensor)
+            last_title = None
             while not future.done():
                 if not args.no_display:
-                    cv.setWindowTitle(window, 'YOLO PCIe: ' + progress[0])
-                    cv.imshow(window, last_display)
-                    if cv.waitKey(20) & 255 in (27, ord('q'), ord('Q')) or cv.getWindowProperty(window, cv.WND_PROP_VISIBLE) < 1:
+                    title = 'Run {} | visible={} | {}'.format(output.name, displayed_id, progress[0])
+                    if title != last_title:
+                        cv.setWindowTitle(window, title)
+                        last_title = title
+                    # Pump events without retransmitting the unchanged image over X11.
+                    handle_key(cv.waitKey(20))
+                    if cv.getWindowProperty(window, cv.WND_PROP_VISIBLE) < 1:
+                        report['completion_reason'] = 'window closed by user'
                         stop.set()
+                    if stop.is_set():
                         break
                 else:
                     stop.wait(.02)
@@ -235,13 +265,16 @@ def run(args, output):
                 break
             candidates = future.result()
             received = time.monotonic()
-            validate_candidates(video, candidates)
+            report['stage'] = 'validate_postprocess'
             raw = candidates.astype('<f4', copy=False).tobytes()
+            (output / 'candidates-{:06d}.bin'.format(frame_id)).write_bytes(raw)
+            validate_candidates(video, candidates)
             boxes = video.postprocess(candidates, transform, .25)
             last_display = video.annotate(image, boxes)
             post_done = time.monotonic()
-            save_png(video, output / 'detected-{:06d}.png'.format(frame_id), last_display)
-            (output / 'candidates-{:06d}.bin'.format(frame_id)).write_bytes(raw)
+            report['stage'] = 'save_recording'
+            detected_png = output / 'detected-{:06d}.png'.format(frame_id)
+            save_png(video, detected_png, last_display)
             encoded_frame = even_frame(video, last_display)
             if movie is None:
                 movie = writer(video, output / 'demo.mp4', fps, encoded_frame)
@@ -252,6 +285,8 @@ def run(args, output):
             record = {'frame_id': frame_id, 'source_frame': frame_id,
                       'source_seconds': frame_id / check['source_fps'] if check['source_fps'] else None,
                       'input_sha256': input_hash, 'output_sha256': hashlib.sha256(raw).hexdigest(),
+                      'source_png_sha256': hashlib.sha256(source_png.read_bytes()).hexdigest(),
+                      'detected_png_sha256': hashlib.sha256(detected_png.read_bytes()).hexdigest(),
                       'transform': transform, 'detections': boxes.tolist(),
                       'prepare_seconds': prepared - decode_start, 'infer_seconds': received - prepared,
                       'postprocess_seconds': post_done - received,
@@ -263,11 +298,17 @@ def run(args, output):
             print('FRAME {} DONE: {} boxes, {:.2f}s; detected-{:06d}.png'.format(
                 frame_id, len(boxes), record['elapsed_seconds'], frame_id), flush=True)
             if not args.no_display:
-                cv.setWindowTitle(window, 'YOLO PCIe: frame {} complete'.format(frame_id))
+                report['stage'] = 'display'
+                displayed_id = frame_id
+                cv.setWindowTitle(window, 'Run {} | frame {} complete | B flag, Q/Esc stop'.format(output.name, frame_id))
                 cv.imshow(window, last_display)
-                if cv.waitKey(30) & 255 in (27, ord('q'), ord('Q')) or cv.getWindowProperty(window, cv.WND_PROP_VISIBLE) < 1:
+                handle_key(cv.waitKey(30))
+                if cv.getWindowProperty(window, cv.WND_PROP_VISIBLE) < 1:
+                    report['completion_reason'] = 'window closed by user'
                     stop.set()
             frame_id += 1
+            if stop.is_set():
+                break
             if args.max_frames and frame_id >= args.max_frames:
                 report.update(status='completed', completion_reason='requested frame limit')
                 break
@@ -276,7 +317,8 @@ def run(args, output):
     except KeyboardInterrupt:
         report.update(status='stopped', error='Interrupted by user')
     except Exception as exc:
-        report.update(status='failed', error='{}: {}'.format(type(exc).__name__, exc))
+        report.update(status='failed', error='{}: {}'.format(type(exc).__name__, exc),
+                      last_progress=progress[0])
         if diagnostic is not None:
             diagnostic.exception(exc)
     finally:
@@ -285,6 +327,8 @@ def run(args, output):
             pool.shutdown(wait=True)
         try:
             if backend[0] is not None:
+                report['last_board_status'] = getattr(backend[0], 'last_status', None)
+                report['last_board_diagnostic'] = getattr(backend[0], 'last_diagnostic', None)
                 backend[0].close()
         except Exception as exc:
             report.update(status='failed', cleanup_error=str(exc))
@@ -297,17 +341,34 @@ def run(args, output):
             except Exception as exc:
                 report.update(status='failed', recording_error=str(exc))
         if window_open:
-            video.cv2.destroyAllWindows()
+            try:
+                video.cv2.destroyAllWindows()
+            except Exception as exc:
+                report.update(status='failed', cleanup_error=str(exc))
         if diagnostic is not None:
             diagnostic.close()
         report['wall_seconds'] = time.monotonic() - started
         save_json(output / 'report.json', report)
+        if not args.check and video is not None:
+            try:
+                from video_report import analyze
+                summary = analyze(output, video)
+                report['functional'] = summary['functional']
+            except Exception as exc:
+                report['report_error'] = '{}: {}'.format(type(exc).__name__, exc)
+                save_json(output / 'report.json', report)
         print('{} {}: {} frames'.format('HOST CHECK' if args.check else 'VIDEO',
                                        report['status'].upper(), len(report['results'])), flush=True)
-        for field in ('error', 'cleanup_error', 'recording_error'):
+        for field in ('error', 'cleanup_error', 'recording_error', 'report_error'):
             if report.get(field):
                 print(field + ': ' + report[field], flush=True)
         print('Output: ' + str(output), flush=True)
+        if summary is not None:
+            print('VIDEO CHECK {} | run={} | visual review={}'.format(
+                summary['functional'], summary['id'], summary['semantic_review']), flush=True)
+            print('Menu 17: three report pages, preview.png and saved-frame flags.', flush=True)
+        elif not args.check:
+            print('VIDEO CHECK FAILED | run={} | report unavailable; see error above'.format(output.name), flush=True)
     return report
 
 
@@ -335,8 +396,11 @@ def main():
     else:
         base.mkdir(parents=True, exist_ok=True)
         output = Path(tempfile.mkdtemp(prefix='run-', dir=str(base)))
+    if not args.check:
+        base.mkdir(parents=True, exist_ok=True)
+        save_json(base / 'latest.json', {'directory': str(output)})
     report = run(args, output)
-    return 0 if report['status'] == 'completed' else 1
+    return 0 if report['status'] == 'completed' and report.get('functional') != 'FAILED' and not report.get('report_error') else 1
 
 
 if __name__ == '__main__':

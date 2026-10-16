@@ -87,6 +87,8 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(report['encoded_frames'], 3)
         self.assertEqual(self.backend_calls, 1)
         self.assertTrue(self.closed)
+        self.assertEqual(report['functional'], 'PASSED')
+        self.assertTrue((self.output / 'preview.png').is_file())
         cap = video.cv2.VideoCapture(str(self.source))
         for i, record in enumerate(report['results']):
             ok, original = cap.read()
@@ -110,6 +112,9 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(report['status'], 'failed')
         self.assertEqual(report['encoded_frames'], 1)
         self.assertIn('injected', report['error'])
+        self.assertEqual(report['active_frame'], 1)
+        self.assertEqual(report['stage'], 'inference_pcie')
+        self.assertEqual(report['functional'], 'FAILED')
         self.assertTrue((self.output / 'detected-000000.png').is_file())
         self.assertFalse((self.output / 'detected-000001.png').exists())
 
@@ -132,6 +137,66 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(report['status'], 'stopped')
         self.assertEqual(report['results'], [])
         self.assertTrue(self.closed)
+
+    def test_b_key_marks_visible_frame_not_inflight_frame(self):
+        self.args.no_display = False
+        marked = []
+        def key(delay):
+            # During frame 1 inference, the visible image is completed frame 0.
+            if (delay == 20 and len(self.hashes) == 1 and not marked and
+                    (self.output / 'result-000000.json').is_file()):
+                marked.append(True)
+                return ord('b')
+            return -1
+        with patch.object(video.cv2, 'namedWindow'), patch.object(video.cv2, 'setWindowTitle'), \
+             patch.object(video.cv2, 'imshow') as show, patch.object(video.cv2, 'waitKey', side_effect=key), \
+             patch.object(video.cv2, 'getWindowProperty', return_value=1), patch.object(video.cv2, 'destroyAllWindows'):
+            report = self.run_video()
+        flags = json.loads((self.output / 'flags.json').read_text())['frames']
+        self.assertEqual([f['frame_id'] for f in flags], [0])
+        self.assertEqual(report['functional'], 'PASSED')
+        self.assertEqual(show.call_count, 4)  # Placeholder + one update per completed frame.
+
+    def test_q_key_stops_and_preserves_report_instead_of_passing_frame_limit(self):
+        self.args.no_display = False
+        self.args.max_frames = 1
+        with patch.object(video.cv2, 'namedWindow'), patch.object(video.cv2, 'setWindowTitle'), \
+             patch.object(video.cv2, 'imshow'), \
+             patch.object(video.cv2, 'waitKey', side_effect=lambda delay: ord('q') if delay == 30 else -1), \
+             patch.object(video.cv2, 'getWindowProperty', return_value=1), patch.object(video.cv2, 'destroyAllWindows'):
+            report = self.run_video()
+        self.assertEqual(report['status'], 'stopped')
+        self.assertEqual(report['encoded_frames'], 1)
+        self.assertEqual(report['functional'], 'INCOMPLETE')
+
+    def test_thirty_consecutive_frames_one_session_and_decodable_mp4(self):
+        image = video.np.zeros((48, 64, 3), dtype=video.np.uint8)
+        out = app.writer(video, self.source, 5, image)
+        for frame_id in range(35):
+            out.write(image + frame_id * 6)
+        out.release()
+        self.args.max_frames = 30
+        report = self.run_video()
+        self.assertEqual(report['functional'], 'PASSED')
+        self.assertEqual(report['encoded_frames'], 30)
+        self.assertEqual([r['frame_id'] for r in report['results']], list(range(30)))
+        self.assertEqual(self.backend_calls, 1)
+
+    def test_timeout_and_invalid_output_keep_failure_context_and_evidence(self):
+        with patch.object(self.fake, 'infer', side_effect=TimeoutError('PCIe timeout')):
+            report = self.run_video()
+        self.assertEqual(report['functional'], 'FAILED')
+        self.assertEqual(report['active_frame'], 0)
+        self.assertEqual(report['stage'], 'inference_pcie')
+        self.assertTrue((self.output / 'diagnostics.jsonl').is_file())
+        self.output = self.root / 'invalid'; self.output.mkdir()
+        bad = video.np.zeros((300, 6), video.np.float32); bad[0, 5] = 80
+        with patch.object(self.fake, 'infer', return_value=bad):
+            report = self.run_video()
+        self.assertEqual(report['stage'], 'validate_postprocess')
+        self.assertEqual(report['functional'], 'FAILED')
+        self.assertEqual((self.output / 'candidates-000000.bin').read_bytes(), bad.tobytes())
+        self.assertEqual(report['results'], [])
 
     def test_real_host_check_never_constructs_board_transport(self):
         with patch('pcie_backend.PCIeBackend', side_effect=AssertionError('board opened')):
@@ -158,6 +223,16 @@ class VideoTests(unittest.TestCase):
         board.assert_not_called()
         self.assertEqual(report['status'], 'failed')
         self.assertIn('codec', json.loads((self.output / 'report.json').read_text())['error'])
+
+    def test_missing_dependency_still_emits_failure_marker_and_never_opens_board(self):
+        import io
+        with patch.object(app, 'dependencies', side_effect=RuntimeError('missing cv2')), \
+             patch('pcie_backend.PCIeBackend') as board, patch('sys.stdout', new_callable=io.StringIO) as terminal:
+            report = app.run(self.args, self.output)
+        board.assert_not_called()
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('VIDEO CHECK FAILED', terminal.getvalue())
+        self.assertIn('missing cv2', (self.output / 'report.json').read_text())
 
     def test_load_runs_once_after_host_check_and_failure_never_starts_inference(self):
         self.args.load = True

@@ -122,12 +122,82 @@ def export_png():
     subprocess.run([sys.executable,str(ROOT/'tools/render_results.py'),'--latest'],cwd=ROOT,check=True)
 
 
-def video(check=False):
+def video(check=False, continuous=False):
+    options=[]
+    if continuous:
+        source=input('Video path [Enter: bundled sample]: ').strip().strip('"')
+        count=input('Consecutive frames [Enter: 30; 0: entire video]: ').strip() or '30'
+        display=input('Display completed frames? [Y/n]: ').strip().lower()
+        if not count.isdigit() or display not in ('','y','yes','n','no'):
+            raise ValueError('Use a nonnegative integer frame count and Y/n for display')
+        if source:
+            path=Path(source).expanduser().resolve()
+            if not path.is_file(): raise ValueError('Video file does not exist: '+str(path))
+            options+=['--source',str(path)]
+        options+=['--max-frames',count]
+        if display in ('n','no'): options+=['--no-display']
     with guard(workspace()/'control.lock'):
         command=[sys.executable,str(ROOT/'tools/host_video.py')]
         if check: command+=['--check','--no-display']
-        else: command+=['--load']
+        else: command+=['--load']+options
         subprocess.run(command,cwd=ROOT,check=True)
+
+
+def video_pages():
+    """Select/flag/recheck old or new video runs; never launches the board."""
+    base=ROOT/'yolo26_pc/outputs/host-video'
+    runs=[]
+    pointer=base/'latest.json'
+    if pointer.exists():
+        path=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
+        if (path/'report.json').is_file(): runs.append(path.resolve())
+    for item in sorted(base.glob('*/report.json'),key=lambda p:p.stat().st_mtime,reverse=True):
+        metadata=json.loads(item.read_text(encoding='utf-8'))
+        if metadata.get('host_check') and not metadata.get('results') and metadata.get('status')=='completed':
+            continue
+        if item.parent.resolve() not in runs: runs.append(item.parent.resolve())
+    for i,path in enumerate(runs,1):
+        metadata=json.loads((path/'report.json').read_text(encoding='utf-8'))
+        print('{}: {} | {} | {} frames'.format(i,path.name,metadata.get('status'),len(metadata.get('results',[]))))
+    answer=input('Report number/path [Enter: 1; q: cancel]: ').strip().strip('"')
+    if answer.lower()=='q': return
+    answer=answer or '1'
+    if answer.isdigit():
+        if not 1<=int(answer)<=len(runs): raise ValueError('No such saved video report; provide its directory')
+        directory=runs[int(answer)-1]
+    else:
+        directory=Path(answer).expanduser().resolve()
+    if not (directory/'report.json').is_file(): raise ValueError('Missing report.json in '+str(directory))
+    print('Selected:',directory)
+    marked=input('Wrong-box frame IDs, comma separated [Enter: none]: ').strip()
+    ids=[]
+    if marked:
+        try: ids=[int(v.strip()) for v in marked.split(',')]
+        except ValueError: raise ValueError('Frame IDs must be integers separated by commas') from None
+    note=input('Describe the wrong boxes [Enter: visual review]: ').strip() if ids else ''
+    from host_video import dependencies
+    from video_report import flag_frame,analyze,render
+    with guard(workspace()/'control.lock'):
+        # Reject invalid IDs before writing any flags.
+        metadata=json.loads((directory/'report.json').read_text(encoding='utf-8'))
+        if any(v not in [r['frame_id'] for r in metadata['results']] for v in ids):
+            raise ValueError('Only completed frame IDs may be flagged')
+        for frame_id in ids: flag_frame(directory,frame_id,note or 'Marked for visual review')
+        summary=analyze(directory,dependencies())
+    for page in (1,2,3):
+        print(render(summary,page),end='',flush=True)
+        if input('Enter: next/return; q: menu: ').strip().lower()=='q': return
+    print('Report and PNG directory:',directory)
+    if summary['preview'] and input('Open preview and flagged PNGs in eog? [y/N]: ').strip().lower()=='y':
+        import os
+        import shutil
+        if not os.environ.get('DISPLAY') or not shutil.which('eog'):
+            raise ValueError('eog needs the working graphical SSH/desktop session; PNGs are already saved')
+        files=[str(directory/summary['preview'])]
+        files += [str(directory/'detected-{:06d}.png'.format(r['frame_id'])) for r in summary['flags']
+                  if (directory/'detected-{:06d}.png'.format(r['frame_id'])).is_file()]
+        subprocess.Popen(['eog','--new-instance']+files,cwd=ROOT,start_new_session=True,
+                         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
 
 def candidates():
@@ -210,17 +280,18 @@ def progress():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','progress','restore','full-check','full-report','png','video-check','video'))
+    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','progress','restore','full-check','full-report','png','video-check','video','video-continuous','video-report'))
     args=parser.parse_args()
     if sys.platform!='linux':
         parser.error('Run this menu on the Linux host.')
     actions={'1':update,'2':lambda:pages('status'),'3':lambda:pages('difference'),
              '5':launch,'6':progress,'7':choose,
              '10':restore,'11':launch_full,'12':full_pages,'13':export_png,
-             '14':lambda:video(check=True),'15':video}
+             '14':lambda:video(check=True),'15':video,
+             '16':lambda:video(continuous=True),'17':video_pages}
     names={'update':'1','status':'2','difference':'3','capture':'5','progress':'6',
            'restore':'10','full-check':'11','full-report':'12','png':'13',
-           'video-check':'14','video':'15'}
+           'video-check':'14','video':'15','video-continuous':'16','video-report':'17'}
     while True:
         try:
             if args.action:
@@ -233,7 +304,9 @@ def main():
                   '\n11 Full BUS-only check (background, reuse complete evidence)'
                   '\n12 Saved BUS summary (3 pages, offline)\n13 Export saved drawings to PNG (offline)'
                   '\n14 Check host video processing (no board access)'
-                  '\n15 Run sequential video (3 frames, PCIe, display + PNG + MP4)\n0 Exit')
+                  '\n15 Run sequential video (3 frames, PCIe, display + PNG + MP4)'
+                  '\n16 Continuous video check (default 30 frames, B flags wrong boxes)'
+                  '\n17 Saved video report / flag frames / view PNGs (offline)\n0 Exit')
             answer=input('Choice: ').strip()
             if answer=='0':
                 return 0

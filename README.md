@@ -8,20 +8,14 @@
 
 BUS 完整采集已完成离线定位：94个AMU卷积、6,766,084个输出按最新RTL行为逐位一致，其余240个节点按实际输入重放一致；普通推理与采集推理的最终7200字节完全一致。正式查验程序已更新，保留原QEMU对照。范围和证据见 [验收状态](docs/VALIDATION.md)。
 
-本轮不需重新采集BUS。下一步在host验证视频解码、前后处理、显示及实板连续帧。
+本轮不需重新采集BUS。现场已跑通视频三帧的实板处理与显示；接下来使用连续视频检查，集中记录异常与错框。
 
 ## 1. 更新和查看现有结果
 
 以下命令均在host仓库根目录执行。已有后台任务运行时，菜单1会拒绝更新；先等待任务结束。
 
 ```bash
-# 拉取最新程序、固件与文档；旧系统时间下使用已配置的Git SSH
-git pull --ff-only
-
-# 核对交付文件完整性，不访问板子
-sha256sum -c firmware/SHA256SUMS
-
-# 打开统一操作菜单
+# 打开统一操作菜单，选1更新程序和文档；使用已配置的Git SSH
 bash tools/host.sh
 ```
 
@@ -37,7 +31,7 @@ python3 tools/full_check.py --reanalyze --report "实际结果目录"
 python3 tools/full_check.py --report "实际结果目录" --page 2
 ```
 
-保留菜单编号：1更新；2/3查看采集/首差异；5后台采集BUS；6进度；7选择旧采集；10加载正式模型；11完整BUS查验；12三页汇总；13旧SVG转PNG；14检查host视频能力；15运行视频三帧；0退出。旧首层专项菜单4/8/9已移除。
+保留菜单编号：1更新；2/3查看采集/首差异；5后台采集BUS；6进度；7选择旧采集；10加载正式模型；11完整BUS查验；12三页汇总；13旧SVG转PNG；14检查host视频能力；15运行视频三帧；16连续视频检查；17视频报告/错框标记/看PNG；0退出。旧首层专项菜单4/8/9已移除。
 
 ## 2. 视频依赖与演示
 
@@ -51,9 +45,19 @@ bash tools/setup_host_video.sh
 bash tools/host.sh video
 ```
 
-也可在菜单依次选 **14 → 15**。显示要求有效DISPLAY；SSH终端需使用已打通的图形转发或host远程桌面。
+依赖和显示已验证过的host无需重复安装，直接在菜单选 **1更新 → 16连续视频检查 → 17查看报告**。16默认连续30帧，可输入视频路径、修改帧数（0为全片）或关闭显示。15仍为三帧入口；14仅在需要排查host依赖时使用。
+
+显示要求有效DISPLAY；使用已打通的SSH图形转发或host远程桌面。窗口内按 **B** 标记当前显示的已完成帧，按 **Q/Esc** 停止；窗口标题含运行编号及帧号。等待下一帧时按B，标记的是仍在显示的上一帧。源视频帧号从0开始，PCIe/板端会话帧号从1开始。图形运行依赖当前SSH会话，断线不保证继续。
 
 每帧完成推理后立即更新画面，并保存原帧、检测PNG、候选框和报告，最终生成可演示的 `demo.mp4`。终端打印实际输出目录 `yolo26_pc/outputs/host-video/run-*/`。只有实际处理成功的帧才进入结果；失败保留已完成帧和错误信息。
+
+结束标志为 **`VIDEO CHECK PASSED`**（功能检查通过）、**`VIDEO CHECK FAILED`**（检查发现错误）或 **`VIDEO CHECK INCOMPLETE`**（主动停止或运行未完成）。功能检查覆盖运行时PCIe会话/帧号/CRC、保存的输入输出哈希、候选合法性、坐标还原/绘框重放及MP4帧数和可播放性。允许无检测帧、还原前超出416边界的候选框；不设经验误差阈值。
+
+**17不运行板子**，可直接选择当前已有三帧结果，无需先选16；新运行由指针定位，避免host回拨时间选错。可输入错框帧号（从0开始）和说明，再逐页截图三页汇总，最后选择用eog打开 `preview.png` 及标记帧。原始report.json和逐帧结果不改动；另存或更新 `flags.json`、`video-summary.json`、`video-page-1/2/3.txt` 和预览PNG。
+
+发现问题时，发给我 **三页报告截图＋错框PNG（含运行编号和帧号）** 即可；完整JSON、诊断与原图留在host。每帧文件为 `source-NNNNNN.png`、`detected-NNNNNN.png`、`candidates-NNNNNN.bin`、`result-NNNNNN.json`。板端状态、trap诊断和错误堆栈记录在报告/`diagnostics.jsonl`；UART文字不自动采集。
+
+功能通过不表示每个物体都识别正确。视频未逐帧运行golden模型；人工错框标记与功能检查分别报告，需定位时再使用对应帧的证据。统计中的PCIe往返含工具调用和轮询开销，不能当作纯AMU耗时；SSH显示也会影响整帧速度。
 
 ```bash
 # 自选视频并处理全片；一次只提交一帧，处理完再显示和继续下一帧
@@ -61,6 +65,9 @@ python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames
 
 # 无图形会话时仍可处理全片并生成检测PNG和演示视频
 python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames 0 --no-display
+
+# 离线分析指定旧视频结果、标记第1帧；不加载模型、不访问PCIe
+python3 tools/video_report.py /实际结果目录 --flag 1 --note "错框位置说明"
 ```
 
 默认样本为 `yolo26_pc/samples/pexels-3796613.mp4`，来源与SHA记录在视频程序中。MP4播放帧率与板端实际处理速度分别记录，不代表推理实时帧率。

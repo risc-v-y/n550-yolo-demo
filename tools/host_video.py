@@ -16,6 +16,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+VIDEO_LIBS = ROOT / 'yolo26_pc/.venv-host-video/lib'
 sys.path.insert(0, str(ROOT / 'yolo26_pc'))
 
 
@@ -27,11 +28,14 @@ def save_json(path, data):
 
 def dependencies():
     try:
+        if VIDEO_LIBS.is_dir() and str(VIDEO_LIBS) not in sys.path:
+            sys.path.insert(0, str(VIDEO_LIBS))
         import video_demo as video
         return video
     except (ImportError, OSError) as exc:
-        raise RuntimeError('Video dependencies unavailable: {}. Use the same Python with '
-                           'yolo26_pc/requirements-board.txt; no board action was taken.'.format(exc)) from exc
+        raise RuntimeError('Video dependencies unavailable: {}. '
+                           'Run bash tools/setup_host_video.sh to install the offline host packages; '
+                           'no board action was taken.'.format(exc)) from exc
 
 
 def save_png(video, path, image):
@@ -139,7 +143,11 @@ def check_host(video, source, output, display=False):
         code = ('import cv2,numpy as np; cv2.namedWindow("YOLO display check"); '
                 'cv2.imshow("YOLO display check",np.zeros((100,200,3),np.uint8)); '
                 'cv2.waitKey(100); cv2.destroyAllWindows()')
-        probe = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=20)
+        environment = os.environ.copy()
+        if VIDEO_LIBS.is_dir():
+            environment['PYTHONPATH'] = str(VIDEO_LIBS) + os.pathsep + environment.get('PYTHONPATH', '')
+        probe = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
+                               timeout=20, env=environment)
         if probe.returncode:
             raise RuntimeError('GUI check failed before board access: ' + probe.stderr[-800:])
     report = {'status': 'passed', 'python': sys.version.split()[0], 'numpy': np.__version__,

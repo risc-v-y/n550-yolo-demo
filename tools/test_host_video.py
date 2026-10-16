@@ -3,6 +3,8 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -14,6 +16,28 @@ import video_demo as video
 
 
 class VideoTests(unittest.TestCase):
+    def test_isolated_process_uses_project_video_libraries(self):
+        with tempfile.TemporaryDirectory() as name:
+            libraries = Path(name)
+            (libraries / 'cv2.py').write_text('PROBE="offline-project-library"\n')
+            (libraries / 'video_demo.py').write_text('from cv2 import PROBE\n')
+            code = ('import runpy,pathlib; m=runpy.run_path({!r},run_name="video_startup"); '
+                    'f=m["dependencies"]; f.__globals__["VIDEO_LIBS"]=pathlib.Path({!r}); '
+                    'assert f().PROBE=="offline-project-library"').format(app.__file__, name)
+            child = subprocess.run([sys.executable, '-I', '-c', code], cwd=name,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=20)
+        self.assertEqual(child.returncode, 0, child.stderr)
+
+    def test_offline_pip_starts_directly_from_its_wheel(self):
+        wheel = app.ROOT / 'host_deps/py38-linux-x86_64/pip-24.1.2-py3-none-any.whl'
+        code = ('import sys,runpy; sys.path.insert(0,{!r}); '
+                'import pip; assert ".whl" in pip.__file__; '
+                'sys.argv=["pip","--version"]; runpy.run_module("pip",run_name="__main__")').format(str(wheel))
+        child = subprocess.run([sys.executable, '-I', '-c', code], stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True, timeout=20)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertIn('pip 24.1.2', child.stdout)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -116,6 +140,16 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(report['mp4_frames'], 3)
         self.assertGreater(report['bus_boxes'], 0)
         self.assertFalse(report['display_tested'])
+
+    def test_display_probe_inherits_project_library_path(self):
+        libraries = self.root / 'libraries'; libraries.mkdir()
+        with patch.object(app, 'VIDEO_LIBS', libraries), \
+             patch.dict('os.environ', {'DISPLAY': ':test', 'PYTHONPATH': '/existing'}), \
+             patch.object(app.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as child:
+            report = app.check_host(video, self.source, self.output, display=True)
+        self.assertTrue(report['display_tested'])
+        expected = str(libraries) + __import__('os').pathsep + '/existing'
+        self.assertEqual(child.call_args.kwargs['env']['PYTHONPATH'], expected)
 
     def test_host_failure_prevents_board_access_and_saves_error(self):
         with patch.object(app, 'check_host', side_effect=ValueError('host codec unavailable')), \

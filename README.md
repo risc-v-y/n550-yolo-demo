@@ -260,7 +260,22 @@ Ctrl-C或采集失败会尽力发送ABORT并生成已有结果的小包。进程
 
 菜单 **15** 自动检查host及显示窗口，通过后加载一次正式固件、顺序处理样例视频的前3帧。每帧完成就更新窗口、保存原图与检测PNG，再送下一帧；等待推理时窗口仍可响应Q/Esc。没有跳帧、循环或重复录像，UART只输出调试文字。该入口在前台运行，需保持SSH/图形会话连接。
 
-视频依赖为NumPy和OpenCV，不需要PyTorch。已有依赖先直接选14；缺失时，使用与菜单相同的Python安装：
+视频依赖为NumPy和OpenCV，不需要PyTorch。host只能通过Git SSH取文件时，仓库已附官方Linux x86_64/Python3.8离线安装包（约78.3MiB）：NumPy1.24.4、OpenCV4.11.0.86及用于启动安装的pip24.1.2。保持host当前系统时间，无需访问pip软件源，也不要求已有pip。
+
+```bash
+# 通过已有Git SSH连接获取视频离线安装包
+git pull --ff-only
+
+# 校验安装包并安装到项目独立目录，自动检查视频解码、前后处理、PNG和MP4；不访问板子
+bash tools/setup_host_video.sh
+
+# 在可显示窗口的终端中运行：检查显示环境、加载固件、逐帧处理前三帧并生成demo.mp4
+bash tools/host.sh video
+```
+
+安装成功标志为`VIDEO SETUP COMPLETED`。依赖放在`yolo26_pc/.venv-host-video/lib/`，视频入口及其显示检查进程自动使用它，不替换系统Python包。安装时若提示缺少`libGL.so.1`或其他系统库，保留完整错误；离线Python包不能代替操作系统动态库。视频启动会在加载固件前检查图形会话，需沿用已能打开eog窗口的SSH/X11或桌面会话。
+
+host能够正常访问pip软件源时，也可以使用与菜单相同的Python安装：
 
 ```bash
 # 仅缺少视频依赖时执行；Python3.8/3.9选择NumPy1.24.4及OpenCV4.11.0.86
@@ -290,6 +305,7 @@ python3 tools/host_video.py --max-frames 3 --load --no-display
 
 ```bash
 # 摄像头可用后使用；先通过菜单10加载正式固件
+PYTHONPATH="$PWD/yolo26_pc/.venv-host-video/lib${PYTHONPATH:+:$PYTHONPATH}" \
 python3 yolo26_pc/live_demo.py --backend pcie --camera 0 --save-frames \
   --pbcopy /rv/fpga/bin/pbcopy --pbload /rv/fpga/bin/pbload
 ```

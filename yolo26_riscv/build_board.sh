@@ -19,7 +19,7 @@ flags=(-march=rv64gcv_zicbom_zifencei_xewmatrix1p0 -mabi=lp64d -mcmodel=medany -
        -O2 -g -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-strict-aliasing
        -fno-tree-vectorize -mstringop-strategy=scalar -ffp-contract=off -fno-stack-protector -fno-pic -fno-pie
        -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables
-       -DYOLO_N550_BOARD=1 -DMODEL_PRECISION=1 -DMODEL_PROFILE=0
+       -DYOLO_N550_BOARD=1 -DMODEL_PRECISION=1 -DMODEL_PROFILE=1
        -I "$src" -I "$root/model")
 "$tc-gcc" "${flags[@]}" -c board/start.S -o "$out/start.o"
 cat > "$out/weights.S" <<EOF

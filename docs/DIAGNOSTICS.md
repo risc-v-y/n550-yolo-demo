@@ -4,7 +4,7 @@
 
 ## 文字日志
 
-- 默认：启动配置、AMU 初始化、自测、READY、每帧 RUN/DONE、每 32 个节点一次进度、PCIe 状态发布和错误。
+- 默认：启动配置、AMU 初始化、自测、权重准备、READY、每帧 RUN/DONE、每32个节点一次进度、PCIe状态发布和错误。
 - `--board-trace`：每个节点开始/结束、输入输出编号/类型/形状和 `node_cycles`。参数通过 PCIe 配置，文字从 UART 输出。
 - `--check-intermediates`：额外扫描中间 FP32 输出的 NaN/Inf；默认已检查输入和最终输出。这不等于完整数值精度验证。
 
@@ -14,6 +14,7 @@
 [YOLO] BOOT transport=PCIe debug=UART baud=114942 dlf_bits=4 nodes=334 input_bytes=2076672 output_bytes=7200
 [YOLO] AMU_INIT frame=0
 [YOLO] SELFTEST frame=0
+[YOLO] WEIGHTS prepared layers=94 bytes=5033984 values=2391664 cycles=...
 [YOLO] READY frame=0
 [YOLO] RUN frame=1 node=none op=18446744073709551615 phase=1
 [YOLO] RUN frame=1 node=32 op=0 phase=2
@@ -30,7 +31,7 @@ UART 等待有上限，初始化验证失败或发送超时后禁用后续日志
 
 `board_diag` 的前816字节维持版本1布局；新固件追加两个uint64字段（计时表地址、长度），共832字节，64字节对齐。PCIe信息区通告实际长度，新Host兼容816/832字节。旧RX/RPC计数字段保留。诊断快照经缓存clean发布，地址见 `firmware/pcie-symbols.txt`。
 
-`board_profile` 是独立8152字节计时表，包含16个uint64头字段、334组cache/compute/check周期及末尾uint64承载的CRC32。PCIe DONE之前完成CRC和缓存clean，绑定会话/帧号；Host校验后保存到逐帧JSON的 `pcie_timing.board_profile`。每帧结束后读取一次，正常推理不逐节点停顿。计时边界与查看方式见 [TUNING](TUNING.md)。
+`board_profile` 是独立计时表，新v2为24320字节，Host仍兼容旧v1的8152字节。PCIe DONE前完成CRC和clean，绑定会话/帧号；Host校验后保存到逐帧JSON的 `pcie_timing.board_profile`。每帧读取一次，正常推理不逐节点停顿。v2包含六阶段计时、启动权重准备统计和帧内权重转换次数；结构、边界和操作统一见 [TUNING](TUNING.md)。
 
 CPU trap 使用独立 4 KiB 异常栈，保存整数寄存器及 `mcause/mepc/mtval`，尽力打印并发布 PCIe ERROR，然后停车；不自动恢复，不保存浮点/向量/矩阵寄存器。DDR、缓存指令或异常栈也故障时，记录可能不完整。
 
@@ -38,6 +39,7 @@ CPU trap 使用独立 4 KiB 异常栈，保存整数寄存器及 `mcause/mepc/mt
 |---|---|
 | 1/2 | 权重长度/图接口不符 |
 | 3/4 | AMU 初始化/自测失败，detail 为原返回值 |
+| 5 | READY前权重准备失败；检查模型元数据、FP16转换和5MiB容量 |
 | 0x30 | 输入 NaN/Inf，查看 tensor/element/observed |
 | 0x31 | 算子失败，查看 node/phase/detail |
 | 0x32 | 输出 NaN/Inf，查看张量、下标和原始位 |

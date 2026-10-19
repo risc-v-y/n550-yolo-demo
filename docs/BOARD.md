@@ -7,10 +7,10 @@
 | CPU | N550，RV64，单 hart0，M 模式；其他 hart 停车 |
 | 运算 | RVV+AMU FP16，FP32 激活与输出，334 节点 |
 | DDR | 程序/权重/栈/诊断独占 `0x80000000–0x81FFFFFF` 32 MiB；模型数据独占 `0xF0000000–0xF0FFFFFF` 16 MiB |
-| 数据区 | CLP共8,143,104字节：图工作区7,614,720、im2col 524,288、AMU两个输入块共4,096；常量9,678,644字节仍在原区 |
+| 数据区 | CLP共8,143,104字节，布局不变；普通DDR保留9,678,644字节常量，另预留5MiB BSS作FP16预打包权重，实际5,033,984字节 |
 | RVV Memory port | `0x8000…` 地址使用 DCache，不能当作无缓存访问 |
 | RVV CLP | `0x10000000–0x1FFFFFFF` 无缓存，NoC 映射为 `0xF0000000–0xFFFFFFFF` |
-| AMU | 独立AXI使用全局DDR地址；模型的输入打包块和输出均在批准的16 MiB区 |
+| AMU | 独立AXI使用全局DDR地址；右输入块和输出在CLP区，只读预打包权重在普通DDR |
 | DCache | 保持开启，cacheline 与维护步长均为 64 字节，标准 Zicbom |
 | UART0 | DW_apb_uart，基址 `0x20100000`，32-bit MMIO，寄存器间距 4 字节 |
 | UART 格式 | pclk=sclk=10 MHz，115200、8N1，无软硬流控，仅输出调试文字 |
@@ -22,7 +22,7 @@
 
 部署脚本使用现场已提供的 `reset1.sh` 保持 S2C 复位，加载完整 BIN 到 PCIe `0x0`，再用 `reset.sh` 释放复位。平台方须保证该时序有效、释放不清除 DDR、启动入口为 CPU `0x80000000`。我们的启动代码关闭中断，设置栈、异常入口，清 BSS，启用浮点/RVV 状态，不初始化 DDR、不关闭 DCache。
 
-`demo-pcie.bin/elf` 为当前CLP模型版，启动通过RVV初始化高地址数据，执行32轮CLP自测，再发布READY。`.clp_data` 是NOLOAD，独立于普通BSS，BIN不含高地址空洞。独立 `clp-selftest.bin/elf` 保留现场已通过版本。历史缓存自测已移除。
+`demo-pcie.bin/elf` 为当前CLP模型版，启动通过RVV初始化高地址数据，执行32轮CLP自测，再准备94层FP16权重并发布READY。新增权重存储在普通BSS中，启动清零后生成，不扩展BIN数据量。`.clp_data` 是NOLOAD且独立于BSS，BIN不含高地址空洞。独立 `clp-selftest.bin/elf` 保留现场已通过版本。
 
 UART 动态识别 4/5/6 位 DLF 并计算小数分频，验证寄存器；实际波特率的整数记录约为 114942/115273。空闲检测、分频验证或发送等待失败后禁用文字输出，记录 `board_uart_status` 和 `board_diag.tx_errors`，不阻止 PCIe 模型执行。每个 MMIO 访问本身无法返回或触发异常时，不能靠轮询上限恢复。
 
@@ -33,6 +33,8 @@ RVV对模型数据的连续、跨步和索引读取均转换成CLP别名，标�
 CLP 测试的数据路径为 RVV 别名写入 → `fence iorw,iorw` → AMU 全局地址读取/运算/存储 → 读取 `xmfflags` 等待 → fence → RVV 别名读取/存储 → fence。整个共享区不做标量访问或 CBO，消除该最小链路的 DCache 所有权切换；AMU 完成语义仍须实板确认。
 
 标量若参与共享缓冲区，仍须在标量→无缓存读取前 clean、外部写入后标量读取前 invalidate，且完整缓存行独占、先等待外部完成。低地址诊断继续 clean 发布；PCIe 邮箱协议不变，见 [PCIe 协议](PCIE.md)。FENCE 负责顺序，不能替代缓存维护或 AMU 完成等待。
+
+预打包权重按64字节对齐，在READY前由标量转换并逐区clean，之后只读，AMU重复读取不再需要每块clean。每条AMU指令之后的完成等待、输入缓冲区复用和输出交接机制保留；不能将这一只读权重规则用于可变激活。
 
 现场已报告独立CLP扩展版32轮通过，形状为 `(3,5,17)/(1,1,1)/(2,3,32)/(3,5,31)`。模型启动复用同一用例；当前BUS的334节点旧采集已完成逐位解释，见[验收状态](VALIDATION.md)。
 

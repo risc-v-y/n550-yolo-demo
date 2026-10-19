@@ -10,7 +10,47 @@ uint32_t accel_rvv_nodes, accel_amu_nodes, accel_scalar_nodes, accel_alias_nodes
 enum { CONV_COLUMNS = 32, MAX_CONV_K = 4096 };
 #ifdef YOLO_N550_BOARD
 #include "board/memory.h"
+#include "model_generated.h"
 static float conv_scratch[MAX_CONV_K * CONV_COLUMNS] BOARD_CLP_DATA;
+/* Keep CLP activation layout stable. The AMU reads this immutable DDR copy
+ * after amu_pack_weights has cleaned every populated cache line. */
+static uint16_t prepared_weights[5*1024*1024/2] __attribute__((aligned(64)));
+static AmuPackedWeights prepared[MODEL_TENSOR_COUNT];
+static const unsigned char *prepared_constants;
+uint64_t accel_weight_bytes, accel_weight_values, accel_weight_cycles, accel_weight_layers;
+int accel_model_prepare(const ModelNode *nodes,size_t node_count,
+                        const ModelTensor *tensors,size_t tensor_count,
+                        const unsigned char *constants,size_t constant_bytes) {
+    uint64_t start=model_ticks();
+    prepared_constants=0;
+    accel_weight_bytes=accel_weight_values=accel_weight_layers=0;
+    if(!nodes || !tensors || !constants || tensor_count>MODEL_TENSOR_COUNT) return -1;
+    for(size_t i=0;i<MODEL_TENSOR_COUNT;++i) prepared[i]=(AmuPackedWeights){0};
+    for(size_t i=0;i<node_count;++i) {
+        const ModelNode *node=nodes+i;
+        if(node->op!=OP_CONV || node->p[4]!=1) continue;
+        if(node->inputs!=3 || node->in[1]<0 || (size_t)node->in[1]>=tensor_count) return -1;
+        const ModelTensor *w=tensors+node->in[1];
+        if(w->dtype!=1 || !w->constant || w->rank!=4 || !w->shape[0] ||
+           w->offset>constant_bytes || w->bytes>constant_bytes-w->offset) return -1;
+        size_t m=w->shape[0], k=(size_t)w->shape[1]*w->shape[2]*w->shape[3];
+        if(!k || k>MAX_CONV_K || m>SIZE_MAX/k/4 || m*k*4!=w->bytes) return -1;
+        AmuPackedWeights *p=prepared+node->in[1];
+        if(!p->data) {
+            size_t bytes=amu_packed_weight_bytes(m,k);
+            if(!bytes || bytes>sizeof(prepared_weights)-accel_weight_bytes ||
+               amu_pack_weights((const float *)(constants+w->offset),m,k,k,
+                                prepared_weights+accel_weight_bytes/2,
+                                sizeof(prepared_weights)-accel_weight_bytes,p)) return -1;
+            accel_weight_bytes+=bytes;
+            accel_weight_values+=m*k;
+        }
+        ++accel_weight_layers;
+    }
+    accel_weight_cycles=model_ticks()-start;
+    prepared_constants=constants;
+    return 0;
+}
 #else
 static float conv_scratch[MAX_CONV_K * CONV_COLUMNS] __attribute__((aligned(64)));
 #endif
@@ -39,8 +79,9 @@ static int done(int status, int amu) {
     }
     return status;
 }
-static int matmul(int amu, const float *a, const float *b, float *c,
+static int matmul(int amu, const AmuPackedWeights *packed, const float *a, const float *b, float *c,
                   size_t m, size_t n, size_t k, size_t lda, size_t ldb, size_t ldc) {
+    if(amu && packed) return amu_matmul_prepacked_fp16(packed,b,c,n,ldb,ldc);
     if (amu) return amu_matmul_fp16(a, b, c, m, n, k, lda, ldb, ldc);
     rvv_matmul_ordered(a, b, c, m, n, k, lda, ldb, ldc);
     return 0;
@@ -58,7 +99,7 @@ static void add_bias(float *dest, const float *bias, size_t channels, size_t col
     model_profile_end(PROFILE_BIAS_DEQUANT, start);
 }
 static int convolution(const Conv2D *p, const float *input, const float *weight,
-                        const float *bias, float *output, int amu) {
+                        const float *bias, float *output, int amu, const AmuPackedWeights *packed) {
     size_t oh, ow;
     if (conv2d_output_shape(p, &oh, &ow)) return -1;
     size_t icg = p->in_channels / p->groups, ocg = p->out_channels / p->groups;
@@ -70,7 +111,7 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
             const float *biases = bias + group * ocg;
             float *dest = output + (batch * p->out_channels + group * ocg) * area;
             if (p->kernel_h == 1 && p->kernel_w == 1 && p->stride_h == 1 && p->stride_w == 1 && !p->pad_h && !p->pad_w) {
-                if (matmul(amu, weights, input + (batch * p->in_channels + group * icg) * area,
+                if (matmul(amu, packed, weights, input + (batch * p->in_channels + group * icg) * area,
                            dest, ocg, area, k, k, area, area)) return -1;
                 add_bias(dest, biases, ocg, area, area);
                 continue;
@@ -95,7 +136,7 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
                     }
                 }
                 model_profile_end(PROFILE_INPUT_IM2COL, start);
-                if (matmul(amu, weights, conv_scratch, dest + first, ocg, count, k, k, CONV_COLUMNS, area)) return -1;
+                if (matmul(amu, packed, weights, conv_scratch, dest + first, ocg, count, k, k, CONV_COLUMNS, area)) return -1;
                 add_bias(dest + first, biases, ocg, count, area);
             }
         }
@@ -123,7 +164,17 @@ int accel_model_node(const ModelNode *node, const ModelTensor *tensors,
             Conv2D c = {a[0]->shape[0], a[0]->shape[1], a[0]->shape[2], a[0]->shape[3],
                         a[1]->shape[0], a[1]->shape[2], a[1]->shape[3], p[0], p[1], p[2], p[3], p[4]};
             int amu = c.groups == 1;
-            return done(convolution(&c, in, x[1], x[2], out, amu), amu);
+            const AmuPackedWeights *packed=0;
+#ifdef YOLO_N550_BOARD
+            if(amu) {
+                if(constants!=prepared_constants || node->in[1]<0 || node->in[1]>=MODEL_TENSOR_COUNT)
+                    return -1;
+                packed=prepared+node->in[1];
+                if(!packed->data || packed->m!=c.out_channels ||
+                   packed->k!=c.in_channels*c.kernel_h*c.kernel_w) return -1;
+            }
+#endif
+            return done(convolution(&c, in, x[1], x[2], out, amu, packed), amu);
         }
         case OP_BMM:
             for (size_t b = 0; b < a[0]->shape[0]; ++b) {

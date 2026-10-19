@@ -27,6 +27,9 @@ def main():
         address,kind,name=line.split()
         symbols[name]=int(address,16)
     assert symbols['__bss_start']<symbols['__bss_end']<=0x81f00000
+    assert symbols['__bss_start']<=symbols['prepared_weights']<symbols['__bss_end']-5*1024*1024+1
+    assert symbols['prepared_weights']%64==0 and symbols['board_profile']%64==0
+    assert symbols['prepared_weights']+5*1024*1024<=symbols['__bss_end']
     assert symbols['__clp_start']==0xf0000000 and symbols['__clp_end']==0xf07c4100
     for name in ('arena','conv_scratch','left_tile','right_tile'):
         assert 0xf0000000<=symbols[name]<0xf1000000

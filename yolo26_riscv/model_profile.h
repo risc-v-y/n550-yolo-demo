@@ -6,8 +6,9 @@
 #define MODEL_PROFILE 0
 #endif
 
-/* Disjoint internal stages; their sum is a subset of graph time.
- * rdcycle is an emulator counter under QEMU, NOT FPGA execution cycles.
+/* Disjoint internal stages; their sum is a subset of node compute time.
+ * rdcycle is a CPU cycle counter on hardware, an emulator counter in QEMU.
+ * Only physical-board cycles and its actual core frequency give board time.
  * Timer reads and accounting add overhead. No conversion to FPS is valid. */
 enum {
     PROFILE_WEIGHT_PREPARE,
@@ -19,8 +20,8 @@ enum {
     PROFILE_PHASE_COUNT
 };
 typedef struct { uint64_t ticks, calls; } ModelProfilePhase;
-#if MODEL_PROFILE
 extern ModelProfilePhase model_profile_phases[PROFILE_PHASE_COUNT];
+#if MODEL_PROFILE
 static inline uint64_t model_ticks(void) {
     uint64_t ticks;
     __asm__ volatile ("rdcycle %0" : "=r"(ticks) : : "memory");

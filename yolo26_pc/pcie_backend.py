@@ -328,8 +328,8 @@ class PCIeBackend:
                     raise ValueError('Missing board timing descriptor')
                 address,size=self.profile_descriptor
                 if address or size:
-                    from board_profile import decode_profile,PROFILE_BYTES
-                    if size!=PROFILE_BYTES or address%64 or not BASE<=address<=MAILBOX-size:
+                    from board_profile import decode_profile,PROFILE_LENGTHS
+                    if size not in PROFILE_LENGTHS or address%64 or not BASE<=address<=MAILBOX-size:
                         raise ValueError('Invalid board timing address/length')
                     profile_start=time.monotonic()
                     self.last_timing['board_profile']=decode_profile(

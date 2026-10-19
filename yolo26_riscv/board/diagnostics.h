@@ -3,25 +3,31 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "../scalar_model.h"
+#include "../model_profile.h"
 
 #define BOARD_PROFILE_NODES 334u
 #define BOARD_PROFILE_MAGIC UINT64_C(0x3152465036325955)
 /* Little-endian uint64 fields. CRC covers all bytes before crc; read only
  * after PCIe DONE. Timings are CPU cycles, never QEMU performance estimates. */
-typedef struct { uint64_t cache, compute, check; } BoardNodeProfile;
+typedef struct {
+    uint64_t cache, compute, check, phase_cycles[PROFILE_PHASE_COUNT];
+} BoardNodeProfile;
 typedef struct {
     uint64_t magic,version,bytes,frame,nodes,completed,options,state;
     uint64_t model_cycles,graph_cycles,input_check_cycles,service_cycles;
     uint64_t input_crc_cycles,output_cycles,node_cycles,reserved;
     BoardNodeProfile node[BOARD_PROFILE_NODES];
+    ModelProfilePhase phases[PROFILE_PHASE_COUNT];
+    uint64_t weight_pack_bytes,weight_pack_values,weight_pack_cycles,prepared_layers;
+    uint64_t runtime_weight_conversions;
     uint64_t crc;
 } BoardProfile;
-_Static_assert(sizeof(BoardProfile)==8152,"profile wire layout");
+_Static_assert(sizeof(BoardProfile)==24320,"profile wire layout v2");
 extern volatile BoardProfile board_profile;
 void board_profile_begin(unsigned nodes);
 void board_profile_end(uint64_t graph_start,uint64_t input_cycles);
 enum { DIAG_BOOT=1, DIAG_UART, DIAG_AMU_INIT, DIAG_SELFTEST, DIAG_READY,
-       DIAG_RECEIVE, DIAG_RUN, DIAG_DONE, DIAG_FAILED, DIAG_TRAP };
+       DIAG_RECEIVE, DIAG_RUN, DIAG_DONE, DIAG_FAILED, DIAG_TRAP, DIAG_WEIGHTS };
 enum { PHASE_NONE, PHASE_INPUT, PHASE_NODE_BEGIN, PHASE_CACHE, PHASE_COMPUTE,
        PHASE_AMU_PACK, PHASE_AMU_SUBMIT, PHASE_AMU_WAIT, PHASE_AMU_STORE,
        PHASE_CHECK, PHASE_NODE_END };

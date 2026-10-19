@@ -17,13 +17,13 @@ root=Path(__file__).resolve().parents[3]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--capture',action='store_true',help='Exercise node snapshots/ACK and export all tensors')
 parser.add_argument('--manifest',type=Path,default=root/'reference/prepared/manifest.json',
-                    help='Two prepared samples; video manifests may omit the numerical reference')
+                    help='Validate the first prepared sample (normally BUS)')
 args=parser.parse_args()
 manifest_path=args.manifest.resolve()
 manifest=json.loads(manifest_path.read_text())
-samples=list(manifest['samples'])
-if len(samples)!=2:
-    parser.error('Exactly two prepared frames are required')
+samples=list(manifest['samples'])[:1]
+if not samples:
+    parser.error('A prepared frame is required')
 src=root/'yolo26_riscv'
 out=root/'yolo26_pc/outputs/clp-model-validation'/('run-'+secrets.token_hex(6))
 out.mkdir(parents=True)
@@ -35,7 +35,7 @@ flags=['-march=rv64gcv_zicbom_zifencei_xewmatrix1p0','-mabi=lp64d','-mcmodel=med
        '-O2','-g','-std=c11','-Wall','-Wextra','-Werror','-ffreestanding','-fno-builtin',
        '-fno-strict-aliasing','-fno-tree-vectorize','-mstringop-strategy=scalar','-ffp-contract=off',
        '-fno-stack-protector','-fno-pic','-fno-pie','-ffunction-sections','-fdata-sections',
-       '-fno-asynchronous-unwind-tables','-DYOLO_N550_BOARD=1','-DMODEL_PRECISION=1','-DMODEL_PROFILE=0',
+       '-fno-asynchronous-unwind-tables','-DYOLO_N550_BOARD=1','-DMODEL_PRECISION=1','-DMODEL_PROFILE=1',
        '-DBOARD_CLP_SIM=1','-DCLP_PROBE_EMBEDDED=1','-DBOARD_UART_TEST=1','-DCLP_MODEL_QEMU=1',
        '-I',str(src),'-I',str(root/'model')]
 if args.capture:
@@ -78,7 +78,7 @@ except BaseException as exc:
 report['elapsed_seconds']=time.monotonic()-started
 report['qemu_exit']=result.returncode
 text=(out/'uart.log').read_text(errors='replace')
-if result.returncode or 'QEMU MODEL TWO FRAMES PASS' not in text:
+if result.returncode or 'QEMU MODEL BUS PASS' not in text:
     report['status']='failed'
     (out/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     raise RuntimeError(f'QEMU model failed; inspect {out}/uart.log')

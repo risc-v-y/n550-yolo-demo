@@ -8,7 +8,7 @@ import traceback
 FIELDS = ('version stage frame node op phase error detail received rx_errors rx_timeouts '
           'tx_errors crc_errors protocol_errors retries amu_flags tensor element observed expected '
           'trap_cause trap_pc trap_value node_start node_cycles inputs outputs options').split()
-STAGES = ('unknown boot uart amu_init selftest ready receive run done failed trap').split()
+STAGES = ('unknown boot uart amu_init selftest ready receive run done failed trap weights').split()
 PHASES = ('none input node_begin cache compute amu_pack amu_submit amu_wait amu_store '
           'check node_end').split()
 OPS = ('conv silu add sub mul copy slice concat pool nearest permute expand bmm softmax '

@@ -10,8 +10,30 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'yolo26_pc'))
-from board_profile import validate_saved_profile
+from board_profile import validate_saved_profile, PHASES
 from board_diagnostics import OPS
+
+
+def previous_baseline(directory, records):
+    """Only compare a complete previous v1 run with the exact same inputs."""
+    identity = [(r.get('frame_id'), r.get('input_sha256')) for r in records]
+    if not identity or any(not digest for _, digest in identity): return None
+    files = sorted(directory.parent.glob('*/report.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in files:
+        if path.parent == directory: continue
+        try:
+            raw = path.read_bytes()
+            report = json.loads(raw)
+            rows = report['results']
+            if report.get('status') != 'completed' or identity != [(r.get('frame_id'), r.get('input_sha256')) for r in rows]:
+                continue
+            profiles = [validate_saved_profile(r['pcie_timing']['board_profile'], r['pcie_timing']['pcie_frame']) for r in rows]
+            if not all(p['version'] == 1 and p['representative'] for p in profiles): continue
+            import hashlib
+            return dict(run=path.parent.name, path=str(path), report_sha256=hashlib.sha256(raw).hexdigest(),
+                        model_cycles=statistics.mean(p['model_cycles'] for p in profiles))
+        except (OSError, ValueError, TypeError, KeyError, OverflowError, struct.error): continue
+    return None
 
 
 def analyze(directory, core_mhz=0):
@@ -60,6 +82,8 @@ def analyze(directory, core_mhz=0):
         row = dict(node=i, op=ops[i])
         for key in ('cache', 'compute', 'check', 'total'):
             row[key] = statistics.mean(p['nodes_detail'][i][key] for p in profiles)
+        if all(p['version'] == 2 for p in profiles):
+            row.update((name, statistics.mean(p['nodes_detail'][i]['phases'][name] for p in profiles)) for name in PHASES)
         nodes.append(row)
     cycles = {key: statistics.mean(p[key] for p in profiles) for key in
               ('service_cycles', 'model_cycles', 'graph_cycles', 'input_check_cycles',
@@ -70,12 +94,20 @@ def analyze(directory, core_mhz=0):
                   timings=timings, profiled=len(profiles), excluded=excluded, errors=errors,
                   cycles=cycles, core_mhz=core_mhz, nodes=sorted(nodes, key=lambda n: -n['total']))
     result['tools'] = tools
+    result['phases'] = {}
+    if profiles and all(p['version'] == 2 for p in profiles):
+        result['phases'] = dict((name, statistics.mean(p['phases'][name]['ticks'] for p in profiles)) for name in PHASES)
+        result['weights'] = profiles[0]['weights']
+        result['baseline'] = previous_baseline(directory, records) if len(profiles) == len(records) else None
+        if result['baseline'] and result['baseline']['model_cycles'] > 0 and cycles['model_cycles'] > 0:
+            result['baseline']['ratio'] = result['baseline']['model_cycles']/cycles['model_cycles']
     if profiles and core_mhz:
         result['model_seconds'] = cycles['model_cycles']/(core_mhz*1e6)
         result['service_seconds'] = cycles['service_cycles']/(core_mhz*1e6)
     (directory/'performance-summary.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
     with (directory/'node-timing.csv').open('w', newline='', encoding='utf-8') as stream:
-        writer = csv.DictWriter(stream, fieldnames=('node', 'op', 'cache', 'compute', 'check', 'total'))
+        writer = csv.DictWriter(stream, fieldnames=('node', 'op', 'cache', 'compute', 'check', 'total')+
+                                (PHASES if result['phases'] else ()))
         writer.writeheader(); writer.writerows(result['nodes'])
     for page in (1, 2, 3):
         (directory/'performance-page-{}.txt'.format(page)).write_text(render(result, page), encoding='utf-8')
@@ -99,13 +131,26 @@ def render(report, page):
                 name, item['calls'], item['seconds'], item['failed']))
     elif page == 2:
         lines += ['CPU counter means (cycles); only normal runs are ranked.']
-        for key, value in report['cycles'].items(): lines.append('{}: {:.0f}'.format(key, value))
+        if report.get('phases'):
+            for key in ('service_cycles', 'model_cycles', 'graph_cycles'):
+                lines.append('{}: {:.0f}'.format(key, report['cycles'][key]))
+            for key, value in report['phases'].items(): lines.append('{}: {:.0f}'.format(key, value))
+            rest = report['cycles']['compute']-sum(report['phases'].values())
+            lines.append('other_compute: {:.0f} | boundary_cache: {:.0f}'.format(rest, report['cycles']['cache']))
+            w = report['weights']
+            lines += ['Startup: {} layers / {} bytes / {} values'.format(w['prepared_layers'], w['weight_pack_bytes'], w['weight_pack_values']),
+                      'Startup cycles={} | runtime weight conversions={}'.format(w['weight_pack_cycles'], w['runtime_weight_conversions'])]
+            baseline = report.get('baseline')
+            if baseline and 'ratio' in baseline:
+                lines.append('Baseline {}: model cycles old/new={:.3f}x'.format(baseline['run'], baseline['ratio']))
+            else: lines.append('No complete v1 baseline with identical frame inputs.')
+        else:
+            for key, value in report['cycles'].items(): lines.append('{}: {:.0f}'.format(key, value))
         if report['core_mhz'] and report['profiled']:
             lines += ['Core MHz: {}'.format(report['core_mhz']),
                       'Model {:.6f}s | board service {:.6f}s'.format(report['model_seconds'], report['service_seconds'])]
         else: lines += ['Core frequency unknown: seconds/FPS are not inferred.']
-        lines += ['Service: request accepted -> before timing/status publication.',
-                  'Graph includes diagnostics; node sums exclude progress logging.',
+        lines += ['Submit includes cache maintenance; wait is remaining drain.',
                   'Excluded trace/finite/capture frames: {}'.format(len(report['excluded'])),
                   'Invalid timing records: {}'.format(len(report['errors']))]
     elif page == 3:
@@ -118,7 +163,7 @@ def render(report, page):
                 row['cache'], row['compute']))
         if not report['nodes']: lines.append('No normal board profile. Run updated video firmware once.')
         lines += ['All 334 nodes and check cycles: node-timing.csv',
-                  'Counters and reads add overhead; no speedup is claimed yet.']
+                  'Counters/reads add overhead; use cycles for matched comparisons.']
         for error in report['errors'][:2]: lines.append('ERROR frame={}: {}'.format(error['frame'], error['error']))
     else: raise ValueError('Page must be 1, 2 or 3')
     return '\n'.join(line[:80] for line in lines[:22])+'\n'

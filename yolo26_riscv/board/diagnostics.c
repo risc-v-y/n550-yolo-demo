@@ -1,20 +1,31 @@
 #include "diagnostics.h"
 #ifdef YOLO_N550_BOARD
 #include "cache.h"
+#include "../accel_model.h"
+#include "../amu.h"
 #endif
 #if defined(YOLO_N550_BOARD) || defined(BOARD_LOG_TEST)
 #include "uart.h"
 #endif
 volatile BoardDiagnostics board_diag __attribute__((aligned(64)));
 volatile BoardProfile board_profile __attribute__((aligned(64)));
+ModelProfilePhase model_profile_phases[PROFILE_PHASE_COUNT];
 static uint64_t frame_start;
 static uint64_t profile_start;
 void board_profile_begin(unsigned nodes) {
     volatile uint64_t *p=(volatile uint64_t *)&board_profile;
     for(unsigned i=0;i<sizeof(board_profile)/8;++i) p[i]=0;
-    board_profile.magic=BOARD_PROFILE_MAGIC; board_profile.version=1;
+    for(unsigned i=0;i<PROFILE_PHASE_COUNT;++i) model_profile_phases[i]=(ModelProfilePhase){0};
+    board_profile.magic=BOARD_PROFILE_MAGIC; board_profile.version=2;
     board_profile.bytes=sizeof(board_profile); board_profile.frame=board_diag.frame;
     board_profile.nodes=nodes; board_profile.options=board_diag.options;
+#ifdef YOLO_N550_BOARD
+    amu_runtime_weight_conversions=0;
+    board_profile.weight_pack_bytes=accel_weight_bytes;
+    board_profile.weight_pack_values=accel_weight_values;
+    board_profile.weight_pack_cycles=accel_weight_cycles;
+    board_profile.prepared_layers=accel_weight_layers;
+#endif
     profile_start=board_diag_ticks();
 }
 void board_profile_end(uint64_t graph_start,uint64_t input_cycles) {
@@ -22,15 +33,19 @@ void board_profile_end(uint64_t graph_start,uint64_t input_cycles) {
     board_profile.model_cycles=end-profile_start;
     board_profile.graph_cycles=end-graph_start;
     board_profile.input_check_cycles=input_cycles;
+    for(unsigned i=0;i<PROFILE_PHASE_COUNT;++i) board_profile.phases[i]=model_profile_phases[i];
+#ifdef YOLO_N550_BOARD
+    board_profile.runtime_weight_conversions=amu_runtime_weight_conversions;
+#endif
     board_profile.state=1;
 }
 void board_diag_event(void) {
 #if defined(YOLO_N550_BOARD) || defined(BOARD_LOG_TEST)
     if(board_uart_status) return;
     static const char *const stages[]={"UNKNOWN","BOOT","UART","AMU_INIT","SELFTEST",
-        "READY","RECEIVE","RUN","DONE","FAILED","TRAP"};
+        "READY","RECEIVE","RUN","DONE","FAILED","TRAP","WEIGHTS"};
     board_uart_text("[YOLO] ");
-    board_uart_text(board_diag.stage<=DIAG_TRAP ? stages[board_diag.stage] : stages[0]);
+    board_uart_text(board_diag.stage<=DIAG_WEIGHTS ? stages[board_diag.stage] : stages[0]);
     board_uart_text(" frame="); board_uart_u64(board_diag.frame);
     if(board_diag.stage==DIAG_RUN || board_diag.stage==DIAG_DONE ||
        board_diag.stage==DIAG_FAILED || board_diag.stage==DIAG_TRAP) {

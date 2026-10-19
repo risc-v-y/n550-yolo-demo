@@ -1,5 +1,6 @@
 #include "amu.h"
 #include "model_profile.h"
+#ifndef AMU_PACK_ONLY
 #include <xewmatrix_intrinsic.h>
 #ifdef YOLO_N550_BOARD
 #include "board/cache.h"
@@ -19,6 +20,8 @@ static uint16_t left_tile[TILE_M * TILE_K] __attribute__((aligned(64)));
 static uint16_t right_tile[TILE_N * TILE_K] __attribute__((aligned(64)));
 #endif
 uint64_t amu_instruction_count;
+uint64_t amu_runtime_weight_conversions;
+#endif
 
 int amu_half(float value, uint16_t *bits) {
     union { float f; uint32_t u; } x = {.f = value};
@@ -43,6 +46,39 @@ int amu_half(float value, uint16_t *bits) {
     *bits = (uint16_t)(sign | half);
     return 0;
 }
+
+size_t amu_packed_weight_bytes(size_t m, size_t k) {
+    if(!m || !k) return 0;
+    size_t mt=m/32+(m%32!=0), kt=k/32+(k%32!=0);
+    if(mt>SIZE_MAX/kt || mt*kt>SIZE_MAX/2048) return 0;
+    return mt*kt*2048;
+}
+int amu_pack_weights(const float *a,size_t m,size_t k,size_t lda,
+                     uint16_t *storage,size_t capacity,AmuPackedWeights *packed) {
+    if(!packed) return -1;
+    *packed=(AmuPackedWeights){0};
+    size_t bytes=amu_packed_weight_bytes(m,k);
+    if(!a || !storage || !bytes || lda<k || capacity<bytes || (uintptr_t)storage%64 ||
+       m>SIZE_MAX/lda/sizeof(float)) return -1;
+    for(size_t i=0;i<bytes/2;++i) storage[i]=0;
+    size_t kt=k/32+(k%32!=0);
+    for(size_t row=0;row<m;row+=32) {
+        size_t rows=m-row<32 ? m-row : 32;
+        for(size_t inner=0;inner<k;inner+=32) {
+            size_t count=k-inner<32 ? k-inner : 32;
+            uint16_t *tile=storage+((row/32)*kt+inner/32)*1024;
+            for(size_t i=0;i<rows;++i) for(size_t j=0;j<count;++j)
+                if(amu_half(a[(row+i)*lda+inner+j],tile+i*32+j)) return -1;
+        }
+    }
+#ifdef YOLO_N550_BOARD
+    board_clean(storage,bytes);
+#endif
+    *packed=(AmuPackedWeights){storage,m,k,bytes};
+    return 0;
+}
+
+#ifndef AMU_PACK_ONLY
 
 /* HSC: matrix CSR reads drain the AMU ROB. Compiler barriers are needed:
  * the vendor load/store macros themselves do not declare memory clobbers.
@@ -69,12 +105,13 @@ int amu_init(void) {
     __asm__ volatile ("csrr %0, xtlenb" : "=r"(tile_bytes));
     if (!(capabilities & 0x80u) || row_bytes < TILE_K * 2 || tile_bytes / row_bytes < TILE_M) return -1;
     amu_instruction_count = 0;
+    amu_runtime_weight_conversions = 0;
     return 0;
 }
 
-int amu_matmul_fp16(const float *a, const float *b, float *c,
-                    size_t m, size_t n, size_t k, size_t lda, size_t ldb, size_t ldc) {
-    if (!a || !b || !c || lda < k || ldb < n || ldc < n) return -1;
+static int matmul_fp16(const float *a,const AmuPackedWeights *packed,const float *b,float *c,
+                       size_t m,size_t n,size_t k,size_t lda,size_t ldb,size_t ldc) {
+    if ((!a && !packed) || !b || !c || lda < k || ldb < n || ldc < n) return -1;
     for (size_t row = 0; row < m; row += TILE_M) {
         size_t rows = m - row < TILE_M ? m - row : TILE_M;
         for (size_t col = 0; col < n; col += TILE_N) {
@@ -89,11 +126,18 @@ int amu_matmul_fp16(const float *a, const float *b, float *c,
             for (size_t inner = 0; inner < k; inner += TILE_K) {
                 DIAG_PHASE(PHASE_AMU_PACK);
                 size_t count = k - inner < TILE_K ? k - inner : TILE_K;
-                start = model_ticks();
-                for (size_t i = 0; i < rows; ++i)
-                    for (size_t j = 0; j < count; ++j)
-                        if (amu_half(a[(row + i) * lda + inner + j], left_tile + i * TILE_K + j)) return -1;
-                model_profile_end(PROFILE_WEIGHT_PREPARE, start);
+                const uint16_t *left=left_tile;
+                if(packed) {
+                    size_t kt=k/TILE_K+(k%TILE_K!=0);
+                    left=packed->data+((row/TILE_M)*kt+inner/TILE_K)*TILE_M*TILE_K;
+                } else {
+                    start = model_ticks();
+                    for (size_t i = 0; i < rows; ++i)
+                        for (size_t j = 0; j < count; ++j)
+                            if (amu_half(a[(row + i) * lda + inner + j], left_tile + i * TILE_K + j)) return -1;
+                    amu_runtime_weight_conversions+=rows*count;
+                    model_profile_end(PROFILE_WEIGHT_PREPARE, start);
+                }
                 start = model_ticks();
                 /* TR-B contains N rows of K elements, packed from row-major B[K,N]. */
                 for (size_t i = 0; i < cols; ++i)
@@ -103,12 +147,12 @@ int amu_matmul_fp16(const float *a, const float *b, float *c,
                 start = model_ticks();
                 __asm__ volatile ("fence rw, rw" : : : "memory");
 #ifdef YOLO_N550_BOARD
-                board_clean(left_tile, sizeof(left_tile));
+                if(!packed) board_clean(left_tile, sizeof(left_tile));
                 board_clean(right_tile, sizeof(right_tile));
 #endif
                 DIAG_PHASE(PHASE_AMU_SUBMIT);
                 __riscv_msettilek(old, count, w);
-                __riscv_mlae16("tr0", left_tile, TILE_K * sizeof(uint16_t));
+                __riscv_mlae16("tr0", left, TILE_K * sizeof(uint16_t));
                 __riscv_mlbe16("tr1", right_tile, TILE_K * sizeof(uint16_t));
                 __riscv_mfmacc_s_h("acc0", "tr1", "tr0");
                 model_profile_end(PROFILE_MATRIX_SUBMIT, start);
@@ -134,3 +178,15 @@ int amu_matmul_fp16(const float *a, const float *b, float *c,
     }
     return 0;
 }
+int amu_matmul_fp16(const float *a,const float *b,float *c,
+                    size_t m,size_t n,size_t k,size_t lda,size_t ldb,size_t ldc) {
+    return matmul_fp16(a,0,b,c,m,n,k,lda,ldb,ldc);
+}
+int amu_matmul_prepacked_fp16(const AmuPackedWeights *packed,const float *b,float *c,
+                             size_t n,size_t ldb,size_t ldc) {
+    if(!packed || !packed->data || (uintptr_t)packed->data%64 ||
+       !amu_packed_weight_bytes(packed->m,packed->k) ||
+       packed->bytes!=amu_packed_weight_bytes(packed->m,packed->k)) return -1;
+    return matmul_fp16(0,packed,b,c,packed->m,n,packed->k,packed->k,ldb,ldc);
+}
+#endif

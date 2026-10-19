@@ -127,25 +127,39 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         struct.pack_into('<I',info,48,832)
         struct.pack_into('<I',info,60,zlib.crc32(info[:60]))
         self.write(MAILBOX,info)
-        from board_profile import PROFILE_MAGIC,PROFILE_BYTES
+        from board_profile import PROFILE_MAGIC,PROFILE_BYTES,PROFILE_V2_BYTES
         backend=self.connect()
         original=backend.link.read
         corrupt=[False]
+        layout=[1]
         def read(address,size,deadline):
+            version=layout[0]
+            length=PROFILE_BYTES if version==1 else PROFILE_V2_BYTES
             if address==0x80a30000:
-                fields=[PROFILE_MAGIC,1,PROFILE_BYTES,backend.frame,334,334,0,1,
+                self.assertEqual(size,length)
+                fields=[PROFILE_MAGIC,version,length,backend.frame,334,334,0,1,
                         5000,4500,400,7000,800,600,3340,backend.session]
-                raw=struct.pack('<16Q',*fields)+struct.pack('<3Q',2,7,1)*334
+                node=struct.pack('<3Q',2,7,1)
+                if version==2: node+=struct.pack('<6Q',0,1,1,1,1,1)
+                raw=struct.pack('<16Q',*fields)+node*334
+                if version==2:
+                    raw+=struct.pack('<2Q',0,0)+struct.pack('<2Q',334,334)*5
+                    raw+=struct.pack('<5Q',5033984,2391664,1000,94,0)
                 data=raw+struct.pack('<Q',zlib.crc32(raw))
                 return bytes([data[0]^1])+data[1:] if corrupt[0] else data
             data=original(address,size,deadline)
             if address==backend.diag_address and size==832:
-                data=data[:816]+struct.pack('<QQ',0x80a30000,PROFILE_BYTES)
+                data=data[:816]+struct.pack('<QQ',0x80a30000,length)
             return data
         backend.link.read=read
         backend.infer_bytes(self.tensor())
         self.assertEqual(backend.last_timing['board_profile']['model_cycles'],5000)
         self.assertEqual(len(backend.last_timing['board_profile']['nodes_detail']),334)
+        layout[0]=2
+        backend.infer_bytes(self.tensor())
+        self.assertEqual(backend.last_timing['board_profile']['version'],2)
+        self.assertEqual(backend.last_timing['board_profile']['phases']['input_pack']['ticks'],334)
+        self.assertEqual(backend.last_timing['board_profile']['weights']['runtime_weight_conversions'],0)
         corrupt[0]=True
         with self.assertRaisesRegex(ValueError,'timing CRC'):
             backend.infer_bytes(self.tensor())

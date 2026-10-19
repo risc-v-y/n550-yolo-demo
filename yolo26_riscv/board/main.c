@@ -94,6 +94,8 @@ int board_model_run(void) {
         uint64_t cache_cycles=board_diag_ticks()-cache_start;
         board_pcie_node_begin((uint32_t)step,node,model_tensors,arena,model_weights);
         board_diag_phase(PHASE_COMPUTE);
+        uint64_t phase_start[PROFILE_PHASE_COUNT];
+        for(unsigned i=0;i<PROFILE_PHASE_COUNT;++i) phase_start[i]=model_profile_phases[i].ticks;
         uint64_t compute_start=board_diag_ticks();
         int status=accel_model_node(node,model_tensors,arena,model_weights);
         uint64_t compute_cycles=board_diag_ticks()-compute_start;
@@ -116,7 +118,11 @@ int board_model_run(void) {
             }
         }
         uint64_t check_cycles=board_diag_ticks()-check_start;
-        board_profile.node[step]=(BoardNodeProfile){cache_cycles,compute_cycles,check_cycles};
+        board_profile.node[step].cache=cache_cycles;
+        board_profile.node[step].compute=compute_cycles;
+        board_profile.node[step].check=check_cycles;
+        for(unsigned i=0;i<PROFILE_PHASE_COUNT;++i)
+            board_profile.node[step].phase_cycles[i]=model_profile_phases[i].ticks-phase_start[i];
         board_profile.node_cycles+=cache_cycles+compute_cycles+check_cycles;
         board_profile.completed=step+1;
         board_diag.node_cycles=board_diag_ticks()-board_diag.node_start;
@@ -154,6 +160,19 @@ int main(void) {
         board_diag_stage(DIAG_SELFTEST);
         status=board_clp_selftest();
         if(status) { startup_failure=1; board_error=4; board_diag_error(4,status); }
+    }
+    if(!startup_failure) {
+        board_diag_stage(DIAG_WEIGHTS);
+        status=accel_model_prepare(model_nodes,MODEL_NODE_COUNT,model_tensors,
+                                   MODEL_TENSOR_COUNT,model_weights,MODEL_CONSTANT_BYTES);
+        if(status) { startup_failure=1; board_error=5; board_diag_error(5,status); }
+        else {
+            board_uart_text("[YOLO] WEIGHTS prepared layers="); board_uart_u64(accel_weight_layers);
+            board_uart_text(" bytes="); board_uart_u64(accel_weight_bytes);
+            board_uart_text(" values="); board_uart_u64(accel_weight_values);
+            board_uart_text(" cycles="); board_uart_u64(accel_weight_cycles);
+            board_uart_text("\n");
+        }
     }
     if(!startup_failure) {
         board_diag.frame=0; board_diag.phase=PHASE_NONE;

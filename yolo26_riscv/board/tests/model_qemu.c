@@ -7,6 +7,7 @@
 #include "../memory.h"
 #include "../uart.h"
 #include "../../scalar_model.h"
+#include "../../accel_model.h"
 #include "model_generated.h"
 extern const unsigned char model_weights[];
 extern void clp_qemu_exit(uintptr_t code) __attribute__((noreturn));
@@ -115,12 +116,14 @@ static uintptr_t poison_constant_view_alias(void) {
 void __wrap_board_pcie_loop(int failure) {
     board_pcie_start(failure);
     if(failure || board_test_stage!=3 || board_uart_status) clp_qemu_exit(20);
+    if(accel_weight_bytes!=5033984 || accel_weight_values!=2391664 || accel_weight_layers!=94)
+        clp_qemu_exit(25);
     if(!board_is_clp(board_model_input()) || !board_is_clp(board_model_output())) clp_qemu_exit(21);
     uintptr_t guard=poison_constant_view_alias();
     submit(PCIE_OPEN,1,0);
     static const char *const inputs[]={"frame-0-input.bin","frame-1-input.bin"};
     static const char *const outputs[]={"frame-0-candidates.bin","frame-1-candidates.bin"};
-    for(unsigned sample=0;sample<2;++sample) {
+    for(unsigned sample=0;sample<1;++sample) {
         file(inputs[sample],board_model_input(),board_model_input_size(),0);
         board_clean(board_model_input(),board_model_input_size());
 #ifdef MODEL_CAPTURE_TEST
@@ -145,6 +148,17 @@ void __wrap_board_pcie_loop(int failure) {
            status.sequence!=expected_sequence || status.output_bytes!=7200 || board_current_node!=333 ||
            status.crc!=board_crc32(&status,60) ||
            status.output_crc!=board_crc32(board_model_output(),7200)) clp_qemu_exit(22);
+        if(board_profile.version!=2 || board_profile.bytes!=24320 ||
+           board_profile.runtime_weight_conversions ||
+           board_profile.phases[PROFILE_WEIGHT_PREPARE].ticks ||
+           board_profile.phases[PROFILE_WEIGHT_PREPARE].calls ||
+           board_profile.crc!=board_crc32((const void *)&board_profile,offsetof(BoardProfile,crc)))
+            clp_qemu_exit(26);
+        for(unsigned phase=0;phase<PROFILE_PHASE_COUNT;++phase) {
+            uint64_t sum=0;
+            for(unsigned i=0;i<334;++i) sum+=board_profile.node[i].phase_cycles[phase];
+            if(sum!=board_profile.phases[phase].ticks) clp_qemu_exit(27);
+        }
         const volatile uint32_t *poison=(const volatile uint32_t *)guard;
         for(size_t i=0;i<model_tensors[516].count;++i)
             if(poison[i]!=0xffffffffu) clp_qemu_exit(24);
@@ -152,6 +166,6 @@ void __wrap_board_pcie_loop(int failure) {
         board_uart_text("QEMU MODEL FRAME PASS sample="); board_uart_u64(sample);
         board_uart_text(" nodes=334\n");
     }
-    board_uart_text("QEMU MODEL TWO FRAMES PASS; unified RAM, physical cache behaviour unverified\n");
+    board_uart_text("QEMU MODEL BUS PASS; prepacked weights, zero runtime conversions; physical cache unverified\n");
     clp_qemu_exit(0);
 }

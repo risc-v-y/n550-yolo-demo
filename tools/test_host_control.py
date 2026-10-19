@@ -237,5 +237,11 @@ while not (root/'release').exists(): time.sleep(.02)
         self.assertEqual(analyze.call_args.args[2:],(None,None))
         run.assert_not_called(); popen.assert_not_called()
 
+    def test_cleanup_menu_uses_packaged_script(self):
+        with patch('host_control.subprocess.run') as run:
+            host.cleanup()
+        self.assertEqual(run.call_args.args[0], [sys.executable, str(self.root/'tools/cleanup_host.py'), '--apply'])
+        self.assertEqual(run.call_args.kwargs['cwd'], self.root)
+
 
 if __name__=='__main__': unittest.main()

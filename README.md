@@ -35,7 +35,7 @@ python3 tools/full_check.py --reanalyze --report "实际结果目录"
 python3 tools/full_check.py --report "实际结果目录" --page 2
 ```
 
-保留菜单编号：1更新；2/3查看采集/首差异；5后台采集BUS；6进度；7选择旧采集；10加载正式模型；11完整BUS查验；12三页汇总；13旧SVG转PNG；14检查host视频能力；15运行视频三帧；16连续视频检查；17视频报告/错框标记/看PNG；0退出。旧首层专项菜单4/8/9已移除。
+保留菜单编号：1更新；2/3查看采集/首差异；5后台采集BUS；6进度；7选择旧采集；10加载正式模型；11完整BUS查验；12三页汇总；13旧SVG转PNG；14检查host视频能力；15运行视频三帧；16连续视频检查；17视频报告/错框标记/看PNG；18性能报告；19检测效果对照；20清理临时材料；0退出。旧首层专项菜单4/8/9已移除。
 
 ## 2. 视频依赖与演示
 
@@ -132,6 +132,18 @@ bash tools/upload_diagnostics.sh "yolo26_pc/outputs/host-diagnostics/run-实际�
 独立CLP自测仍保留，必要时用加载脚本的 `--clp-selftest` 选择；测试后重新加载正式模型。历史缓存自测、首层三分块固件和一次性迁移工具已移除。
 
 不要整目录删除outputs：旧报告可能引用其他运行目录中的张量。保留本次BUS原始证据、分析结论及有效运行输出。
+
+清理使用 **1更新 → 20**，或下面的封装命令。仅清理安装缓存、源码目录的Python字节码、白名单中的旧构建产物，以及未被引用、无帧数据且在访问板子前就失败的视频试运行。固件、工具链、Python环境、BUS证据、有效/中断帧、计时与精度对照、板端或PCIe故障记录均保留。当前构建的 `n550-board` 和 `host-verify` 保留。扫描所有结果JSON的跨目录引用，无法核实时保留；运行任务持有锁时拒绝清理。
+
+```bash
+# 在host仓库根目录清理已确认可删除的材料；不访问或复位板子
+bash tools/host.sh cleanup
+
+# 仅预览清理清单，不删除文件
+python3 tools/cleanup_host.py
+```
+
+结束标志为 `HOST CLEANUP COMPLETED`，完整删除/保留记录在 `yolo26_pc/outputs/cleanup/host-cleanup-*.json`。清理不按文件日期判旧，兼容host回拨系统时间；不会整目录删除outputs。两个旧UART版Release及标签 `v0.1.0-board-bringup`、`v0.2.0-host-diagnostics` 已删除，交付以当前main分支和 `firmware/` 为准。
 
 平台与同步条件见 [BOARD](docs/BOARD.md)，PCIe协议见 [PCIE](docs/PCIE.md)，日志/错误字段见 [DIAGNOSTICS](docs/DIAGNOSTICS.md)。现场复位、PCIe驱动、DDR及JTAG由平台同事提供。
 

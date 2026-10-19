@@ -122,6 +122,11 @@ def export_png():
     subprocess.run([sys.executable,str(ROOT/'tools/render_results.py'),'--latest'],cwd=ROOT,check=True)
 
 
+def cleanup():
+    # The child owns both locks for the entire scan/delete operation.
+    subprocess.run([sys.executable,str(ROOT/'tools/cleanup_host.py'),'--apply'],cwd=ROOT,check=True)
+
+
 def video(check=False, continuous=False):
     options=[]
     if continuous:
@@ -321,7 +326,7 @@ def progress():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','progress','restore','full-check','full-report','png','video-check','video','video-continuous','video-report','performance','accuracy'))
+    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','progress','restore','full-check','full-report','png','video-check','video','video-continuous','video-report','performance','accuracy','cleanup'))
     args=parser.parse_args()
     if sys.platform!='linux':
         parser.error('Run this menu on the Linux host.')
@@ -330,11 +335,11 @@ def main():
              '10':restore,'11':launch_full,'12':full_pages,'13':export_png,
              '14':lambda:video(check=True),'15':video,
              '16':lambda:video(continuous=True),'17':video_pages,
-             '18':performance_pages,'19':accuracy_pages}
+             '18':performance_pages,'19':accuracy_pages,'20':cleanup}
     names={'update':'1','status':'2','difference':'3','capture':'5','progress':'6',
            'restore':'10','full-check':'11','full-report':'12','png':'13',
            'video-check':'14','video':'15','video-continuous':'16','video-report':'17',
-           'performance':'18','accuracy':'19'}
+           'performance':'18','accuracy':'19','cleanup':'20'}
     while True:
         try:
             if args.action:
@@ -351,7 +356,8 @@ def main():
                   '\n16 Continuous video check (default 30 frames, B flags wrong boxes)'
                   '\n17 Saved video report / flag frames / view PNGs (offline)'
                   '\n18 Timing summary / slowest nodes (offline, 3 pages)'
-                  '\n19 Confidence and duplicate-box comparisons (offline PNGs)\n0 Exit')
+                  '\n19 Confidence and duplicate-box comparisons (offline PNGs)'
+                  '\n20 Clean disposable caches and unused preflight failures (no board access)\n0 Exit')
             answer=input('Choice: ').strip()
             if answer=='0':
                 return 0

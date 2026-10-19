@@ -13,13 +13,20 @@ bash tools/host.sh
 
 已有视频结果可直接选18，不重新推理或计算golden。固件在DDR保存整帧及334节点计数，完成后一次读取。输出：`performance-summary.json`、`performance-page-1/2/3.txt`、全部节点含六阶段周期的 `node-timing.csv`。
 
-权重准备：94层AMU卷积权重在READY前转换、打包一次，逐帧读取。普通DDR预留5MiB，实际5,033,984字节、2,391,664个有效FP16值。原实现每帧重复转换36,955,840次，预打包后为0；启动准备周期单列。
+当前实现、缓存交接与全算子状态统一见 [IMPLEMENTATION](IMPLEMENTATION.md)。本页只维护实测、计时与验收，不重复内核细节。
 
-融合输入准备：对每批≤32个输出位置，直接从NCHW FP32特征图生成FP16 `[ceil(K/32),32位置,32K]` 输入块，边界补零；同批输入在全部M输出通道分块之间复用。沿用原 `amu_half`，保持每个输出K≤32分块的顺序、逐指令舍入及最后独立FP32偏置相加。1×1卷积同样按空间块准备；不同输出块的执行先后允许调整，不改变单个输出的累加。RVV分组/深度卷积保留原路径。原512KiB CLP工作区使用union，前最多256KiB存FP16块，整体布局不变。
+| 计时版本/实现 | host运行 | 平均模型周期 | 每帧记录耗时 |
+|---|---|---:|---:|
+| v1 原始逐块准备 | run-t5240cg4 | 3,817,107,181 | 110.4461秒 |
+| v2 启动权重预打包 | run-ls19m5ja | 2,862,430,017 | 86.0835秒 |
+| v3 标量融合窗口/FP16并复用 | run-llwcyfdf | 2,150,645,371 | 68.1029秒 |
+| v4 RVV窗口提取/整数FP16转换 | 待同三帧现场运行 | 未测 | 未测 |
 
-已测基线：`run-t5240cg4`模型3,817,107,181周期、记录每帧110.45秒；权重预打包版 `run-ls19m5ja` 为2,862,430,017周期、86.08秒。模型周期下降25.0%；该版窗口提取及输入打包合计约77%，本轮融合的实板收益尚未测量。
+前三版均为3个普通帧、无无效计时记录，数据由现场菜单18提供。v3比v2模型周期减少24.9%、每帧记录耗时减少18秒；比v1累计减少43.7%周期、38.3%记录耗时。计时报告本身不是数值验收报告，各新运行仍须确认VIDEO CHECK PASSED。
 
-执行 **1更新 → 15同一三帧 → 确认VIDEO CHECK PASSED → 18新运行三页**，无需节点采集。18匹配同一父目录下状态completed、全部帧号和输入哈希相同且计数有效的早期版本运行；融合版优先比较v2的 `run-ls19m5ja`，没有合格v2才比较v1。保留这两份基线。基线版本/路径/报告SHA256写入summary，缺匹配项明确提示。周期比包含计时开销，需结合实际Host耗时评估。
+v3模型周期分布：input_pack=1,268,354,376（59.0%），input_im2col=244,184,400（11.4%），other_compute=520,756,478（24.2%）。前两项合计相比v2减少31.4%。节点278/274是RVV深度卷积，合计约7.7%模型周期；不把other_compute全部视为可删开销，也不把matrix_wait当作AMU总执行时间。
+
+执行 **1更新 → 15同一三帧 → 确认VIDEO CHECK PASSED → 18新运行三页**，无需节点采集。v4匹配同一父目录下完整、同帧号/输入哈希、计数有效的v3运行，优先 `run-llwcyfdf`；没有合格v3才向前匹配v2/v1。保留三份基线。基线版本/路径/报告SHA256写入summary，缺匹配项明确提示。周期比包含计时开销，需结合Host耗时评估。
 
 | 板端字段 | 计时边界 |
 |---|---|
@@ -32,8 +39,8 @@ bash tools/host.sh
 | 每节点cache | 输入缓存clean及CACHE阶段标记 |
 | 每节点compute | `accel_model_node`调用，包含内部AMU等待、数据打包及同步 |
 | weight_prepare | 帧内权重转换，预打包版本应为0；不含启动准备 |
-| input_im2col | 生成FP32窗口矩阵；v3只用于原RVV分组卷积路径，AMU卷积应为0 |
-| input_pack | v2为FP32矩阵转FP16；v3包括直接窗口提取、FP16打包、尾部补零及缓存clean发布，每空间块一次 |
+| input_im2col | 生成FP32窗口矩阵；v3/v4只用于原RVV分组卷积，AMU卷积应为0 |
+| input_pack | v2仅转换/打包；v3含标量窗口及clean；v4含RVV索引元数据准备、gather、整数RNE、补零与scratch所有权交接，每空间块一次 |
 | matrix_submit | 矩阵配置/加载/乘加/存储提交及内部缓存维护，不能视为纯指令发射 |
 | matrix_wait | 提交后读取xmfflags排空的剩余等待及标志发布；不是AMU总运行时间 |
 | bias_dequant | 卷积最后的独立FP32偏置加法；此版本无量化 |
@@ -41,13 +48,13 @@ bash tools/host.sh
 | 每节点check | 计算后的有限值检查分支；普通模式仅最终输出扫描 |
 | graph_overhead_cycles | 图总周期减去全部节点cache/compute/check之和，含进度日志、诊断提交、记账等 |
 
-计时表写入、读计数器、发布和Host读取有开销。带逐节点trace、中间有限值扫描或节点暂停采集的运行不进入性能排行。启动自测、权重加载不在模型周期内；Host第一帧等待仍可能包含会话初始化。v2/v3的input_pack计时边界不同，比较输入准备时应合并input_im2col、input_pack与内部提交维护，不能只看单项下降。
+计时表写入、读计数器、发布和Host读取有开销。带逐节点trace、中间有限值扫描或节点暂停采集的运行不进入性能排行。启动自测、权重加载不在模型周期内；Host第一帧等待仍可能包含会话初始化。不同版本input_pack边界不同，比较输入准备应合并input_im2col、input_pack与内部维护，不能只看某一项下降。
 
 18询问的是**当前FPGA上N550实际运行频率MHz**，未知直接回车，仅报周期。不能用RTL目标频率或QEMU计数推算板端秒数。Host的PCIe等待包含pbload轮询和工具启动；`elapsed_seconds`含录像保存，但未完整计入最终窗口显示和JSON落盘，不能称为采集到可见延迟。离线golden耗时单列，不算推理帧耗时。
 
-计时表uint64头固定16项：`magic version bytes frame nodes completed options state model_cycles graph_cycles input_check_cycles service_cycles input_crc_cycles output_cycles node_cycles session`。v1共8152字节，随后334组cache/compute/check，末项CRC32存于uint64。v2/v3共24320字节，每节点在三项后追加六阶段周期，再附全局六组cycles/calls、五项权重统计，末项为此前全部字节的CRC32。v3仅改变输入准备方式和阶段含义，布局不变。六阶段顺序与上表相同。五项为weight_pack_bytes、weight_pack_values、weight_pack_cycles、prepared_layers、runtime_weight_conversions。Host兼容三版，核验CRC、会话/帧号、完成数量、阶段总账及权重不变量；离线重建核验SHA256。
+计时表uint64头固定16项：`magic version bytes frame nodes completed options state model_cycles graph_cycles input_check_cycles service_cycles input_crc_cycles output_cycles node_cycles session`。v1共8152字节；v2/v3/v4均24320字节，布局不变。每节点为cache/compute/check及六阶段周期，随后全局六组cycles/calls、五项权重统计，末项uint64承载此前全部字节的CRC32。五项为weight_pack_bytes、weight_pack_values、weight_pack_cycles、prepared_layers、runtime_weight_conversions。Host兼容四版，核验CRC、会话/帧号、完成数量、阶段总账及权重不变量；离线重建核验SHA256。
 
-开发验证：全部94层的权重及窗口输入打包与独立IEEE binary16转换核对，覆盖边界、跨行、尾块复用、负零和半精度舍入边界。QEMU对11种矩阵形状各复用两组输入，加4种真实卷积窗口/偏置/多批量用例，与旧路径逐位比较。BUS整图使用正式启动和PCIe路径，验证每空间块只打包一次及最终输出；QEMU不验证物理缓存或实际速度，现场仍需同三帧RTL golden和计时。
+开发验证：标量打包对独立IEEE binary16；RVV逐位对标量，覆盖随机FP32位型、所有正常FP16相邻值中点附近、不同frm、94层形状、边界/跨行/尾块及复用、异常值。VLEN128/512均验证11种矩阵形状各两组输入及4种真实卷积/偏置/多批量。完整BUS使用正式启动/PCIe路径，7200字节与原QEMU参考逐位一致，5710次输入准备均走RVV；实际C计时表由Python3.8解码。QEMU不证明物理缓存或速度，仍需现场同三帧RTL golden和计时。
 
 ## 检测效果
 

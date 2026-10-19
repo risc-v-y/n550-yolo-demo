@@ -23,6 +23,22 @@ def payload(frame=3, session=7, options=0, version=1):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_v4_rvv_path_and_v3_baseline(self):
+        profile = decode_profile(payload(version=4), 3, 7)
+        self.assertEqual(profile['input_path'], 'rvv_window_fp16_reuse')
+        self.assertEqual(validate_saved_profile(profile, 3), profile)
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name); old = root/'old'; old.mkdir(); new = root/'new'; new.mkdir()
+            row = dict(frame_id=0, input_sha256='abc', pcie_timing=dict(pcie_frame=3, board_profile=profile))
+            old_row = dict(row, pcie_timing=dict(pcie_frame=3, board_profile=decode_profile(payload(version=3), 3, 7)))
+            (old/'report.json').write_text(json.dumps(dict(status='completed', results=[old_row])))
+            (new/'report.json').write_text(json.dumps(dict(results=[row])))
+            result = app.analyze(new, 40)
+            self.assertEqual(result['baseline']['version'], 3)
+            self.assertIn('rvv_window_fp16_reuse', app.render(result, 2))
+            self.assertIn('Invalid timing records: 0', app.render(result, 2))
+            self.assertLessEqual(len(app.render(result, 2).splitlines()), 22)
+
     def test_v3_identity_and_v2_baseline_preference(self):
         profile = decode_profile(payload(version=3), 3, 7)
         self.assertEqual(profile['input_path'], 'fused_window_fp16_reuse')

@@ -201,18 +201,20 @@ def qemu_test():
              '-mno-relax', '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-ffreestanding',
              '-fno-builtin', '-fno-tree-vectorize', '-mstringop-strategy=scalar', '-ffp-contract=off',
              '-ffunction-sections', '-fdata-sections', '-DMODEL_PROFILE=1', '-nostdlib', '-nostartfiles',
-             '-Wl,--gc-sections', '-T', str(SRC/'board/ddr.ld')]
-    subprocess.run([tc+'-gcc', *flags, str(SRC/'board/start.S'), str(SRC/'amu.c'),
-                    str(SRC/'board/tests/prepacked_qemu.c'), '-o', str(elf)], check=True)
-    result = subprocess.run([qemu, '-machine', 'virt', '-cpu',
-                             'rv64,v=true,vlen=512,matrix=on,xtlen=65536,xtrlen=512,xelen=32',
+             '-Wl,--gc-sections', '-I', str(SRC), '-I', str(ROOT/'model'), '-T', str(SRC/'board/ddr.ld')]
+    subprocess.run([tc+'-gcc', *flags, str(SRC/'board/start.S'), str(SRC/'amu.c'), str(SRC/'amu_input_rvv.c'),
+                    str(SRC/'board/tests/prepacked_qemu.c'), str(SRC/'board/tests/input_rvv_qemu.c'),
+                    str(ROOT/'model/model_generated.c'), '-o', str(elf)], check=True)
+    for vlen in (128, 512):
+        result = subprocess.run([qemu, '-machine', 'virt', '-cpu',
+                             'rv64,v=true,vlen={},matrix=on,xtlen=65536,xtrlen=512,xelen=32'.format(vlen),
                              '-m', '128M', '-smp', '1', '-nographic', '-monitor', 'none', '-serial', 'none',
                              '-bios', 'none', '-kernel', str(elf), '-semihosting-config',
                              'enable=on,target=native', '-no-reboot'], capture_output=True, timeout=120)
-    text = (result.stdout+result.stderr).decode(errors='replace')
-    print(text, end='', flush=True)
-    if result.returncode or 'PREPACKED AMU PASS' not in text:
-        raise RuntimeError('Prepacked AMU QEMU test failed')
+        text = (result.stdout+result.stderr).decode(errors='replace')
+        print('VLEN={}: {}'.format(vlen, text), end='', flush=True)
+        if result.returncode or 'PREPACKED AMU PASS' not in text:
+            raise RuntimeError('Prepacked AMU QEMU test failed: exit {}'.format(result.returncode))
 
 
 if __name__ == '__main__':

@@ -29,6 +29,13 @@ typedef struct {
 int amu_pack_conv_input(const Conv2D *p, const float *input, size_t batch,
                         size_t first, size_t columns, uint16_t *storage,
                         size_t capacity, AmuPackedInput *packed);
+int amu_conv_input_shape(const Conv2D *p, size_t *k, size_t *oh, size_t *ow);
+/* Same bits/layout as scalar packing. On the board the caller must publish
+ * the input before CLP reads (the graph boundary already does so). Output
+ * cache ownership is transferred once per block; no FP16 ISA is required. */
+int amu_pack_conv_input_rvv(const Conv2D *p, const float *input, size_t batch,
+                            size_t first, size_t columns, uint16_t *storage,
+                            size_t capacity, AmuPackedInput *packed);
 int amu_init(void);
 int amu_matmul_fp16(const float *a, const float *b, float *c,
                     size_t m, size_t n, size_t k, size_t lda, size_t ldb, size_t ldc);

@@ -10,6 +10,7 @@
 #include "../../accel_model.h"
 #include "model_generated.h"
 extern const unsigned char model_weights[];
+extern uint64_t amu_rvv_input_blocks;
 extern void clp_qemu_exit(uintptr_t code) __attribute__((noreturn));
 extern volatile uint32_t board_current_node,board_test_stage;
 #ifdef MODEL_CAPTURE_TEST
@@ -148,7 +149,7 @@ void __wrap_board_pcie_loop(int failure) {
            status.sequence!=expected_sequence || status.output_bytes!=7200 || board_current_node!=333 ||
            status.crc!=board_crc32(&status,60) ||
            status.output_crc!=board_crc32(board_model_output(),7200)) clp_qemu_exit(22);
-        if(board_profile.version!=3 || board_profile.bytes!=24320 ||
+        if(board_profile.version!=4 || board_profile.bytes!=24320 ||
            board_profile.runtime_weight_conversions ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].ticks ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].calls ||
@@ -164,7 +165,8 @@ void __wrap_board_pcie_loop(int failure) {
             if(board_profile.node[i].phase_cycles[PROFILE_INPUT_IM2COL] ||
                !board_profile.node[i].phase_cycles[PROFILE_INPUT_PACK]) clp_qemu_exit(28);
         }
-        if(board_profile.phases[PROFILE_INPUT_PACK].calls!=input_blocks) clp_qemu_exit(29);
+        if(board_profile.phases[PROFILE_INPUT_PACK].calls!=input_blocks ||
+           amu_rvv_input_blocks!=input_blocks) clp_qemu_exit(29);
         for(unsigned phase=0;phase<PROFILE_PHASE_COUNT;++phase) {
             uint64_t sum=0;
             for(unsigned i=0;i<334;++i) sum+=board_profile.node[i].phase_cycles[phase];

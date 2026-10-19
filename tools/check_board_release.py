@@ -11,6 +11,7 @@ def main():
     root=Path(__file__).resolve().parents[1]
     subprocess.run(['sha256sum','-c','firmware/SHA256SUMS'],cwd=root,check=True)
     subprocess.run([sys.executable,'tools/check_assets.py'],cwd=root,check=True)
+    subprocess.run([sys.executable,'tools/build_operator_audit.py','--check'],cwd=root,check=True)
     elf=(root/'firmware/demo-pcie.elf').read_bytes()
     entry,phoff=struct.unpack_from('<QQ',elf,24)
     entsize,count=struct.unpack_from('<HH',elf,54)

@@ -33,7 +33,7 @@ model_weights_end:
 EOF
 "$tc-gcc" "${flags[@]}" -c "$out/weights.S" -o "$out/weights.o"
 sources=(matmul.c conv2d.c activation.c basic.c basic_rvv.c scalar_model.c
-         rvv_model_ops.c amu.c accel_model.c board/uart.c board/model_io.c board/main.c board/clp_selftest.c board/diagnostics.c
+         rvv_model_ops.c amu.c amu_input_rvv.c accel_model.c board/uart.c board/model_io.c board/main.c board/clp_selftest.c board/diagnostics.c
          "$root/model/model_generated.c")
 "$tc-gcc" "${flags[@]}" -DCLP_PROBE_EMBEDDED=1 -include board/coherent_rvv.h -nostdlib -nostartfiles \
     -Wl,--gc-sections -Wl,-Map="$out/$image.map" -T board/ddr.ld \

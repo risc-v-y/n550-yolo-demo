@@ -17,3 +17,6 @@
 /model/model_generated.h -text whitespace=cr-at-eol
 # Prebuilt handoff artifacts and checksums must retain exact bytes across hosts.
 /firmware/* -text -whitespace
+# Generated audit hashes bind exact LF bytes across Windows/Linux checkouts.
+/docs/operator-audit.csv text eol=lf
+/docs/operator-audit.json text eol=lf

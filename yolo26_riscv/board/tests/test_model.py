@@ -46,7 +46,7 @@ subprocess.run([tc+'-gcc',*flags,'-c','board/start.S','-o',str(out/'start.o')],c
                             f'.incbin "{root}/model/constants.bin"\nmodel_weights_end:\n.balign 64\n')
 subprocess.run([tc+'-gcc',*flags,'-c',str(out/'weights.S'),'-o',str(out/'weights.o')],cwd=src,check=True)
 sources=['matmul.c','conv2d.c','activation.c','basic.c','basic_rvv.c','scalar_model.c',
-         'rvv_model_ops.c','amu.c','accel_model.c','board/uart.c','board/model_io.c',
+         'rvv_model_ops.c','amu.c','amu_input_rvv.c','accel_model.c','board/uart.c','board/model_io.c',
          'board/main.c','board/clp_selftest.c','board/diagnostics.c','board/pcie.c',
          'board/tests/model_qemu.c','board/tests/clp_qemu.c',str(root/'model/model_generated.c')]
 elf=out/'model-qemu.elf'

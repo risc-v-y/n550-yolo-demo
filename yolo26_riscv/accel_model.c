@@ -120,8 +120,8 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
                     size_t count=area-first<CONV_COLUMNS ? area-first : CONV_COLUMNS;
                     AmuPackedInput input_block;
                     uint64_t start=model_ticks();
-                    int status=amu_pack_conv_input(p,input,batch,first,count,conv_scratch.fp16,
-                                                   sizeof(conv_scratch.fp16),&input_block);
+                    int status=amu_pack_conv_input_rvv(p,input,batch,first,count,conv_scratch.fp16,
+                                                       sizeof(conv_scratch.fp16),&input_block);
                     model_profile_end(PROFILE_INPUT_PACK,start);
                     if(status || amu_matmul_packed_fp16(packed,&input_block,dest+first,area)) return -1;
                     /* All M blocks have completed: next pack may reuse scratch. */

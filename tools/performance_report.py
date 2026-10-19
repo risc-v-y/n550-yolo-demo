@@ -157,7 +157,8 @@ def render(report, page):
             lines += ['Core MHz: {}'.format(report['core_mhz']),
                       'Model {:.6f}s | board service {:.6f}s'.format(report['model_seconds'], report['service_seconds'])]
         else: lines += ['Core frequency unknown: seconds/FPS are not inferred.']
-        lines += ['Fused input_pack includes windows/conversion/cache publication.' if report.get('input_path') == 'fused_window_fp16_reuse'
+        lines += ['RVV input_pack: gather/integer RNE/scratch ownership.' if report.get('input_path') == 'rvv_window_fp16_reuse'
+                  else 'Fused input_pack includes windows/conversion/cache publication.' if report.get('input_path') == 'fused_window_fp16_reuse'
                   else 'Submit includes cache maintenance; wait is remaining drain.',
                   'Excluded trace/finite/capture frames: {}'.format(len(report['excluded'])),
                   'Invalid timing records: {}'.format(len(report['errors']))]

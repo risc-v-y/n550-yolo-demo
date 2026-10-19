@@ -6,6 +6,7 @@ static uint16_t weights[64*1152] __attribute__((aligned(64)));
 static uint16_t inputs[1152*32] __attribute__((aligned(64)));
 static float columns[1152*32];
 ModelProfilePhase model_profile_phases[PROFILE_PHASE_COUNT];
+extern void test_input_rvv(void);
 static uintptr_t host_call(uintptr_t op,uintptr_t arg) {
     register uintptr_t a0 __asm__("a0")=op;
     register uintptr_t a1 __asm__("a1")=arg;
@@ -28,6 +29,7 @@ static uint64_t fingerprint(const uint16_t *p,size_t n) {
 }
 int main(void) {
     if(amu_init()) platform_exit(1);
+    test_input_rvv();
     static const size_t shapes[][3]={{1,1,1},{3,5,16},{3,5,17},{16,35,27},
         {32,32,31},{32,32,32},{33,35,33},{33,35,65},{5,7,96},{1,17,1152},{64,2,576}};
     for(unsigned test=0;test<sizeof(shapes)/sizeof(shapes[0]);++test) {
@@ -53,7 +55,7 @@ int main(void) {
             for(size_t first=0;first<n;first+=32) {
                 AmuPackedInput input;
                 size_t count=n-first<32 ? n-first : 32;
-                if(amu_pack_conv_input(&p,b,0,first,count,inputs,sizeof(inputs),&input)) platform_exit(7);
+                if(amu_pack_conv_input_rvv(&p,b,0,first,count,inputs,sizeof(inputs),&input)) platform_exit(7);
                 uint64_t before=fingerprint(inputs,input.bytes/2);
                 uint64_t calls=model_profile_phases[PROFILE_INPUT_PACK].calls;
                 if(amu_matmul_packed_fp16(&descriptor,&input,packed_output+first,n) ||
@@ -93,7 +95,7 @@ int main(void) {
                     }
             AmuPackedInput input;
             if(amu_matmul_fp16(a,columns,legacy,m,count,k,k,32,35) ||
-               amu_pack_conv_input(p,b,batch,first,count,inputs,sizeof(inputs),&input) ||
+               amu_pack_conv_input_rvv(p,b,batch,first,count,inputs,sizeof(inputs),&input) ||
                amu_matmul_packed_fp16(&weight,&input,packed_output,35)) platform_exit(11);
             for(size_t row=0;row<m;++row) for(size_t col=0;col<count;++col) {
                 size_t at=row*35+col;
@@ -105,6 +107,6 @@ int main(void) {
             }
         }
     }
-    host_call(4,(uintptr_t)"PREPACKED AMU PASS: 11 matrix shapes x2, 4 convolution shapes, exact FP32 and reuse\n");
+    host_call(4,(uintptr_t)"PREPACKED AMU PASS: RVV bits/94 layouts, 11 matrix shapes x2, 4 convolution shapes\n");
     platform_exit(0);
 }

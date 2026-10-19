@@ -163,6 +163,9 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         layout[0]=3
         backend.infer_bytes(self.tensor())
         self.assertEqual(backend.last_timing['board_profile']['input_path'],'fused_window_fp16_reuse')
+        layout[0]=4
+        backend.infer_bytes(self.tensor())
+        self.assertEqual(backend.last_timing['board_profile']['input_path'],'rvv_window_fp16_reuse')
         corrupt[0]=True
         with self.assertRaisesRegex(ValueError,'timing CRC'):
             backend.infer_bytes(self.tensor())

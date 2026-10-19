@@ -31,7 +31,7 @@ UART 等待有上限，初始化验证失败或发送超时后禁用后续日志
 
 `board_diag` 的前816字节维持版本1布局；新固件追加两个uint64字段（计时表地址、长度），共832字节，64字节对齐。PCIe信息区通告实际长度，新Host兼容816/832字节。旧RX/RPC计数字段保留。诊断快照经缓存clean发布，地址见 `firmware/pcie-symbols.txt`。
 
-`board_profile` 是独立计时表，当前v3与v2均为24320字节，Host仍兼容v1的8152字节。v3表示融合窗口/FP16打包并按空间块复用，菜单18显示 `fused_window_fp16_reuse`。PCIe DONE前完成CRC和clean，绑定会话/帧号；Host校验后保存到逐帧JSON的 `pcie_timing.board_profile`。每帧读取一次，正常推理不逐节点停顿。结构、计时边界和操作统一见 [TUNING](TUNING.md)。
+`board_profile` 是独立计时表，v2/v3/v4均为24320字节，Host仍兼容v1的8152字节。当前v4表示RVV窗口读取/整数FP16转换，菜单18显示 `rvv_window_fp16_reuse`；旧v3标量融合仍显示 `fused_window_fp16_reuse`。PCIe DONE前完成CRC和clean，绑定会话/帧号；Host校验后保存到逐帧JSON的 `pcie_timing.board_profile`。每帧读取一次，正常推理不逐节点停顿。结构、计时边界和操作统一见 [TUNING](TUNING.md)。
 
 CPU trap 使用独立 4 KiB 异常栈，保存整数寄存器及 `mcause/mepc/mtval`，尽力打印并发布 PCIe ERROR，然后停车；不自动恢复，不保存浮点/向量/矩阵寄存器。DDR、缓存指令或异常栈也故障时，记录可能不完整。
 

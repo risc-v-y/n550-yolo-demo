@@ -78,22 +78,30 @@ int amu_pack_weights(const float *a,size_t m,size_t k,size_t lda,
     return 0;
 }
 
+int amu_conv_input_shape(const Conv2D *p,size_t *k,size_t *oh,size_t *ow) {
+    if(!p || !k || !oh || !ow || !p->batch || !p->in_channels || !p->in_h || !p->in_w ||
+       !p->out_channels || !p->kernel_h || !p->kernel_w || !p->stride_h || !p->stride_w ||
+       p->groups!=1 || p->in_channels>AMU_INPUT_MAX_K/p->kernel_h/p->kernel_w) return -1;
+    uint64_t ph=(uint64_t)p->in_h+2ull*p->pad_h, pw=(uint64_t)p->in_w+2ull*p->pad_w;
+    if(ph<p->kernel_h || pw<p->kernel_w) return -1;
+    size_t h=(ph-p->kernel_h)/p->stride_h+1, w=(pw-p->kernel_w)/p->stride_w+1;
+    size_t plane=(size_t)p->in_h*p->in_w;
+    if(h>SIZE_MAX/w ||
+       p->batch>SIZE_MAX/plane/p->in_channels/sizeof(float)) return -1;
+    *k=(size_t)p->in_channels*p->kernel_h*p->kernel_w; *oh=h; *ow=w;
+    return 0;
+}
 int amu_pack_conv_input(const Conv2D *p,const float *input,size_t batch,
                         size_t first,size_t columns,uint16_t *storage,
                         size_t capacity,AmuPackedInput *packed) {
     if(!packed) return -1;
     *packed=(AmuPackedInput){0};
-    if(!p || !input || !storage || (uintptr_t)storage%64 || !columns || columns>32 ||
-       !p->batch || batch>=p->batch || !p->in_channels || !p->in_h || !p->in_w ||
-       !p->out_channels || !p->kernel_h || !p->kernel_w || !p->stride_h || !p->stride_w ||
-       p->groups!=1 || p->in_channels>AMU_INPUT_MAX_K/p->kernel_h/p->kernel_w) return -1;
-    size_t k=(size_t)p->in_channels*p->kernel_h*p->kernel_w;
-    uint64_t ph=(uint64_t)p->in_h+2ull*p->pad_h, pw=(uint64_t)p->in_w+2ull*p->pad_w;
-    if(ph<p->kernel_h || pw<p->kernel_w) return -1;
-    size_t oh=(ph-p->kernel_h)/p->stride_h+1, ow=(pw-p->kernel_w)/p->stride_w+1;
+    size_t k,oh,ow;
+    if(!input || !storage || (uintptr_t)storage%64 || !columns || columns>32 ||
+       amu_conv_input_shape(p,&k,&oh,&ow) || batch>=p->batch || first>=oh*ow ||
+       columns>oh*ow-first) return -1;
     size_t plane=(size_t)p->in_h*p->in_w, bytes=amu_packed_weight_bytes(32,k);
-    if(oh>SIZE_MAX/ow || first>=oh*ow || columns>oh*ow-first || capacity<bytes ||
-       p->batch>SIZE_MAX/plane/p->in_channels/sizeof(float)) return -1;
+    if(capacity<bytes) return -1;
 #ifdef YOLO_N550_BOARD
     DIAG_PHASE(PHASE_AMU_PACK);
 #endif

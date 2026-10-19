@@ -113,6 +113,43 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         self.assertEqual(backend.last_status['error'],0x42)
         self.assertEqual(struct.unpack('<I',self.read(0x80a20000,4))[0],0)
 
+    def test_legacy_diagnostics_and_profile_roundtrip(self):
+        # Previous 816-byte snapshot firmware remains supported.
+        info=bytearray(self.read(MAILBOX,64))
+        struct.pack_into('<I',info,48,816)
+        struct.pack_into('<I',info,60,zlib.crc32(info[:60]))
+        self.write(MAILBOX,info)
+        backend=self.connect()
+        self.assertEqual(backend.diag_bytes,816)
+        backend.infer_bytes(self.tensor())
+        backend.close(); self.backend=None
+        # New extension, actual transport reader and session/frame validation.
+        struct.pack_into('<I',info,48,832)
+        struct.pack_into('<I',info,60,zlib.crc32(info[:60]))
+        self.write(MAILBOX,info)
+        from board_profile import PROFILE_MAGIC,PROFILE_BYTES
+        backend=self.connect()
+        original=backend.link.read
+        corrupt=[False]
+        def read(address,size,deadline):
+            if address==0x80a30000:
+                fields=[PROFILE_MAGIC,1,PROFILE_BYTES,backend.frame,334,334,0,1,
+                        5000,4500,400,7000,800,600,3340,backend.session]
+                raw=struct.pack('<16Q',*fields)+struct.pack('<3Q',2,7,1)*334
+                data=raw+struct.pack('<Q',zlib.crc32(raw))
+                return bytes([data[0]^1])+data[1:] if corrupt[0] else data
+            data=original(address,size,deadline)
+            if address==backend.diag_address and size==832:
+                data=data[:816]+struct.pack('<QQ',0x80a30000,PROFILE_BYTES)
+            return data
+        backend.link.read=read
+        backend.infer_bytes(self.tensor())
+        self.assertEqual(backend.last_timing['board_profile']['model_cycles'],5000)
+        self.assertEqual(len(backend.last_timing['board_profile']['nodes_detail']),334)
+        corrupt[0]=True
+        with self.assertRaisesRegex(ValueError,'timing CRC'):
+            backend.infer_bytes(self.tensor())
+
     def test_open_waits_for_previous_error_snapshot(self):
         backend=self.connect()
         (self.root/'badinput').touch()

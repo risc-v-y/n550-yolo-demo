@@ -1,7 +1,25 @@
 #ifndef YOLO_BOARD_DIAGNOSTICS_H
 #define YOLO_BOARD_DIAGNOSTICS_H
 #include <stdint.h>
+#include <stddef.h>
 #include "../scalar_model.h"
+
+#define BOARD_PROFILE_NODES 334u
+#define BOARD_PROFILE_MAGIC UINT64_C(0x3152465036325955)
+/* Little-endian uint64 fields. CRC covers all bytes before crc; read only
+ * after PCIe DONE. Timings are CPU cycles, never QEMU performance estimates. */
+typedef struct { uint64_t cache, compute, check; } BoardNodeProfile;
+typedef struct {
+    uint64_t magic,version,bytes,frame,nodes,completed,options,state;
+    uint64_t model_cycles,graph_cycles,input_check_cycles,service_cycles;
+    uint64_t input_crc_cycles,output_cycles,node_cycles,reserved;
+    BoardNodeProfile node[BOARD_PROFILE_NODES];
+    uint64_t crc;
+} BoardProfile;
+_Static_assert(sizeof(BoardProfile)==8152,"profile wire layout");
+extern volatile BoardProfile board_profile;
+void board_profile_begin(unsigned nodes);
+void board_profile_end(uint64_t graph_start,uint64_t input_cycles);
 enum { DIAG_BOOT=1, DIAG_UART, DIAG_AMU_INIT, DIAG_SELFTEST, DIAG_READY,
        DIAG_RECEIVE, DIAG_RUN, DIAG_DONE, DIAG_FAILED, DIAG_TRAP };
 enum { PHASE_NONE, PHASE_INPUT, PHASE_NODE_BEGIN, PHASE_CACHE, PHASE_COMPUTE,
@@ -18,8 +36,11 @@ typedef struct {
     uint64_t trap_cause, trap_pc, trap_value, node_start, node_cycles, inputs, outputs, options;
     uint64_t tensors[6][7]; /* id,dtype,rank,shape[4]; four inputs then two outputs */
     uint64_t registers[32]; /* integer x0..x31, meaningful after a CPU trap */
+    /* Optional extension; the original 816-byte version-1 prefix is stable. */
+    uint64_t profile_address,profile_bytes;
 } BoardDiagnostics;
-_Static_assert(sizeof(BoardDiagnostics)==816,"diagnostic wire layout");
+_Static_assert(offsetof(BoardDiagnostics,profile_address)==816,"diagnostic prefix");
+_Static_assert(sizeof(BoardDiagnostics)==832,"diagnostic wire layout");
 extern volatile BoardDiagnostics board_diag;
 void board_diag_init(void);
 void board_diag_commit(void);

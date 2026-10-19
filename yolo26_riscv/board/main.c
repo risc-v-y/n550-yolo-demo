@@ -14,6 +14,7 @@ volatile uintptr_t board_error, board_trap_cause, board_trap_pc, board_trap_valu
 volatile uint32_t board_current_node;
 int board_clp_selftest(void);
 static int startup_failure;
+_Static_assert(MODEL_NODE_COUNT==BOARD_PROFILE_NODES,"profile node count");
 __attribute__((noreturn)) void platform_exit(uintptr_t code);
 static void initialize_clp(void) {
     size_t bytes=(size_t)(__clp_end-__clp_start);
@@ -64,7 +65,9 @@ int board_model_run(void) {
     board_diag.inputs=board_diag.outputs=board_diag.node_start=board_diag.node_cycles=0;
     board_diag.element=board_diag.observed=board_diag.expected=0;
     board_diag.phase=PHASE_INPUT;
+    board_profile_begin(MODEL_NODE_COUNT);
     board_diag_stage(DIAG_RUN);
+    uint64_t input_start=board_diag_ticks();
     /* Reject corrupt/nonfinite inputs even if the PCIe CRC was valid. */
     const unsigned char *input=board_model_input();
     for(size_t i=0;i<board_model_input_size();i+=4) {
@@ -75,20 +78,27 @@ int board_model_run(void) {
             board_diag_error(0x30,-1); return -1;
         }
     }
+    uint64_t graph_start=board_diag_ticks();
+    uint64_t input_cycles=graph_start-input_start;
     accel_rvv_nodes=accel_amu_nodes=accel_scalar_nodes=accel_alias_nodes=0;
     for(size_t step=0;step<MODEL_NODE_COUNT;++step) {
         board_current_node=(uint32_t)step;
         const ModelNode *node=model_nodes+step;
         board_diag_node((uint32_t)step,node,model_tensors);
+        uint64_t cache_start=board_diag_ticks();
         board_diag_phase(PHASE_CACHE);
         for(size_t i=0;i<node->inputs;++i) {
             const ModelTensor *t=model_tensors+node->in[i];
             board_clean((t->constant ? model_weights : arena)+t->offset,t->bytes);
         }
+        uint64_t cache_cycles=board_diag_ticks()-cache_start;
         board_pcie_node_begin((uint32_t)step,node,model_tensors,arena,model_weights);
         board_diag_phase(PHASE_COMPUTE);
+        uint64_t compute_start=board_diag_ticks();
         int status=accel_model_node(node,model_tensors,arena,model_weights);
+        uint64_t compute_cycles=board_diag_ticks()-compute_start;
         if(status) { board_diag_error(0x31,status); return -2; }
+        uint64_t check_start=board_diag_ticks();
         if((board_diag.options&DIAG_FINITE) || step+1==MODEL_NODE_COUNT) {
             board_diag_phase(PHASE_CHECK);
             for(unsigned i=0;i<node->outputs;++i) {
@@ -105,12 +115,17 @@ int board_model_run(void) {
                 }
             }
         }
+        uint64_t check_cycles=board_diag_ticks()-check_start;
+        board_profile.node[step]=(BoardNodeProfile){cache_cycles,compute_cycles,check_cycles};
+        board_profile.node_cycles+=cache_cycles+compute_cycles+check_cycles;
+        board_profile.completed=step+1;
         board_diag.node_cycles=board_diag_ticks()-board_diag.node_start;
         board_diag.phase=PHASE_NODE_END;
         board_diag_commit();
         if(board_diag.options&DIAG_TRACE) board_diag_event();
         if(board_pcie_node_end()) return -2;
     }
+    board_profile_end(graph_start,input_cycles);
     board_diag_stage(DIAG_DONE);
     return 0;
 }

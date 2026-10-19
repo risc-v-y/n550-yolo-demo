@@ -180,13 +180,16 @@ class PCIeBackend:
         self.last_timing={}
         self.last_diagnostic=None
         self.last_status=None
+        self.profile_descriptor=None
         try:
             deadline=time.monotonic()+infer_timeout
             values=INFO.unpack(checked(self.link.read(MAILBOX,64,deadline)))
-            if (values[:3]!=(MAGIC,1,256) or values[7:11]!=(INPUT_BYTES,self.output_bytes,816,self.node_count)
+            if (values[:3]!=(MAGIC,1,256) or (values[7],values[8],values[10])!=(INPUT_BYTES,self.output_bytes,self.node_count)
+                    or values[9] not in (816,832)
                     or (values[3]&self.required_capability)!=self.required_capability):
                 raise ValueError('Incompatible PCIe firmware; load firmware/'+self.firmware_name)
             self.input_address,self.output_address,self.diag_address=values[4:7]
+            self.diag_bytes=values[9]
             self.capture_address=values[11] if values[3]&1 else 0
             if capture and (not self.capture_address or self.capture_address%64 or
                             not BASE<=self.capture_address<=MAILBOX-512):
@@ -195,7 +198,7 @@ class PCIeBackend:
                 if address%64 or not (BASE<=address and address+size<=MAILBOX or
                                      MODEL_DDR_BASE<=address and address+size<=MODEL_DDR_END):
                     raise ValueError('Firmware reports a buffer outside the reserved model DDR')
-            if self.diag_address<BASE or self.diag_address%64 or self.diag_address+816>MAILBOX:
+            if self.diag_address<BASE or self.diag_address%64 or self.diag_address+self.diag_bytes>MAILBOX:
                 raise ValueError('Firmware reports diagnostics outside reserved normal DDR')
             self.info={'input_address':self.input_address,'output_address':self.output_address,
                        'diagnostic_address':self.diag_address,'input_bytes':INPUT_BYTES,
@@ -262,8 +265,12 @@ class PCIeBackend:
 
     def _snapshot(self,deadline):
         from board_diagnostics import decode_snapshot
+        self.profile_descriptor=None
         try:
-            self.last_diagnostic=decode_snapshot(self.link.read(self.diag_address,816,deadline))
+            raw=self.link.read(self.diag_address,self.diag_bytes,deadline)
+            self.last_diagnostic=decode_snapshot(raw[:816])
+            if self.diag_bytes==832:
+                self.profile_descriptor=struct.unpack_from('<QQ',raw,816)
             self.diagnostic({'type':'board','diagnostic':self.last_diagnostic})
         except Exception as exc:
             self.diagnostic({'type':'pcie_diagnostic_error','message':str(exc)})
@@ -316,6 +323,20 @@ class PCIeBackend:
             self.last_timing={'upload_seconds':uploaded-started,'run_roundtrip_seconds':inferred-uploaded,
                               'download_seconds':time.monotonic()-inferred,'pcie_frame':self.frame}
             self._snapshot(deadline)
+            if self.diag_bytes==832:
+                if self.profile_descriptor is None:
+                    raise ValueError('Missing board timing descriptor')
+                address,size=self.profile_descriptor
+                if address or size:
+                    from board_profile import decode_profile,PROFILE_BYTES
+                    if size!=PROFILE_BYTES or address%64 or not BASE<=address<=MAILBOX-size:
+                        raise ValueError('Invalid board timing address/length')
+                    profile_start=time.monotonic()
+                    self.last_timing['board_profile']=decode_profile(
+                        self.link.read(address,size,deadline),self.frame,self.session)
+                    if self._status(deadline)!=state:
+                        raise ValueError('PCIe ownership changed during timing read')
+                    self.last_timing['profile_read_seconds']=time.monotonic()-profile_start
             return result
         except BaseException:
             self.failed=True

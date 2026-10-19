@@ -6,7 +6,24 @@
 #include "uart.h"
 #endif
 volatile BoardDiagnostics board_diag __attribute__((aligned(64)));
+volatile BoardProfile board_profile __attribute__((aligned(64)));
 static uint64_t frame_start;
+static uint64_t profile_start;
+void board_profile_begin(unsigned nodes) {
+    volatile uint64_t *p=(volatile uint64_t *)&board_profile;
+    for(unsigned i=0;i<sizeof(board_profile)/8;++i) p[i]=0;
+    board_profile.magic=BOARD_PROFILE_MAGIC; board_profile.version=1;
+    board_profile.bytes=sizeof(board_profile); board_profile.frame=board_diag.frame;
+    board_profile.nodes=nodes; board_profile.options=board_diag.options;
+    profile_start=board_diag_ticks();
+}
+void board_profile_end(uint64_t graph_start,uint64_t input_cycles) {
+    uint64_t end=board_diag_ticks();
+    board_profile.model_cycles=end-profile_start;
+    board_profile.graph_cycles=end-graph_start;
+    board_profile.input_check_cycles=input_cycles;
+    board_profile.state=1;
+}
 void board_diag_event(void) {
 #if defined(YOLO_N550_BOARD) || defined(BOARD_LOG_TEST)
     if(board_uart_status) return;
@@ -27,7 +44,9 @@ void board_diag_event(void) {
         board_uart_text(" node_cycles="); board_uart_u64(board_diag.node_cycles);
     }
     if(board_diag.stage==DIAG_DONE) {
-        board_uart_text(" frame_cycles="); board_uart_u64(board_diag_ticks()-frame_start);
+        board_uart_text(" frame_cycles=");
+        board_uart_u64(board_profile.state==1 && board_profile.frame==board_diag.frame ?
+                       board_profile.model_cycles : board_diag_ticks()-frame_start);
     }
     if(board_diag.stage==DIAG_FAILED || board_diag.stage==DIAG_TRAP) {
         board_uart_text(" error="); board_uart_hex(board_diag.error);
@@ -65,8 +84,11 @@ void board_diag_event(void) {
 uint64_t board_diag_ticks(void) {
 #ifdef YOLO_N550_BOARD
     uint64_t ticks;
-    __asm__ volatile("rdcycle %0" : "=r"(ticks));
+    __asm__ volatile("rdcycle %0" : "=r"(ticks) : : "memory");
     return ticks;
+#elif defined(BOARD_PROFILE_TEST)
+    extern uint64_t board_profile_test_ticks;
+    return board_profile_test_ticks;
 #else
     return 0;
 #endif
@@ -83,6 +105,10 @@ void board_diag_init(void) {
     board_diag.node=board_diag.tensor=UINT64_MAX;
     board_diag.op=UINT64_MAX;
     board_diag.stage=DIAG_BOOT;
+#ifdef YOLO_N550_BOARD
+    board_diag.profile_address=(uintptr_t)&board_profile;
+    board_diag.profile_bytes=sizeof(board_profile);
+#endif
     board_diag_commit();
 }
 void board_diag_stage(unsigned stage) {

@@ -214,5 +214,28 @@ while not (root/'release').exists(): time.sleep(.02)
         finally:
             if child.poll() is None: child.kill(); child.wait(timeout=5)
 
+    def test_performance_menu_only_reuses_saved_data(self):
+        directory=self.root/'saved-video'
+        with patch.object(host,'select_video_run',return_value=directory), \
+             patch('performance_report.analyze',return_value={'fixture':True}) as analyze, \
+             patch('performance_report.render',side_effect=lambda r,p:'PERFORMANCE PAGE={}/3\n'.format(p)), \
+             patch('builtins.input',side_effect=['','','','']), \
+             patch('host_control.subprocess.run') as run,patch('sys.stdout',new_callable=io.StringIO) as output:
+            host.performance_pages()
+        analyze.assert_called_once_with(directory,0.)
+        run.assert_not_called()
+        self.assertIn('PAGE=3/3',output.getvalue())
+
+    def test_accuracy_menu_reuses_candidates_without_board_or_golden(self):
+        directory=self.root/'saved-video'
+        with patch.object(host,'select_video_run',return_value=directory), \
+             patch('accuracy_review.analyze',return_value={'frames':[]}) as analyze, \
+             patch('builtins.input',side_effect=['','','n']), \
+             patch('host_control.subprocess.run') as run,patch('host_control.subprocess.Popen') as popen:
+            host.accuracy_pages()
+        self.assertEqual(analyze.call_args.args[0],directory)
+        self.assertEqual(analyze.call_args.args[2:],(None,None))
+        run.assert_not_called(); popen.assert_not_called()
+
 
 if __name__=='__main__': unittest.main()

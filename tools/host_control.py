@@ -143,8 +143,8 @@ def video(check=False, continuous=False):
         subprocess.run(command,cwd=ROOT,check=True)
 
 
-def video_pages():
-    """Select/flag/recheck old or new video runs; never launches the board."""
+def select_video_run():
+    """Shared selection honors latest.json when the host clock is backdated."""
     base=ROOT/'yolo26_pc/outputs/host-video'
     runs=[]
     pointer=base/'latest.json'
@@ -169,6 +169,13 @@ def video_pages():
         directory=Path(answer).expanduser().resolve()
     if not (directory/'report.json').is_file(): raise ValueError('Missing report.json in '+str(directory))
     print('Selected:',directory)
+    return directory
+
+
+def video_pages():
+    """Select/flag/recheck old or new video runs; never launches the board."""
+    directory=select_video_run()
+    if directory is None: return
     marked=input('Wrong-box frame IDs, comma separated [Enter: none]: ').strip()
     ids=[]
     if marked:
@@ -196,6 +203,40 @@ def video_pages():
         files=[str(directory/summary['preview'])]
         files += [str(directory/'detected-{:06d}.png'.format(r['frame_id'])) for r in summary['flags']
                   if (directory/'detected-{:06d}.png'.format(r['frame_id'])).is_file()]
+        subprocess.Popen(['eog','--new-instance']+files,cwd=ROOT,start_new_session=True,
+                         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+
+
+def performance_pages():
+    directory=select_video_run()
+    if directory is None: return
+    mhz=float(input('Actual N550 core MHz [Enter: unknown, cycles only]: ').strip() or '0')
+    from performance_report import analyze,render
+    with guard(workspace()/'control.lock'):
+        result=analyze(directory,mhz)
+    for page in (1,2,3):
+        print(render(result,page),end='',flush=True)
+        if input('Enter: next/return; q: menu: ').strip().lower()=='q': break
+    print('Saved performance pages and node-timing.csv:',directory)
+
+
+def accuracy_pages():
+    directory=select_video_run()
+    if directory is None: return
+    frames=input('Frame IDs [Enter: first/middle/last; comma separated]: ').strip()
+    labels=input('Complete manual labels JSON [Enter: visual comparison only]: ').strip().strip('"')
+    import secrets
+    from accuracy_review import analyze
+    output=ROOT/'yolo26_pc/outputs/accuracy-review'/('review-'+secrets.token_hex(4))
+    with guard(workspace()/'control.lock'):
+        result=analyze(directory,output,[int(i) for i in frames.split(',')] if frames else None,
+                       Path(labels).expanduser().resolve() if labels else None)
+    if input('Open comparison PNGs in eog? [y/N]: ').strip().lower()=='y':
+        import os
+        import shutil
+        if not os.environ.get('DISPLAY') or not shutil.which('eog'):
+            raise ValueError('eog needs the working graphical session; PNGs are saved')
+        files=[str(output/'comparison-{:06d}.png'.format(r['frame_id'])) for r in result['frames']]
         subprocess.Popen(['eog','--new-instance']+files,cwd=ROOT,start_new_session=True,
                          stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
@@ -280,7 +321,7 @@ def progress():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','progress','restore','full-check','full-report','png','video-check','video','video-continuous','video-report'))
+    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','progress','restore','full-check','full-report','png','video-check','video','video-continuous','video-report','performance','accuracy'))
     args=parser.parse_args()
     if sys.platform!='linux':
         parser.error('Run this menu on the Linux host.')
@@ -288,10 +329,12 @@ def main():
              '5':launch,'6':progress,'7':choose,
              '10':restore,'11':launch_full,'12':full_pages,'13':export_png,
              '14':lambda:video(check=True),'15':video,
-             '16':lambda:video(continuous=True),'17':video_pages}
+             '16':lambda:video(continuous=True),'17':video_pages,
+             '18':performance_pages,'19':accuracy_pages}
     names={'update':'1','status':'2','difference':'3','capture':'5','progress':'6',
            'restore':'10','full-check':'11','full-report':'12','png':'13',
-           'video-check':'14','video':'15','video-continuous':'16','video-report':'17'}
+           'video-check':'14','video':'15','video-continuous':'16','video-report':'17',
+           'performance':'18','accuracy':'19'}
     while True:
         try:
             if args.action:
@@ -306,7 +349,9 @@ def main():
                   '\n14 Check host video processing (no board access)'
                   '\n15 Run sequential video (3 frames, PCIe, display + PNG + MP4)'
                   '\n16 Continuous video check (default 30 frames, B flags wrong boxes)'
-                  '\n17 Saved video report / flag frames / view PNGs (offline)\n0 Exit')
+                  '\n17 Saved video report / flag frames / view PNGs (offline)'
+                  '\n18 Timing summary / slowest nodes (offline, 3 pages)'
+                  '\n19 Confidence and duplicate-box comparisons (offline PNGs)\n0 Exit')
             answer=input('Choice: ').strip()
             if answer=='0':
                 return 0

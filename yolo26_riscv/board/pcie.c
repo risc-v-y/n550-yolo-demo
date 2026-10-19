@@ -178,9 +178,12 @@ void board_pcie_poll(void) {
         publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;
     }
     status.frame=request.frame;
+    uint64_t service_start=board_diag_ticks();
     publish(PCIE_BUSY,0,0);
+    uint64_t crc_start=board_diag_ticks();
     board_finish_write(board_model_input(),board_model_input_size());
     uint32_t crc=board_crc32(board_model_input(),board_model_input_size());
+    uint64_t crc_cycles=board_diag_ticks()-crc_start;
     if(crc!=request.input_crc) {
         board_diag.frame=request.frame; board_diag.observed=crc; board_diag.expected=request.input_crc;
         board_diag_error(PCIE_BAD_INPUT,0);
@@ -189,6 +192,7 @@ void board_pcie_poll(void) {
     }
     board_diag.frame=request.frame; board_diag.options=request.options;
     int result=board_model_run();
+    uint64_t output_start=board_diag_ticks();
     if(!result) {
         status.output_bytes=board_model_output_size();
         status.output_crc=board_crc32(board_model_output(),status.output_bytes);
@@ -198,6 +202,14 @@ void board_pcie_poll(void) {
      * DONE; host may reuse them only AFTER it has downloaded the old output. */
     board_prepare_write(board_model_input(),board_model_input_size());
     board_diag_commit();
+    if(!result && board_profile.magic==BOARD_PROFILE_MAGIC) {
+        board_profile.reserved=status.session;
+        board_profile.input_crc_cycles=crc_cycles;
+        board_profile.output_cycles=board_diag_ticks()-output_start;
+        board_profile.service_cycles=board_diag_ticks()-service_start;
+        board_profile.crc=board_crc32((const void *)&board_profile,offsetof(BoardProfile,crc));
+        board_clean((const void *)&board_profile,sizeof(board_profile));
+    }
     unsigned error=board_diag.error==PCIE_ABORTED ? PCIE_ABORTED : PCIE_MODEL_ERROR;
     publish(result ? PCIE_ERROR : PCIE_DONE,result ? error : 0,result);
 }

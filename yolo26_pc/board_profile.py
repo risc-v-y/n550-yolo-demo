@@ -24,7 +24,7 @@ def decode_profile(raw, frame, session):
         raise ValueError('Board timing CRC mismatch')
     report = dict(zip(FIELDS, struct.unpack_from('<16Q', raw)))
     version = report['version']
-    if (version not in (1, 2) or report['magic'] != PROFILE_MAGIC or
+    if (version not in (1, 2, 3) or report['magic'] != PROFILE_MAGIC or
             report['bytes'] != (PROFILE_BYTES if version == 1 else PROFILE_V2_BYTES) or
             report['bytes'] != len(raw)):
         raise ValueError('Unsupported board timing layout')
@@ -40,12 +40,12 @@ def decode_profile(raw, frame, session):
         cache, compute, check = struct.unpack_from('<3Q', raw, 128+i*stride)
         nodes.append(dict(node=i, cache=cache, compute=compute, check=check,
                           total=cache+compute+check))
-        if version == 2:
+        if version >= 2:
             phases = struct.unpack_from('<6Q', raw, 128+i*stride+24)
             if sum(phases) > compute:
                 raise ValueError('Node phase cycles exceed compute cycles')
             nodes[-1]['phases'] = dict(zip(PHASES, phases))
-    if version == 2:
+    if version >= 2:
         offset = 128+334*72
         phases = dict((name, dict(zip(('ticks', 'calls'), struct.unpack_from('<2Q', raw, offset+i*16))))
                       for i, name in enumerate(PHASES))
@@ -55,7 +55,8 @@ def decode_profile(raw, frame, session):
         if (weights['weight_pack_bytes'], weights['weight_pack_values'], weights['prepared_layers'],
                 weights['runtime_weight_conversions'], phases['weight_prepare']['calls']) != (5033984, 2391664, 94, 0, 0):
             raise ValueError('Prepared weight invariant failed')
-        report.update(phases=phases, weights=weights)
+        report.update(phases=phases, weights=weights,
+                      input_path='fused_window_fp16_reuse' if version == 3 else 'fp32_im2col_repack')
     total = sum(node['total'] for node in nodes)
     if (total != report['node_cycles'] or total > report['graph_cycles'] or
             report['graph_cycles']+report['input_check_cycles'] > report['model_cycles'] or
@@ -71,9 +72,9 @@ def validate_saved_profile(profile, frame):
     raw = struct.pack('<16Q', *(profile[k] for k in FIELDS))
     for node in profile['nodes_detail']:
         raw += struct.pack('<3Q', *(node[k] for k in ('cache', 'compute', 'check')))
-        if profile['version'] == 2:
+        if profile['version'] >= 2:
             raw += struct.pack('<6Q', *(node['phases'][k] for k in PHASES))
-    if profile['version'] == 2:
+    if profile['version'] >= 2:
         raw += b''.join(struct.pack('<2Q', profile['phases'][k]['ticks'], profile['phases'][k]['calls'])
                         for k in PHASES)
         raw += struct.pack('<5Q', *(profile['weights'][k] for k in WEIGHT_FIELDS))

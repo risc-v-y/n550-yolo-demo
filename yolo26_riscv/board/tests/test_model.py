@@ -82,6 +82,10 @@ if result.returncode or 'QEMU MODEL BUS PASS' not in text:
     report['status']='failed'
     (out/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     raise RuntimeError(f'QEMU model failed; inspect {out}/uart.log')
+from board_profile import decode_profile
+profile=decode_profile((out/'frame-0-profile.bin').read_bytes(),1,0x12345678)
+report.update(profile_version=profile['version'],input_path=profile['input_path'],
+              profile_sha256=profile['sha256'],phases=profile['phases'])
 for index,sample in enumerate(samples):
     record=manifest['samples'][sample]
     raw=(out/f'frame-{index}-candidates.bin').read_bytes()

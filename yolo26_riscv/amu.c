@@ -78,6 +78,58 @@ int amu_pack_weights(const float *a,size_t m,size_t k,size_t lda,
     return 0;
 }
 
+int amu_pack_conv_input(const Conv2D *p,const float *input,size_t batch,
+                        size_t first,size_t columns,uint16_t *storage,
+                        size_t capacity,AmuPackedInput *packed) {
+    if(!packed) return -1;
+    *packed=(AmuPackedInput){0};
+    if(!p || !input || !storage || (uintptr_t)storage%64 || !columns || columns>32 ||
+       !p->batch || batch>=p->batch || !p->in_channels || !p->in_h || !p->in_w ||
+       !p->out_channels || !p->kernel_h || !p->kernel_w || !p->stride_h || !p->stride_w ||
+       p->groups!=1 || p->in_channels>AMU_INPUT_MAX_K/p->kernel_h/p->kernel_w) return -1;
+    size_t k=(size_t)p->in_channels*p->kernel_h*p->kernel_w;
+    uint64_t ph=(uint64_t)p->in_h+2ull*p->pad_h, pw=(uint64_t)p->in_w+2ull*p->pad_w;
+    if(ph<p->kernel_h || pw<p->kernel_w) return -1;
+    size_t oh=(ph-p->kernel_h)/p->stride_h+1, ow=(pw-p->kernel_w)/p->stride_w+1;
+    size_t plane=(size_t)p->in_h*p->in_w, bytes=amu_packed_weight_bytes(32,k);
+    if(oh>SIZE_MAX/ow || first>=oh*ow || columns>oh*ow-first || capacity<bytes ||
+       p->batch>SIZE_MAX/plane/p->in_channels/sizeof(float)) return -1;
+#ifdef YOLO_N550_BOARD
+    DIAG_PHASE(PHASE_AMU_PACK);
+#endif
+    size_t kt=k/32+(k%32!=0);
+    /* Only unused lanes need clearing; every active lane is overwritten.
+     * A short final block must never expose data from the previous block. */
+    for(size_t block=0;block<kt;++block)
+        for(size_t col=columns;col<32;++col)
+            for(size_t j=0;j<32;++j) storage[block*1024+col*32+j]=0;
+    if(k%32) for(size_t col=0;col<columns;++col)
+        for(size_t j=k%32;j<32;++j) storage[(kt-1)*1024+col*32+j]=0;
+    for(size_t col=0;col<columns;++col) {
+        size_t pos=first+col, inner=0;
+        int64_t y0=(int64_t)(pos/ow*p->stride_h)-p->pad_h;
+        int64_t x0=(int64_t)(pos%ow*p->stride_w)-p->pad_w;
+        for(size_t ic=0;ic<p->in_channels;++ic) {
+            const float *channel=input+(batch*p->in_channels+ic)*plane;
+            for(size_t ky=0;ky<p->kernel_h;++ky) {
+                int64_t y=y0+(int64_t)ky;
+                for(size_t kx=0;kx<p->kernel_w;++kx,++inner) {
+                    int64_t x=x0+(int64_t)kx;
+                    uint16_t *at=storage+(inner/32)*1024+col*32+inner%32;
+                    if(y>=0 && x>=0 && y<p->in_h && x<p->in_w) {
+                        if(amu_half(channel[(size_t)y*p->in_w+(size_t)x],at)) return -1;
+                    } else *at=0;
+                }
+            }
+        }
+    }
+#ifdef YOLO_N550_BOARD
+    board_clean(storage,bytes);
+#endif
+    *packed=(AmuPackedInput){storage,k,columns,bytes};
+    return 0;
+}
+
 #ifndef AMU_PACK_ONLY
 
 /* HSC: matrix CSR reads drain the AMU ROB. Compiler barriers are needed:
@@ -109,9 +161,10 @@ int amu_init(void) {
     return 0;
 }
 
-static int matmul_fp16(const float *a,const AmuPackedWeights *packed,const float *b,float *c,
+static int matmul_fp16(const float *a,const AmuPackedWeights *packed,const float *b,
+                       const AmuPackedInput *input,float *c,
                        size_t m,size_t n,size_t k,size_t lda,size_t ldb,size_t ldc) {
-    if ((!a && !packed) || !b || !c || lda < k || ldb < n || ldc < n) return -1;
+    if ((!a && !packed) || (!b && !input) || !c || lda < k || ldb < n || ldc < n) return -1;
     for (size_t row = 0; row < m; row += TILE_M) {
         size_t rows = m - row < TILE_M ? m - row : TILE_M;
         for (size_t col = 0; col < n; col += TILE_N) {
@@ -138,22 +191,26 @@ static int matmul_fp16(const float *a,const AmuPackedWeights *packed,const float
                     amu_runtime_weight_conversions+=rows*count;
                     model_profile_end(PROFILE_WEIGHT_PREPARE, start);
                 }
-                start = model_ticks();
-                /* TR-B contains N rows of K elements, packed from row-major B[K,N]. */
-                for (size_t i = 0; i < cols; ++i)
-                    for (size_t j = 0; j < count; ++j)
-                        if (amu_half(b[(inner + j) * ldb + col + i], right_tile + i * TILE_K + j)) return -1;
-                model_profile_end(PROFILE_INPUT_PACK, start);
+                const uint16_t *right=right_tile;
+                if(input) right=input->data+(inner/TILE_K)*TILE_N*TILE_K;
+                else {
+                    start = model_ticks();
+                    /* TR-B contains N rows of K elements, from row-major B[K,N]. */
+                    for (size_t i = 0; i < cols; ++i)
+                        for (size_t j = 0; j < count; ++j)
+                            if (amu_half(b[(inner + j) * ldb + col + i], right_tile + i * TILE_K + j)) return -1;
+                    model_profile_end(PROFILE_INPUT_PACK, start);
+                }
                 start = model_ticks();
                 __asm__ volatile ("fence rw, rw" : : : "memory");
 #ifdef YOLO_N550_BOARD
                 if(!packed) board_clean(left_tile, sizeof(left_tile));
-                board_clean(right_tile, sizeof(right_tile));
+                if(!input) board_clean(right_tile, sizeof(right_tile));
 #endif
                 DIAG_PHASE(PHASE_AMU_SUBMIT);
                 __riscv_msettilek(old, count, w);
                 __riscv_mlae16("tr0", left, TILE_K * sizeof(uint16_t));
-                __riscv_mlbe16("tr1", right_tile, TILE_K * sizeof(uint16_t));
+                __riscv_mlbe16("tr1", right, TILE_K * sizeof(uint16_t));
                 __riscv_mfmacc_s_h("acc0", "tr1", "tr0");
                 model_profile_end(PROFILE_MATRIX_SUBMIT, start);
                 complete();
@@ -180,13 +237,22 @@ static int matmul_fp16(const float *a,const AmuPackedWeights *packed,const float
 }
 int amu_matmul_fp16(const float *a,const float *b,float *c,
                     size_t m,size_t n,size_t k,size_t lda,size_t ldb,size_t ldc) {
-    return matmul_fp16(a,0,b,c,m,n,k,lda,ldb,ldc);
+    return matmul_fp16(a,0,b,0,c,m,n,k,lda,ldb,ldc);
 }
 int amu_matmul_prepacked_fp16(const AmuPackedWeights *packed,const float *b,float *c,
                              size_t n,size_t ldb,size_t ldc) {
     if(!packed || !packed->data || (uintptr_t)packed->data%64 ||
        !amu_packed_weight_bytes(packed->m,packed->k) ||
        packed->bytes!=amu_packed_weight_bytes(packed->m,packed->k)) return -1;
-    return matmul_fp16(0,packed,b,c,packed->m,n,packed->k,packed->k,ldb,ldc);
+    return matmul_fp16(0,packed,b,0,c,packed->m,n,packed->k,packed->k,ldb,ldc);
+}
+int amu_matmul_packed_fp16(const AmuPackedWeights *weight,const AmuPackedInput *input,
+                          float *c,size_t ldc) {
+    if(!weight || !input || !weight->data || !input->data ||
+       (uintptr_t)weight->data%64 || (uintptr_t)input->data%64 ||
+       !weight->m || !input->n || input->n>32 || !weight->k || weight->k>AMU_INPUT_MAX_K ||
+       input->k!=weight->k || weight->bytes!=amu_packed_weight_bytes(weight->m,weight->k) ||
+       input->bytes!=amu_packed_weight_bytes(32,input->k)) return -1;
+    return matmul_fp16(0,weight,0,input,c,weight->m,input->n,weight->k,weight->k,input->n,ldc);
 }
 #endif

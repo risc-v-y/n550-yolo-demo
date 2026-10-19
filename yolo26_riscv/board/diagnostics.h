@@ -22,7 +22,7 @@ typedef struct {
     uint64_t runtime_weight_conversions;
     uint64_t crc;
 } BoardProfile;
-_Static_assert(sizeof(BoardProfile)==24320,"profile wire layout v2");
+_Static_assert(sizeof(BoardProfile)==24320,"profile wire layout v2/v3");
 extern volatile BoardProfile board_profile;
 void board_profile_begin(unsigned nodes);
 void board_profile_end(uint64_t graph_start,uint64_t input_cycles);

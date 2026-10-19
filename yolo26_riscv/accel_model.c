@@ -8,10 +8,15 @@
 
 uint32_t accel_rvv_nodes, accel_amu_nodes, accel_scalar_nodes, accel_alias_nodes;
 enum { CONV_COLUMNS = 32, MAX_CONV_K = 4096 };
+/* Preserve the 512KiB CLP reservation and all following addresses. */
+typedef union {
+    float fp32[MAX_CONV_K * CONV_COLUMNS];
+    uint16_t fp16[MAX_CONV_K * CONV_COLUMNS];
+} ConvScratch;
 #ifdef YOLO_N550_BOARD
 #include "board/memory.h"
 #include "model_generated.h"
-static float conv_scratch[MAX_CONV_K * CONV_COLUMNS] BOARD_CLP_DATA;
+static ConvScratch conv_scratch BOARD_CLP_DATA;
 /* Keep CLP activation layout stable. The AMU reads this immutable DDR copy
  * after amu_pack_weights has cleaned every populated cache line. */
 static uint16_t prepared_weights[5*1024*1024/2] __attribute__((aligned(64)));
@@ -52,7 +57,7 @@ int accel_model_prepare(const ModelNode *nodes,size_t node_count,
     return 0;
 }
 #else
-static float conv_scratch[MAX_CONV_K * CONV_COLUMNS] __attribute__((aligned(64)));
+static ConvScratch conv_scratch __attribute__((aligned(64)));
 #endif
 
 static size_t product(const ModelTensor *t, size_t begin, size_t end) {
@@ -110,6 +115,20 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
             const float *weights = weight + group * ocg * k;
             const float *biases = bias + group * ocg;
             float *dest = output + (batch * p->out_channels + group * ocg) * area;
+            if(amu && packed) {
+                for(size_t first=0;first<area;first+=CONV_COLUMNS) {
+                    size_t count=area-first<CONV_COLUMNS ? area-first : CONV_COLUMNS;
+                    AmuPackedInput input_block;
+                    uint64_t start=model_ticks();
+                    int status=amu_pack_conv_input(p,input,batch,first,count,conv_scratch.fp16,
+                                                   sizeof(conv_scratch.fp16),&input_block);
+                    model_profile_end(PROFILE_INPUT_PACK,start);
+                    if(status || amu_matmul_packed_fp16(packed,&input_block,dest+first,area)) return -1;
+                    /* All M blocks have completed: next pack may reuse scratch. */
+                    add_bias(dest+first,biases,ocg,count,area);
+                }
+                continue;
+            }
             if (p->kernel_h == 1 && p->kernel_w == 1 && p->stride_h == 1 && p->stride_w == 1 && !p->pad_h && !p->pad_w) {
                 if (matmul(amu, packed, weights, input + (batch * p->in_channels + group * icg) * area,
                            dest, ocg, area, k, k, area, area)) return -1;
@@ -130,13 +149,13 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
                                 float value = 0.0f;
                                 if (iy >= 0 && ix >= 0 && iy < p->in_h && ix < p->in_w)
                                     value = input[((batch * p->in_channels + group * icg + ic) * p->in_h + (size_t)iy) * p->in_w + (size_t)ix];
-                                conv_scratch[inner * CONV_COLUMNS + col] = value;
+                                conv_scratch.fp32[inner * CONV_COLUMNS + col] = value;
                             }
                         }
                     }
                 }
                 model_profile_end(PROFILE_INPUT_IM2COL, start);
-                if (matmul(amu, packed, weights, conv_scratch, dest + first, ocg, count, k, k, CONV_COLUMNS, area)) return -1;
+                if (matmul(amu, packed, weights, conv_scratch.fp32, dest + first, ocg, count, k, k, CONV_COLUMNS, area)) return -1;
                 add_bias(dest + first, biases, ocg, count, area);
             }
         }

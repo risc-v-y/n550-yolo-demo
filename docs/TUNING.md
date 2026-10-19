@@ -13,9 +13,13 @@ bash tools/host.sh
 
 已有视频结果可直接选18，不重新推理或计算golden。固件在DDR保存整帧及334节点计数，完成后一次读取。输出：`performance-summary.json`、`performance-page-1/2/3.txt`、全部节点含六阶段周期的 `node-timing.csv`。
 
-当前优化仅将94层AMU卷积的固定权重提前转换并按32×32打包，READY前一次完成，逐帧直接读取。普通DDR新增5MiB容量，实际使用5,033,984字节、2,391,664个有效FP16权重。原实现因空间分块每帧转换36,955,840次；新版正常帧必须为0。启动准备周期单列，不计入模型帧周期。AMU的K≤32分块、指令/累加顺序、输入转换和偏置顺序不变。
+权重准备：94层AMU卷积权重在READY前转换、打包一次，逐帧读取。普通DDR预留5MiB，实际5,033,984字节、2,391,664个有效FP16值。原实现每帧重复转换36,955,840次，预打包后为0；启动准备周期单列。
 
-执行 **1更新 → 15三帧 → 确认VIDEO CHECK PASSED → 18三页** 即可回归，不重新采集全部节点。18自动匹配同一父目录下、状态completed、全部帧号和输入哈希相同且计数有效的旧v1运行，显示 `model cycles old/new`。基线目录和报告SHA256另存summary；没有合格基线明确提示。保留旧三帧 `run-t5240cg4`。周期比包含新增计时的开销，不能替代实际端到端耗时；模型优化后还需观察PCIe传输占比。
+融合输入准备：对每批≤32个输出位置，直接从NCHW FP32特征图生成FP16 `[ceil(K/32),32位置,32K]` 输入块，边界补零；同批输入在全部M输出通道分块之间复用。沿用原 `amu_half`，保持每个输出K≤32分块的顺序、逐指令舍入及最后独立FP32偏置相加。1×1卷积同样按空间块准备；不同输出块的执行先后允许调整，不改变单个输出的累加。RVV分组/深度卷积保留原路径。原512KiB CLP工作区使用union，前最多256KiB存FP16块，整体布局不变。
+
+已测基线：`run-t5240cg4`模型3,817,107,181周期、记录每帧110.45秒；权重预打包版 `run-ls19m5ja` 为2,862,430,017周期、86.08秒。模型周期下降25.0%；该版窗口提取及输入打包合计约77%，本轮融合的实板收益尚未测量。
+
+执行 **1更新 → 15同一三帧 → 确认VIDEO CHECK PASSED → 18新运行三页**，无需节点采集。18匹配同一父目录下状态completed、全部帧号和输入哈希相同且计数有效的早期版本运行；融合版优先比较v2的 `run-ls19m5ja`，没有合格v2才比较v1。保留这两份基线。基线版本/路径/报告SHA256写入summary，缺匹配项明确提示。周期比包含计时开销，需结合实际Host耗时评估。
 
 | 板端字段 | 计时边界 |
 |---|---|
@@ -28,8 +32,8 @@ bash tools/host.sh
 | 每节点cache | 输入缓存clean及CACHE阶段标记 |
 | 每节点compute | `accel_model_node`调用，包含内部AMU等待、数据打包及同步 |
 | weight_prepare | 帧内权重转换，预打包版本应为0；不含启动准备 |
-| input_im2col | 标量提取卷积窗口到FP32临时矩阵 |
-| input_pack | 从FP32矩阵转换并打包本次AMU右输入块 |
+| input_im2col | 生成FP32窗口矩阵；v3只用于原RVV分组卷积路径，AMU卷积应为0 |
+| input_pack | v2为FP32矩阵转FP16；v3包括直接窗口提取、FP16打包、尾部补零及缓存clean发布，每空间块一次 |
 | matrix_submit | 矩阵配置/加载/乘加/存储提交及内部缓存维护，不能视为纯指令发射 |
 | matrix_wait | 提交后读取xmfflags排空的剩余等待及标志发布；不是AMU总运行时间 |
 | bias_dequant | 卷积最后的独立FP32偏置加法；此版本无量化 |
@@ -37,13 +41,13 @@ bash tools/host.sh
 | 每节点check | 计算后的有限值检查分支；普通模式仅最终输出扫描 |
 | graph_overhead_cycles | 图总周期减去全部节点cache/compute/check之和，含进度日志、诊断提交、记账等 |
 
-计时表的写入、读计数器、发布和Host读取有开销，本轮没有声称任何加速。带逐节点trace、中间有限值扫描或节点暂停采集的运行不进入性能排行。启动自测、权重加载不在模型周期内；Host第一帧等待仍可能包含会话初始化。
+计时表写入、读计数器、发布和Host读取有开销。带逐节点trace、中间有限值扫描或节点暂停采集的运行不进入性能排行。启动自测、权重加载不在模型周期内；Host第一帧等待仍可能包含会话初始化。v2/v3的input_pack计时边界不同，比较输入准备时应合并input_im2col、input_pack与内部提交维护，不能只看单项下降。
 
 18询问的是**当前FPGA上N550实际运行频率MHz**，未知直接回车，仅报周期。不能用RTL目标频率或QEMU计数推算板端秒数。Host的PCIe等待包含pbload轮询和工具启动；`elapsed_seconds`含录像保存，但未完整计入最终窗口显示和JSON落盘，不能称为采集到可见延迟。离线golden耗时单列，不算推理帧耗时。
 
-计时表uint64头固定16项：`magic version bytes frame nodes completed options state model_cycles graph_cycles input_check_cycles service_cycles input_crc_cycles output_cycles node_cycles session`。v1共8152字节，随后334组cache/compute/check，末项CRC32存于uint64。v2共24320字节，每节点在三项后追加六阶段周期，再附全局六组cycles/calls、五项启动/转换统计，末项为此前全部字节的CRC32。六阶段顺序与上表相同。五项为weight_pack_bytes、weight_pack_values、weight_pack_cycles、prepared_layers、runtime_weight_conversions。Host兼容两版，核验CRC、会话/帧号、完成数量、阶段周期总账及预打包不变量；离线重建后核验SHA256。
+计时表uint64头固定16项：`magic version bytes frame nodes completed options state model_cycles graph_cycles input_check_cycles service_cycles input_crc_cycles output_cycles node_cycles session`。v1共8152字节，随后334组cache/compute/check，末项CRC32存于uint64。v2/v3共24320字节，每节点在三项后追加六阶段周期，再附全局六组cycles/calls、五项权重统计，末项为此前全部字节的CRC32。v3仅改变输入准备方式和阶段含义，布局不变。六阶段顺序与上表相同。五项为weight_pack_bytes、weight_pack_values、weight_pack_cycles、prepared_layers、runtime_weight_conversions。Host兼容三版，核验CRC、会话/帧号、完成数量、阶段总账及权重不变量；离线重建核验SHA256。
 
-开发验证：全部94层打包FP16位模式及补零与独立IEEE binary16转换核对；QEMU对11种矩阵形状分别复用两组输入，逐位对比原实现，覆盖M/N/K尾块、K=16/17/31/32/33/65/96/576/1152。BUS整图回归使用正式启动和PCIe路径。QEMU统一RAM不验证物理缓存或实际速度；现场仍须验证新三帧的RTL golden和计时。
+开发验证：全部94层的权重及窗口输入打包与独立IEEE binary16转换核对，覆盖边界、跨行、尾块复用、负零和半精度舍入边界。QEMU对11种矩阵形状各复用两组输入，加4种真实卷积窗口/偏置/多批量用例，与旧路径逐位比较。BUS整图使用正式启动和PCIe路径，验证每空间块只打包一次及最终输出；QEMU不验证物理缓存或实际速度，现场仍需同三帧RTL golden和计时。
 
 ## 检测效果
 

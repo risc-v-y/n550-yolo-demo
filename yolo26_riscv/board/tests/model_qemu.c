@@ -148,12 +148,23 @@ void __wrap_board_pcie_loop(int failure) {
            status.sequence!=expected_sequence || status.output_bytes!=7200 || board_current_node!=333 ||
            status.crc!=board_crc32(&status,60) ||
            status.output_crc!=board_crc32(board_model_output(),7200)) clp_qemu_exit(22);
-        if(board_profile.version!=2 || board_profile.bytes!=24320 ||
+        if(board_profile.version!=3 || board_profile.bytes!=24320 ||
            board_profile.runtime_weight_conversions ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].ticks ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].calls ||
            board_profile.crc!=board_crc32((const void *)&board_profile,offsetof(BoardProfile,crc)))
             clp_qemu_exit(26);
+        uint64_t input_blocks=0;
+        for(unsigned i=0;i<MODEL_NODE_COUNT;++i) {
+            const ModelNode *node=model_nodes+i;
+            if(node->op!=OP_CONV || node->p[4]!=1) continue;
+            const ModelTensor *out=model_tensors+node->out[0];
+            size_t area=out->shape[2]*out->shape[3];
+            input_blocks+=out->shape[0]*(area/32+(area%32!=0));
+            if(board_profile.node[i].phase_cycles[PROFILE_INPUT_IM2COL] ||
+               !board_profile.node[i].phase_cycles[PROFILE_INPUT_PACK]) clp_qemu_exit(28);
+        }
+        if(board_profile.phases[PROFILE_INPUT_PACK].calls!=input_blocks) clp_qemu_exit(29);
         for(unsigned phase=0;phase<PROFILE_PHASE_COUNT;++phase) {
             uint64_t sum=0;
             for(unsigned i=0;i<334;++i) sum+=board_profile.node[i].phase_cycles[phase];
@@ -163,9 +174,10 @@ void __wrap_board_pcie_loop(int failure) {
         for(size_t i=0;i<model_tensors[516].count;++i)
             if(poison[i]!=0xffffffffu) clp_qemu_exit(24);
         file(outputs[sample],(void *)board_model_output(),7200,1);
+        file("frame-0-profile.bin",(void *)&board_profile,sizeof(board_profile),1);
         board_uart_text("QEMU MODEL FRAME PASS sample="); board_uart_u64(sample);
         board_uart_text(" nodes=334\n");
     }
-    board_uart_text("QEMU MODEL BUS PASS; prepacked weights, zero runtime conversions; physical cache unverified\n");
+    board_uart_text("QEMU MODEL BUS PASS; fused input once per block, exact counters; physical cache unverified\n");
     clp_qemu_exit(0);
 }

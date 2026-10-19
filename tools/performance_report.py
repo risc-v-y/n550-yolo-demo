@@ -14,11 +14,12 @@ from board_profile import validate_saved_profile, PHASES
 from board_diagnostics import OPS
 
 
-def previous_baseline(directory, records):
-    """Only compare a complete previous v1 run with the exact same inputs."""
+def previous_baseline(directory, records, max_version=1):
+    """Prefer the latest earlier kernel version, with exact same frame inputs."""
     identity = [(r.get('frame_id'), r.get('input_sha256')) for r in records]
     if not identity or any(not digest for _, digest in identity): return None
     files = sorted(directory.parent.glob('*/report.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+    selected = None
     for path in files:
         if path.parent == directory: continue
         try:
@@ -28,12 +29,15 @@ def previous_baseline(directory, records):
             if report.get('status') != 'completed' or identity != [(r.get('frame_id'), r.get('input_sha256')) for r in rows]:
                 continue
             profiles = [validate_saved_profile(r['pcie_timing']['board_profile'], r['pcie_timing']['pcie_frame']) for r in rows]
-            if not all(p['version'] == 1 and p['representative'] for p in profiles): continue
+            version = profiles[0]['version']
+            if not 1 <= version <= max_version or not all(p['version'] == version and p['representative'] for p in profiles): continue
+            if selected and version <= selected['version']: continue
             import hashlib
-            return dict(run=path.parent.name, path=str(path), report_sha256=hashlib.sha256(raw).hexdigest(),
-                        model_cycles=statistics.mean(p['model_cycles'] for p in profiles))
+            selected = dict(run=path.parent.name, path=str(path), report_sha256=hashlib.sha256(raw).hexdigest(),
+                            version=version, model_cycles=statistics.mean(p['model_cycles'] for p in profiles))
+            if version == max_version: break
         except (OSError, ValueError, TypeError, KeyError, OverflowError, struct.error): continue
-    return None
+    return selected
 
 
 def analyze(directory, core_mhz=0):
@@ -82,7 +86,7 @@ def analyze(directory, core_mhz=0):
         row = dict(node=i, op=ops[i])
         for key in ('cache', 'compute', 'check', 'total'):
             row[key] = statistics.mean(p['nodes_detail'][i][key] for p in profiles)
-        if all(p['version'] == 2 for p in profiles):
+        if all(p['version'] >= 2 for p in profiles):
             row.update((name, statistics.mean(p['nodes_detail'][i]['phases'][name] for p in profiles)) for name in PHASES)
         nodes.append(row)
     cycles = {key: statistics.mean(p[key] for p in profiles) for key in
@@ -95,10 +99,12 @@ def analyze(directory, core_mhz=0):
                   cycles=cycles, core_mhz=core_mhz, nodes=sorted(nodes, key=lambda n: -n['total']))
     result['tools'] = tools
     result['phases'] = {}
-    if profiles and all(p['version'] == 2 for p in profiles):
+    if profiles and all(p['version'] >= 2 for p in profiles):
         result['phases'] = dict((name, statistics.mean(p['phases'][name]['ticks'] for p in profiles)) for name in PHASES)
         result['weights'] = profiles[0]['weights']
-        result['baseline'] = previous_baseline(directory, records) if len(profiles) == len(records) else None
+        result['input_path'] = profiles[0]['input_path']
+        prior_version = min(p['version'] for p in profiles)-1
+        result['baseline'] = previous_baseline(directory, records, prior_version) if len(profiles) == len(records) else None
         if result['baseline'] and result['baseline']['model_cycles'] > 0 and cycles['model_cycles'] > 0:
             result['baseline']['ratio'] = result['baseline']['model_cycles']/cycles['model_cycles']
     if profiles and core_mhz:
@@ -132,6 +138,7 @@ def render(report, page):
     elif page == 2:
         lines += ['CPU counter means (cycles); only normal runs are ranked.']
         if report.get('phases'):
+            lines.append('Input path: {}'.format(report.get('input_path', 'legacy')))
             for key in ('service_cycles', 'model_cycles', 'graph_cycles'):
                 lines.append('{}: {:.0f}'.format(key, report['cycles'][key]))
             for key, value in report['phases'].items(): lines.append('{}: {:.0f}'.format(key, value))
@@ -143,14 +150,15 @@ def render(report, page):
             baseline = report.get('baseline')
             if baseline and 'ratio' in baseline:
                 lines.append('Baseline {}: model cycles old/new={:.3f}x'.format(baseline['run'], baseline['ratio']))
-            else: lines.append('No complete v1 baseline with identical frame inputs.')
+            else: lines.append('No complete earlier baseline with identical frame inputs.')
         else:
             for key, value in report['cycles'].items(): lines.append('{}: {:.0f}'.format(key, value))
         if report['core_mhz'] and report['profiled']:
             lines += ['Core MHz: {}'.format(report['core_mhz']),
                       'Model {:.6f}s | board service {:.6f}s'.format(report['model_seconds'], report['service_seconds'])]
         else: lines += ['Core frequency unknown: seconds/FPS are not inferred.']
-        lines += ['Submit includes cache maintenance; wait is remaining drain.',
+        lines += ['Fused input_pack includes windows/conversion/cache publication.' if report.get('input_path') == 'fused_window_fp16_reuse'
+                  else 'Submit includes cache maintenance; wait is remaining drain.',
                   'Excluded trace/finite/capture frames: {}'.format(len(report['excluded'])),
                   'Invalid timing records: {}'.format(len(report['errors']))]
     elif page == 3:

@@ -10,7 +10,7 @@ int main(void) {
     board_profile_test_ticks=100;
     board_profile_begin(334);
     assert(board_profile.frame==7 && board_profile.options==DIAG_TRACE);
-    assert(board_profile.version==2 && board_profile.bytes==24320 && board_profile.state==0);
+    assert(board_profile.version==3 && board_profile.bytes==24320 && board_profile.state==0);
     board_profile.node[333]=(BoardNodeProfile){.cache=2,.compute=7,.check=1};
     model_profile_phases[PROFILE_INPUT_PACK]=(ModelProfilePhase){42,3};
     board_profile_test_ticks=1000;

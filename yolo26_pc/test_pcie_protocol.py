@@ -140,9 +140,9 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
                 fields=[PROFILE_MAGIC,version,length,backend.frame,334,334,0,1,
                         5000,4500,400,7000,800,600,3340,backend.session]
                 node=struct.pack('<3Q',2,7,1)
-                if version==2: node+=struct.pack('<6Q',0,1,1,1,1,1)
+                if version>=2: node+=struct.pack('<6Q',0,1,1,1,1,1)
                 raw=struct.pack('<16Q',*fields)+node*334
-                if version==2:
+                if version>=2:
                     raw+=struct.pack('<2Q',0,0)+struct.pack('<2Q',334,334)*5
                     raw+=struct.pack('<5Q',5033984,2391664,1000,94,0)
                 data=raw+struct.pack('<Q',zlib.crc32(raw))
@@ -160,6 +160,9 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         self.assertEqual(backend.last_timing['board_profile']['version'],2)
         self.assertEqual(backend.last_timing['board_profile']['phases']['input_pack']['ticks'],334)
         self.assertEqual(backend.last_timing['board_profile']['weights']['runtime_weight_conversions'],0)
+        layout[0]=3
+        backend.infer_bytes(self.tensor())
+        self.assertEqual(backend.last_timing['board_profile']['input_path'],'fused_window_fp16_reuse')
         corrupt[0]=True
         with self.assertRaisesRegex(ValueError,'timing CRC'):
             backend.infer_bytes(self.tensor())

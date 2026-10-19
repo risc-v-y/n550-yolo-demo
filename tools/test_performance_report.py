@@ -14,15 +14,39 @@ def payload(frame=3, session=7, options=0, version=1):
     header = [PROFILE_MAGIC, version, PROFILE_BYTES if version == 1 else PROFILE_V2_BYTES, frame, 334, 334, options, 1,
               5000, 4500, 400, 7000, 800, 600, 3340, session]
     node = struct.pack('<3Q', 2, 7, 1)
-    if version == 2: node += struct.pack('<6Q', 0, 1, 1, 1, 1, 1)
+    if version >= 2: node += struct.pack('<6Q', 0, 1, 1, 1, 1, 1)
     raw = struct.pack('<16Q', *header)+node*334
-    if version == 2:
+    if version >= 2:
         raw += struct.pack('<2Q', 0, 0)+struct.pack('<2Q', 334, 334)*5
         raw += struct.pack('<5Q', 5033984, 2391664, 1000, 94, 0)
     return raw+struct.pack('<Q', zlib.crc32(raw))
 
 
 class ProfileTests(unittest.TestCase):
+    def test_v3_identity_and_v2_baseline_preference(self):
+        profile = decode_profile(payload(version=3), 3, 7)
+        self.assertEqual(profile['input_path'], 'fused_window_fp16_reuse')
+        self.assertEqual(validate_saved_profile(profile, 3), profile)
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            new = root/'new'; new.mkdir()
+            row = dict(frame_id=0, input_sha256='abc', pcie_timing=dict(pcie_frame=3, board_profile=profile))
+            (new/'report.json').write_text(json.dumps(dict(results=[row])))
+            for version in (2, 1):
+                old = root/str(version); old.mkdir()
+                old_row = dict(row, pcie_timing=dict(pcie_frame=3, board_profile=decode_profile(payload(version=version), 3, 7)))
+                (old/'report.json').write_text(json.dumps(dict(status='completed', results=[old_row])))
+            result = app.analyze(new, 40)
+            self.assertEqual(result['baseline']['version'], 2)
+            self.assertEqual(result['baseline']['ratio'], 1)
+            self.assertEqual(app.previous_baseline(new, [row], 1)['version'], 1)
+            for page in (1, 2, 3):
+                text = app.render(result, page)
+                self.assertLessEqual(len(text.splitlines()), 22)
+                self.assertTrue(all(len(line) <= 80 for line in text.splitlines()))
+            self.assertIn('Invalid timing records: 0', app.render(result, 2))
+            self.assertIn('fused_window_fp16_reuse', app.render(result, 2))
+
     def test_v2_phases_invariants_and_saved_integrity(self):
         raw = payload(version=2)
         profile = decode_profile(raw, 3, 7)

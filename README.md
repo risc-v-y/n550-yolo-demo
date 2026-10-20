@@ -15,7 +15,9 @@ bash tools/host.sh
 
 首次使用先按[环境准备](docs/OPERATIONS.md#1-准备与更新)安装离线视频依赖并确认图形会话。已有后台任务时先等待结束，菜单1会拒绝更新。
 
-当前v6合并保持数值规则的RVV寻址、数据复用、池化/上采样、BMM、选择和输入打包优化，逐项原理见[完整手册](docs/MODEL.md#v6合并优化的原理)。路径标记为 `rvv_bulk_v6`、input_im2col=0；实板 `run-bivzu9qm` 三帧平均模型465,117,933周期，40MHz下11.627948秒，比v5减少47.4%。同次数值验收结果尚未提供，用菜单5离线查看已有运行，不必重跑。完整实测见[手册性能章节](docs/MODEL.md#performance)，证据见[验收记录](docs/VALIDATION.md)；保留v5 `run-2i3ciq3m` 供自动比较。
+当前模型使用**整层RVV加bias与3×3 FP16三行缓存**，计时版号7、路径 `rvv_rowcache_layer_bias`。开发回归中全部335个BUS有效输出逐位一致；新实板耗时仍待验收。每次更新模型后按3运行同三帧，确认VIDEO CHECK PASSED，再用6查看计时。实现原理与最近一次实板基线统一见[完整手册](docs/MODEL.md#optimization-principles)，证据见[验收记录](docs/VALIDATION.md)。
+
+只保留当前方案和最新优化回归，不维护中间优化结果表；分析/文档修改先留本地，随模型代码集中推送。
 
 主菜单连续编号1–9，排障集中在8的子菜单；完整功能表见[操作手册](docs/OPERATIONS.md#1-准备与更新)。原命名命令保持可用，例如 `bash tools/host.sh performance`。
 

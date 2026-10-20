@@ -1,6 +1,6 @@
 # YOLO26n完整计算与优化手册
 
-更新：2026-10-20。实现基线：v6 / `e9a1a6c`。本页是模型计算、数据形状、当前实现和优化分析的统一阅读入口，覆盖全部334个执行节点；不需要另外打开CSV才能知道某一步在算什么。
+更新：2026-10-20。实现基线：当前整层bias与FP16三行缓存版（计时版号7）。本页是模型计算、数据形状、当前实现和优化分析的统一阅读入口，覆盖全部334个执行节点；不需要另外打开CSV才能知道某一步在算什么。
 
 本页前半部解释整体功能、运算规则、数据通路和实测，后半部按执行顺序列出每个节点。源码链接用于实际修改，操作、平台协议和完整历史证据仍保留在各自的专业资料中；它们不再承担第二份模型计算说明。
 
@@ -9,7 +9,7 @@
 - [范围、符号与计算总量](#overview)
 - [24个模块及关键结构](#architecture)
 - [21类算子的数学规则](#operators)
-- [当前实现、数据通路及历次优化原理](#implementation)
+- [当前实现、数据通路及优化原理](#implementation)
 - [实测、计时含义与检测精度](#performance)
 - [优化约束、验证及维护](#constraints)
 - [按顺序展开的334个节点](#nodes)
@@ -316,7 +316,7 @@ e = p * scale
 
 <a id="implementation"></a>
 
-## 4. 当前实现、数据通路与历次优化原理
+## 4. 当前实现、数据通路与优化原理
 
 <a id="storage"></a>
 
@@ -327,9 +327,9 @@ e = p * scale
 | 原始常量 | 9,678,644字节，普通DDR | 冻结FP32权重、bias及索引常量，随BIN部署 |
 | FP16预打包权重 | 预留5MiB，实际5,033,984字节 | READY前转换94层共2,391,664个有效权重；此后只读 |
 | arena | 7,614,720字节，CLP区 | 按张量生命期复用；张量offset/形状见本页第7节 |
-| conv_scratch | 原512KiB CLP预留保持不变 | AMU输入最多用前256KiB存FP16；FP32部分仅保留给通用分组回退，当前8层深度卷积不再使用 |
+| conv_scratch | 512KiB CLP预留 | 前256KiB为AMU输入块，后部用于三行FP16缓存（冻结图最多39,936字节）；FP32通用回退独占整个union，与行缓存不同时使用 |
 | 历史左右输入块 | 各2KiB，CLP区 | 保留地址布局及回归旧内核；正式AMU输入读取预打包区和conv_scratch |
-| RVV地址元数据 | 3×4096×4=49,152字节，普通DDR | 缓存最近的K索引、核行和核列；输入/核形状变化时重建，非模型权重 |
+| RVV地址元数据 | 3×4096×4=49,152字节，普通DDR | 缓存最近的K索引、核行和核列；形状或FP32/行缓存模式变化时重建，非模型权重 |
 | 诊断/计时/邮箱 | 普通DDR | 地址由固件发布，绑定会话与帧号；接口见专门文档 |
 
 CLP总预留仍为8,143,104字节；RVV使用 `0x1000…` 别名，AMU/标量/PCIe使用 `0xF000…` 全局地址。普通DDR的代码、BSS等必须位于 `0x80000000–0x81FFFFFF` 独占区并避开邮箱。实际符号见当前 `firmware/pcie-symbols.txt`，不能沿用旧ELF地址。
@@ -340,18 +340,18 @@ CLP总预留仍为8,143,104字节；RVV使用 `0x1000…` 别名，AMU/标量/PC
 
 ### 4.2 普通卷积：RVV准备输入，AMU计算
 
-源码：[模型调度](../yolo26_riscv/accel_model.c)、[RVV打包](../yolo26_riscv/amu_input_rvv.c)、[整数FP16转换](../yolo26_riscv/amu_half_rvv.h)、[AMU执行](../yolo26_riscv/amu.c)。
+源码：[模型调度](../yolo26_riscv/accel_model.c)、[RVV打包](../yolo26_riscv/amu_input_rvv.c)、[整数FP16转换](../yolo26_riscv/amu_half_rvv.h)、[AMU执行](../yolo26_riscv/amu.c)、[整层bias](../yolo26_riscv/rvv_model_ops.c)。
 
-1. **启动准备权重**：从FP32常量按现有 `amu_half` 最近偶数规则转FP16，排为 `[ceil(M/32),ceil(K/32),32,32]`，清零无效位置并clean到DDR。每帧不再转换权重。
-2. **选择≤32个输出位置**：从位置推导卷积窗口原点。K按输入通道、核行、核列排列，保持原乘加顺序。
-3. **RVV提取与转换**：沿K用 `e32,m2` 取数。v6对1×1/stride1/pad0直接跨通道定步长读取；完整内部窗口只计算地址，不生成边界掩码；边缘保留masked gather，无效lane显式置零。随后用相同整数移位、加法、掩码实现FP32→FP16最近偶数舍入，包括正负零、次正规数和舍入进位。不使用向量FP16算术，也不改变浮点舍入CSR。
-4. **直接生成输入块**：整数窄化为 `e16,m1`，连续写入 `[ceil(K/32),32个位置,32个K]`。不足32的位置和K尾部补零。原FP32临时矩阵和重复输入转换已移除；1×1卷积同样复用这一输入块。
-5. **所有输出通道共用**：每个M32权重块读取同一份输入；每个输出从零开始，按原K32指令顺序累加。末指令使用实际K长度，完成后存FP32结果，最后独立FP32加bias。
-6. **安全复用**：全部M块和输出存储完成后，才覆盖scratch处理下一个空间块；保留现有AMU完成等待和输出交接。
+1. **启动准备权重**：FP32按整数最近偶数规则转FP16，排为 `[ceil(M/32),ceil(K/32),32,32]` 并发布。READY之后只读。
+2. **每层初始化输入路径**：39层普通3×3使用三行环形缓存；55层1×1使用原定步长直读。缓存绑定当前层、输入和batch，结束时归还所有权，下一层或下一帧重新初始化。
+3. **转换并复用输入行**：3×3按输出位置递增推进，只在所需输入行首次进入窗口时，沿空间连续读取FP32、执行相同整数RNE、写入FP16行缓存。三行槽位按输入行号模3复用；无效源值写入保留标记，只有实际窗口选择它时才报错。
+4. **生成AMU输入块**：RVV从行缓存半字gather；1×1仍直接读取FP32并转FP16。输出排列仍为 `[ceil(K/32),32个位置,32个K]`，边缘+0、空间/K尾部补零。输入块供所有M32输出通道块共用，完成等待后才复用scratch。
+5. **按原顺序累加**：AMU从零开始，保持K32指令顺序和实际尾K；结果按原NCHW布局存FP32。三行缓存结束的交接仍计入input_pack，调用数保持每帧5,710次。
+6. **整层独立加bias**：当前层全部空间块计算完成后，专用RVV内核一次接管 `[Cout,P]`，逐通道连续加bias，完成后发布一次。每个元素仍只做最后一次独立FP32加法；94层共94次调用，不预置AMU累加器，不与SiLU融合舍入。
 
-例：节点16，输入 `[1,64,104,104]`，权重 `[64,64,3,3]`，输出 `[1,64,52,52]`，M=64、K=576、P=2704。每个32位置块占 `18×32×32×2=36KiB`，输出通道0–31和32–63共用；此前需要FP32 im2col 72KiB，再重复转FP16。
+例：节点16输入 `[1,64,104,104]`，权重 `[64,64,3,3]`，输出 `[1,64,52,52]`，M=64、K=576、P=2704。一个32位置块占36KiB，两个M32权重块共用；输入三行 `[64,3,104]` 占39,936字节，相邻窗口复用其FP16值。
 
-一帧94层共有5,710个空间块、22,583,808个逻辑输入值；含tile补零共24,632,320个FP16存储槽位。输入准备仍需每帧执行。元数据缓存最近一次需要gather的形状，1×1直接路径不创建该元数据，不等于所有层索引在启动时一次准备好。
+一帧94层仍有5,710个空间块、24,632,320个含补零的FP16存储槽位。39层3×3有3,543个行缓存块，只转换3,853,200个源值；55层1×1转换5,426,928个值，总计9,280,128个FP32→FP16源值。行缓存只减少重复转换和读取，不减少数学MAC，也不改变TR-B布局或AMU提交数量。
 
 超过当前EI32索引范围的通用形状保留标量打包回退；冻结模型94层均使用RVV路径，开发整图回归检查实际RVV调用数。原标量打包保留为位模式参考，不新增纯RVV整网产品。
 
@@ -364,7 +364,7 @@ CLP总预留仍为8,143,104字节；RVV使用 `0x1000…` 别名，AMU/标量/PC
 - RVV写输入块前，对整个64字节对齐块flush/移交；通过CLP别名写入，完成后fence/invalidate并归还所有权，再让AMU读取全局地址。期间不混入标量缓存写。
 - AMU输入块在同步调用返回前只读。每条指令保留完成等待，AMU输出及RVV bias保留既有缓存交接。
 - fence约束顺序，不能替代CBO或AMU完成语义。标准与intrinsic依据：[RISC-V V 1.0](https://docs.riscv.org/reference/isa/unpriv/v-st-ext)、[Vector C Intrinsics](https://github.com/riscv-non-isa/riscv-rvv-intrinsic-doc)。具体平台约束见[BOARD](BOARD.md)。
-- v6公共交接在 [rvv_access.h](../yolo26_riscv/rvv_access.h)：同步内核按整段输入clean、输出prepare/finish，经CLP别名使用原生m2/m4访存，避免逐向量重复维护。普通缓存DDR写后只fence。Softmax在指数输出和标量顺序求和之间先发布，再移交给归一化向量写；不在RVV持有输出时混入标量写。节点边界clean与AMU等待均保留。
+- 公共交接在 [rvv_access.h](../yolo26_riscv/rvv_access.h)：同步内核按整段输入clean、输出prepare/finish，经CLP别名使用原生m2/m4访存，避免逐向量重复维护。普通缓存DDR写后只fence。Softmax在指数输出和标量顺序求和之间先发布，再移交给归一化向量写；不在RVV持有输出时混入标量写。节点边界clean与AMU等待均保留。
 
 <a id="current-operators"></a>
 
@@ -372,7 +372,7 @@ CLP总预留仍为8,143,104字节；RVV使用 `0x1000…` 别名，AMU/标量/PC
 
 | 操作/节点数 | 运算和当前实现 | 后续审查重点 |
 |---|---|---|
-| CONV /102 | 94个普通卷积：RVV输入+AMU FP16；8个深度卷积：RVV直接3×3窗口、九项顺序乘加、最后bias | 现有实测见本页第5节；后续窗口复用 |
+| CONV /102 | 94个普通卷积：3×3三行FP16缓存/1×1直读+AMU，最后整层bias；8个深度卷积：RVV九项顺序乘加、最后bias | 按最新实测评估1×1布局与访存 |
 | SILU /87 | RVV m2计算原FP32公式，整缓冲区交接 | 近似与除法成本，数值规则需保留 |
 | ADD /21 | 同形状RVV m2连续读取、相加、写回 | 先测连续路径；其他广播仍回退 |
 | SUB /1 | 同形状RVV m2连续读取、相减、写回 | 保持原逐元素运算 |
@@ -400,7 +400,7 @@ CLP总预留仍为8,143,104字节；RVV使用 `0x1000…` 别名，AMU/标量/PC
 
 调用在写前检查支持形状、尺寸溢出及输入/权重/bias与输出的重叠。CLP输入整段clean后经别名读取；输出整段prepare，全部RVV写完后finish，再交回标量/下一节点。该m2访存有意不使用逐向量m1包装，普通缓存DDR输出仅fence，不能invalidate；调用方独占完整输出缓存行。源码及接口在[rvv_model_ops.c](../yolo26_riscv/rvv_model_ops.c)和[rvv_model_ops.h](../yolo26_riscv/rvv_model_ops.h)。
 
-v5将直接深度卷积的取数、九项计算、bias和内部缓存维护计入节点compute/other_compute，不再生成独立im2col或bias阶段。此计时边界变化不能直接当作某阶段提速，比较方法见[本页性能章节](#performance)。
+当前将直接深度卷积的取数、九项计算、bias和内部缓存维护计入节点compute/other_compute，不再生成独立im2col或bias阶段。此计时边界变化不能直接当作某阶段提速，比较方法见[本页性能章节](#performance)。
 
 Attention的4个BMM为两个模块各一次相关性和内容汇总，分别涉及 `[2,169,32]×[2,32,169]`、`[2,64,169]×[2,169,169]`。分类、框解码和Top-K均保留在334节点图中，host只做阈值筛选、坐标还原及绘图。
 
@@ -408,205 +408,84 @@ Attention的4个BMM为两个模块各一次相关性和内容汇总，分别涉�
 
 ### 4.5 优化原理与约束
 
-#### 已实施优化的原理
+#### 当前优化原理
 
-| 优化 | 原来多做的工作 | 改法与减少工作的原因 | 保持的计算规则 |
-|---|---|---|---|
-| COPY零拷贝视图 | 将相同数据复制到另一块内存，后续仍按原顺序读取 | 让输入、输出引用同一段存储，按根张量维护生命期，省去整段读写 | 只改地址与生命期，元素位模式、形状解释和下游读取顺序不变 |
-| v2 启动权重预打包 | 不变的FP32权重在每帧、每块计算时重复转换、打包 | 启动时转成AMU需要的FP16块并永久复用，将重复工作移出逐帧路径；代价是额外常驻预打包区 | 沿用原转换、补零及块内排列；原始权重和bias保留 |
-| v3 窗口提取与FP16打包融合、复用 | 普通卷积先写FP32窗口矩阵，再读取、转FP16；不同输出通道块还重复准备相同输入 | 从原特征图直接生成FP16输入块，同一空间块供全部输出通道块共用，减少中间读写和重复转换 | 窗口位置、K排列、FP16位模式及AMU指令累加顺序不变；保留完成等待后再复用 |
-| v4 RVV输入准备 | 窗口索引、边界判断和FP32到FP16转换仍逐元素执行 | 用RVV批量计算索引、按掩码取数，并用整数指令并行实现最近偶数舍入，减少标量循环开销 | 有效元素、越界补零和转换位模式与原路径一致；不改变AMU乘加规则 |
-| v5 直接RVV深度卷积 | 每个输出像素只需同一通道九项乘加，却经过通用分组调度，写入再读取FP32窗口矩阵 | RVV直接从输入三行读取3×3窗口，同时计算相邻输出位置，省去窗口物化及通用分组调度 | 仍用FP32，九项按原顺序独立乘、加，bias最后单独加；边界补零项保留，不使用FMA |
-
-v5示例：输入 `[1,C,H,W]`、权重 `[C,1,3,3]`、输出 `[1,C,H,W]`。每个输出像素只使用**同一通道**的3×3邻域：`y[c,h,w] = bias[c] + sum(input[c,h+ky-1,w+kx-1] * weight[c,0,ky,kx])`，越界输入取+0。该式说明数学功能；实际仍从+0开始，按ky/kx次序完成九次独立FP32乘、加，再单独加bias。RVV各lane处理同一输出行的不同像素，不在lane间做求和。因此减少的是数据搬运与调度，九个乘积及原累加顺序均保留。
-
-以后每次优化同时记录：**适用节点与形状、原路径、改法及减少工作的原因、数值/缓存约束**。当前实现和原理在本文维护；测得收益与计时边界记入[本页性能章节](#performance)，正确性证据和待验范围记入[本页验证与约束](#constraints)，尚未测量的收益不写成结论。
-
-#### v6合并优化的原理
-
-本轮按用户授权合并不改变现有数值规则的优化，不改图、权重、arena或CLP预留。节点形状和源码对应见本页第7节。
-
-| 范围/形状示例 | 原路径的额外工作 | 本轮改法及保持条件 |
+| 路径 | 减少的工作 | 数值与存储约束 |
 |---|---|---|
-| Add/Sub；节点12 `[1,16,104,104]` | 每个元素两套广播坐标、除法/取余、索引数组 | 同位置连续读两路、做原FP32加/减、连续写；其他广播保留回退 |
-| Mul；`[1,2,32,169]×标量`、`[1,4,3549]×[1,3549]` | 重复计算相同广播偏移 | 标量向量乘或按3549元素周期连续读取，保留输入顺序与逐元素舍入 |
-| Permute、Expand、Gather | 逐lane拆坐标、生成索引，恒等Expand仍按广播逐项处理 | 转置改为定步长取数；恒等Expand整段复制，索引Expand向量重复；Gather验证后整行搬运，保持图节点和物化输出 |
-| Nearest；`[1,128,26,26]→[1,128,52,52]` | 为重复像素做多次跨步存储 | 寄存器内将值排成`a,a,b,b`，连续写到两个输出行；只复制位模式 |
-| Pool；`[1,128,13,13]`、5×5/stride1/pad2 | lane跨远距离通道，重复准备相同窗口 | lane按空间位置展开，复用全部通道的窗口索引；按原ky/kx做vfmax，补负无穷，不能补0 |
-| BMM；`[2,169,32]×[2,32,169]`等 | 相同B向量为每个输出行重复加载 | 每4行共享一次B加载，m2沿列并行；每个输出仍从+0按K独立乘、加，无FMA |
-| SiLU/Sigmoid/Softmax、复制、bias | m1短向量，逐向量重复缓存维护 | m2向量与整段所有权交接；指数多项式、除法、Softmax标量顺序求和、bias独立加法均不变 |
-| Max、两次Top-K | 每位置标量比较；Top-K对最多24000项不断移动300项数组 | Max按位置向量化且只在严格大于时更新；Top-K用小堆选择、最后排序，保留同分小索引和原始值位模式，NaN回退 |
-| 普通卷积FP16输入 | 1×1也生成核坐标、边界掩码，内部窗口重复判断边缘 | 1×1直接跨通道定步长读，完整窗口省去掩码；FP16整数RNE、尾部补零、K顺序、AMU指令均不变 |
-| 输入/邮箱CRC32 | 每字节执行8轮逐位更新 | 固定64字节表每次推进4位，共两次；同一IEEE CRC32，不减校验范围 |
+| COPY同址视图 | 省去相同数据的整段复制 | 根张量生命期、形状与消费者保持不变 |
+| 启动权重预打包 | 每帧不再重复转换不变权重 | 原FP16 RNE、补零和排列保持一致 |
+| 窗口与输入打包融合 | 不写再读FP32 im2col，所有M块共用一次输入 | K排列、TR-B布局及AMU等待保持不变 |
+| 三行FP16缓存 | 同一3×3输入像素不随相邻窗口反复转FP16；源行连续读取 | 每层/batch初始化；环形行标签、边缘+0、尾部及非法值拒绝规则一致 |
+| 整层bias | 每个32位置块逐通道调用通用函数，收为每层一次专用调用 | 每个输出仍在点积后独立加bias；完整缓存行一次交接 |
+| 直接3×3深度卷积 | 省去通用分组调度与窗口物化 | 原九项独立FP32乘、加及最后bias，不使用FMA |
+| Add/Sub/Mul连续或周期读取 | 省去逐lane广播坐标与索引数组 | 同一元素对应、独立舍入，其他广播回退 |
+| Permute/Nearest/Pool | 定步长转置、寄存器重复与空间并行，减少索引及重复访存 | 位模式、池化ky/kx顺序及负无穷补边保持不变 |
+| BMM四行复用B | 相同B向量一次加载供四个输出行计算 | 各输出保留自己的K顺序与独立乘、加 |
+| 非线性/复制整段交接 | 减少逐向量缓存维护，使用RVV m2 | 原指数近似、除法和Softmax标量求和顺序不变 |
+| Max/堆Top-K/Gather | 并行最高分类别、小堆选择、重复行索引整体复制 | 同分首索引、完整排序、NaN回退与索引验证保留 |
+| CRC查表 | 每字节两次4位更新，减少逐位循环 | 同一IEEE CRC32，校验范围不缩小 |
+
+**整层bias。** 源码 `rvv_bias_channels` 对整层 `[Cout,P]` 检查一次、接管一次、逐通道连续加法、发布一次。全网加法次数仍为6,766,084，94次内核调用、7,828次通道循环；首层 `[16,43264]` 只需一次调用和16个通道循环。该变化只减少调度与缓存维护，不改变每个元素的算式。
+
+**三行缓存。** `AmuInputRows` 由begin/end限定当前卷积与batch的所有权，原始CLP预留不变。FP16行缓存放在scratch后部，39层冻结形状最多占39,936字节；它与前部AMU输入块不重叠。行转换后fence，再通过RVV半字gather读取；层结束归还缓存所有权。保留非法值标记，避免因为预转换了未被窗口使用的像素而新增拒绝条件。异常路径同样归还所有权。
 
 #### 后续修改约束
 
-后续候选集中在上表“审查重点”和本页节点记录，不在其他说明重复列清单。本轮不改变数值规则的明确优化已合并实施；进一步跨层融合、零拷贝别名和布局调整需先核对生命期、覆盖写与参考契约。先用[本页性能章节](#performance)的同输入周期分布决定收益，不能把other_compute全部视为可删开销。
-
-本轮保留所有同步、CRC、异常日志及原数值检查，不用减少诊断范围换取速度。PCIe工具常驻连接、跨帧并行与AMU异步流水需要平台接口和实板完成语义；本轮沿用一帧在途及每条AMU指令完成等待。
-
-当前优化保持FP16输入位模式、每输出K累加顺序、独立bias和同步契约。FMA、归约顺序、精度或跨层布局改变需单独评估；matrix_wait不是AMU总时间，PCIe工具累计时间也与板端计算重叠，不能据此估算峰值利用率或额外串行耗时。
+当前保持FP16位模式、每输出K累加顺序、独立bias、完整同步、CRC和异常信息。FMA、归约顺序、精度/近似、跨层布局及异步流水需另行评估。每次改动说明适用形状、减少工作的原因及数值/缓存约束；只有实测后才填写收益，不将QEMU速度换算成实板收益。
 
 <a id="next-optimizations"></a>
 
-#### v6实测后的优化候选：尚未实施
+#### 后续候选：尚未实施
 
-依据 `run-bivzu9qm` 前两页性能与当前源码静态核算；没有v6第三页或完整节点计时，不能沿用v5前十名作为当前热点。以下是实施建议，不是提速结论，也不改变现有数值规则。
-
-| 建议顺序 | 目标与当前成本 | 原理及验证重点 |
-|---|---|---|
-| 1 | 普通卷积bias：56,266,892周期，1.406672秒，占模型12.1% | 将32位置小块后的通用加法改为整层专用bias遍历；批量交接完整输出缓冲区，保留最后独立FP32加法 |
-| 2 | 输入准备：213,614,172周期，5.340354秒，占模型45.9% | 3×3窗口复用已转换的FP16行；1×1另测连续空间取数与小块转置，保持AMU输入位模式、布局及K顺序 |
-| 演示链路另行处理 | Host记录24.7261秒/帧，PCIe往返12.6179秒；二者之差约12.1082秒 | 减少工具进程启动及重复小读，先确认平台多段读或常驻接口；该差值还含首帧会话均摊等，不能全部算作可消除传输时间 |
-| 后续 | Slice/Expand/Concat等物化和重复缓存维护 | 先按现有完整节点计时排序，再设计别名、生产者直写或所有权跟踪；必须联动根张量生命期和缓存行 |
-
-**整层bias。** [当前调度](../yolo26_riscv/accel_model.c)每完成至多32个空间位置，就逐输出通道调用一次 `rvv_binary_periodic`；该[通用函数](../yolo26_riscv/rvv_model_ops.c)每次重复参数检查、输入clean、输出flush/invalidate和fence。冻结94层普通卷积每帧共有5,710个空间块、217,076次通用加法调用，实际只需加6,766,084个bias元素。可在一层全部AMU输出完成后，对 `[Cout,P]` 一次接管、逐通道连续遍历、一次发布；专用内核94次调用、7,828次通道循环，算术次数不变。首层 `[16,43264]` 原有21,632次通用调用，可收为1次专用调用、16个通道循环。不能把bias预置进AMU累加器，也不将它与点积或SiLU合并舍入；AMU完成等待、失败返回和共享缓存行保护保留。bias周期比v5上升27.5%是调查依据，尚无证据将全部增长归因于某条指令。
-
-**FP16行缓存与打包布局。** [当前打包器](../yolo26_riscv/amu_input_rvv.c)沿K向量化，每次为一个空间位置取数并执行[整数RNE转换](../yolo26_riscv/amu_half_rvv.h)。39层普通3×3卷积按窗口处理17,156,880项，而各层源输入合计3,853,200项；前者含补零及重复窗口项，不是实际DDR读取计数。可沿输出行推进，先把所需输入行转为FP16，再让相邻窗口从三行环形缓冲取数并排成原TR-B块，减少同一输入被反复转换。冻结形状的三行上限为39,936字节，例如节点16的 `[64,3,104]`；现有512KiB scratch的FP16块最多使用256KiB，可评估在余部放行缓存，不扩大CLP预留。实施需核对跨32位置块/跨输出行、stride=1/2、边缘+0、尾K、正负零/次正规数、溢出拒绝及缓冲复用；不因预转换了未使用元素而新增拒绝条件。
-
-55层1×1共有5,426,928个窗口项，与各层输入元素合计相同，没有3×3式窗口重复。此处应另测NCHW连续空间读取、FP16转换、小块转置成 `[位置,K]`；不能只把离散读换成同样昂贵的离散写。当前已实现1×1定步长直读、内部窗口省掩码及跨M块复用，不将这些既有优化再次列为新方案。原生FP16转换是否可用须先核对平台，不能把AMU支持FP16等同于RVV也具备对应转换能力。
-
-**Host工具开销。** [当前PCIe客户端](../yolo26_pc/pcie_backend.py)每个读写都启动pbload/pbcopy并交换临时文件。本次每次pbload平均0.957秒、pbcopy平均0.954秒；64字节状态与7200字节候选的小读同样启动完整工具，现有数据不能证明瓶颈是PCIe带宽。优先核实平台是否支持一次读取多段，将已完成帧的候选、诊断、计时及状态合理合并；之后再评估常驻API。保持请求读回后才提交doorbell、会话/帧号/CRC及最后状态复核，不能将有依赖的读写盲目合批，也不靠去掉计时或错误信息制造提速。当前不实现该链路改动，不假设现有二进制已提供常驻协议。
-
-**图与缓存。** 28个Slice中20个满足连续范围的形状条件，输出合计4,383,184字节；8个同形状Expand仍复制803,088字节，24个Concat输出合计14,735,888字节。以上是静态逻辑规模，不是已经可省的DDR流量；别名和生产者直写仍须检查覆盖写、消费者、64字节行及诊断快照。节点边界clean涉及常量9,735,108字节和特征111,709,796字节的逻辑范围；当前boundary_cache仅0.855251秒，占模型7.4%，先区分启动后只读常量、已发布RVV输出和标量脏数据，再决定能否省去维护。AMU指令内的诊断阶段发布和完成等待也有成本，但不能由matrix_wait的0.070285秒外推完整AMU时间，暂不以删除同步为优化起点。
-
-**诊断发布频度。** 冻结94层普通卷积有43,335次AMU乘加指令及8,561次结果块存储，按[当前AMU路径](../yolo26_riscv/amu.c)和输入打包调用顺序，仅这两条路径已有161,398次 `board_diag_phase`，另有51,896次完成状态标志发布；尚未计节点调度。每次阶段发布在[诊断实现](../yolo26_riscv/board/diagnostics.c)中clean缓存行并fence。部分发布位于内部计时起点之外，因此不能从matrix_wait很小就认定这些开销很小。可以先计量其成本；如要将正常进度合并或限频，须明确接受状态刷新粒度变化，保留异常/trap立即发布，不能静默降低排障能力。
-
-**收益与执行边界。** 若仅假设input_pack减半、其他周期不变，模型从11.627948秒变为8.957771秒；这是选优先级的算术估计，不是承诺。40MHz下5FPS只允许8,000,000周期/帧，当前模型仍相差约58倍，且host链路还有秒级固定开销。先做整层bias，再评估输入行缓存；图别名、转置/非线性/BMM的进一步修改依赖当前节点计时。已有菜单6可离线显示旧运行第三页，不需要重跑板子；同次数值状态仍从菜单5核对。首次改代码前确认方案，每批最多三个文件；每项同时记录适用形状、原理、数值/缓存约束和实际收益。
-
+- **1×1布局**：55层共5,426,928个源值，无3×3式窗口重复。比较连续空间读取、FP16转换和小块转置，避免仅把离散读变成离散写；原生FP16转换能力需先核对平台。
+- **host工具调用**：目前每个pbload/pbcopy都会启动进程并交换临时文件。先核实多段读取或常驻接口，保持doorbell前请求读回、会话/帧号/CRC及最终状态复核。
+- **图与缓存**：20个Slice具备连续范围形状条件，8个同形状Expand仍物化；别名/生产者直写需联动根生命期、覆盖写、64字节行和快照。只读常量及已发布特征的重复clean应按所有权逐项判断。
+- **诊断发布**：AMU与输入路径有高频阶段发布，部分位于内部计时起点外。先测成本；如合并正常进度刷新，须明确接受粒度变化，异常/trap仍立即发布。
 
 <a id="performance"></a>
 
-## 5. 实测、计时含义与检测精度
+## 5. 最近一次实板计时、字段与检测精度
 
-操作步骤只在[OPERATIONS](OPERATIONS.md#2-视频运行与结果)维护；菜单6离线读取已保存结果，不访问板子。新版本先确认[数值验收](VALIDATION.md#视频检查的判据)通过，再比较性能。
+操作与结果位置统一见[OPERATIONS](OPERATIONS.md#2-视频运行与结果)。菜单6读取已有报告，不访问板子；菜单5核对功能和逐位数值。固件一次发布整帧及334节点计时，host保存performance-summary.json、三页文本和node-timing.csv。
 
-固件在DDR保存整帧及334节点计数，完成后一次读取。输出：`performance-summary.json`、`performance-page-1/2/3.txt`、全部节点含六阶段周期的 `node-timing.csv`。
+<a id="latest-measurement"></a>
 
-当前实现、缓存交接与全算子状态统一见 [本页实现章节](#implementation)。本节集中维护实测、计时边界及检测效果评估。
+### 最新实板基线：run-bivzu9qm
 
-| 计时版本/实现 | host运行 | 平均模型周期 | 每帧记录耗时 |
-|---|---|---:|---:|
-| v1 原始逐块准备 | run-t5240cg4 | 3,817,107,181 | 110.4461秒 |
-| v2 启动权重预打包 | run-ls19m5ja | 2,862,430,017 | 86.0835秒 |
-| v3 标量融合窗口/FP16并复用 | run-llwcyfdf | 2,150,645,371 | 68.1029秒 |
-| v4 RVV窗口提取/整数FP16转换 | run-sup5jvd9 | 1,137,382,966 | 43.2521秒 |
-| v5 RVV直接3×3深度卷积 | run-2i3ciq3m | 884,603,103 | 37.0487秒 |
-| v6 合并RVV/输入准备/选择与CRC | run-bivzu9qm | 465,117,933 | 24.7261秒 |
+本次新实现计时版号7、路径 `rvv_rowcache_layer_bias`，**开发逐位回归通过，尚无新实板耗时**。以下只保留更新前最近一次实板运行 `run-bivzu9qm`（版号6，40MHz、3个普通帧），收到新实测后覆盖，不维护历轮优化结果表。该运行三页计数有效，无trace/finite/capture排除帧；同次VIDEO CHECK结果仍需从已有菜单5报告确认，不重跑。
 
-六版均为3个普通帧、无无效计时记录，数据由现场性能报告提供。v3比v2模型周期减少24.9%、每帧记录耗时减少18秒；比v1累计减少43.7%周期、38.3%记录耗时。计时报告本身不是数值验收报告，各新运行仍须确认VIDEO CHECK PASSED。历次优化原理见[本页优化原理](#已实施优化的原理)。
+| 项目 | 平均值 |
+|---|---:|
+| model_cycles | 465,117,933；11.627948秒 |
+| graph_cycles | 459,034,418 |
+| service_cycles | 499,782,783；12.494570秒 |
+| input_pack | 213,614,172；5.340354秒 |
+| bias_dequant | 56,266,892；1.406672秒 |
+| other_compute | 126,682,052；3.167051秒 |
+| boundary_cache | 34,210,034；0.855251秒 |
+| matrix_submit / matrix_wait | 23,375,503 / 2,811,412 |
+| 每帧记录耗时 / PCIe往返 | 24.7261 / 12.6179秒 |
+| upload / download / profile_read | 4.7754 / 1.9110 / 1.9114秒 |
+| prepare / postprocess | 0.0169 / 0.0069秒 |
 
-v3模型周期分布：input_pack=1,268,354,376（59.0%），input_im2col=244,184,400（11.4%），other_compute=520,756,478（24.2%）。前两项合计相比v2减少31.4%。节点278/274是RVV深度卷积，合计约7.7%模型周期；不把other_compute全部视为可删开销，也不把matrix_wait当作AMU总执行时间。
+运行中pbload 62次/59.331秒、pbcopy 11次/10.499秒，均无失败；平均每次约0.95秒。累计工具时间与计算重叠，不能与模型耗时直接相加；24.7261秒也不是采集到可见延迟。第一帧会话开销计入记录，golden离线耗时另列。三帧成功不证明持续运行稳定。
 
-v4匹配同一父目录下完整、同帧号/输入哈希、计数有效的v3运行，优先 `run-llwcyfdf`；没有合格v3才向前匹配v2/v1。保留三份基线。基线版本/路径/报告SHA256写入summary，缺匹配项明确提示。周期比包含计时开销，需结合Host耗时评估。
+最近一次实板基线的前十热点（均为普通卷积，节点总周期含cache；P为输出空间位置数）：
 
-### v4现场结果：run-sup5jvd9
+| 节点 | 核/步长 | M / K / P | 总周期 | cache | compute |
+|---:|---|---|---:|---:|---:|
+| [0](#node-000) | 3×3 / 2 | 16 / 27 / 43264 | 24,226,834 | 585,760 | 23,641,059 |
+| [2](#node-002) | 3×3 / 2 | 32 / 144 / 10816 | 21,090,546 | 784,164 | 20,306,369 |
+| [16](#node-016) | 3×3 / 2 | 64 / 576 / 2704 | 18,054,215 | 820,482 | 17,233,695 |
+| [8](#node-008) | 3×3 / 1 | 8 / 144 / 10816 | 17,595,900 | 196,199 | 17,399,690 |
+| [14](#node-014) | 1×1 / 1 | 64 / 48 / 10816 | 15,068,438 | 587,796 | 14,480,631 |
+| [255](#node-255) | 3×3 / 1 | 16 / 576 / 2704 | 15,059,986 | 205,281 | 14,854,668 |
+| [10](#node-010) | 3×3 / 1 | 16 / 72 / 10816 | 11,307,881 | 98,850 | 11,209,020 |
+| [30](#node-030) | 3×3 / 2 | 128 / 1152 / 676 | 9,729,312 | 555,625 | 9,173,661 |
+| [157](#node-157) | 1×1 / 1 | 64 / 256 / 2704 | 9,167,208 | 797,468 | 8,369,728 |
+| [4](#node-004) | 1×1 / 1 | 32 / 32 / 10816 | 8,113,823 | 390,764 | 7,723,048 |
 
-来源为用户提供的性能三页文本，3帧均有有效计数，无trace/finite/capture排除帧；报告自动选中v3 `run-llwcyfdf`。本次提供的是性能页，未包含同次VIDEO CHECK结果，**数值通过状态仍待核对旧报告，不要求重跑**。
-
-| 对比项 | v3 | v4 | 降幅 |
-|---|---:|---:|---:|
-| model_cycles | 2,150,645,371 | 1,137,382,966 | 47.1%（1.891倍） |
-| input_pack | 1,268,354,376 | 255,910,412 | 79.8% |
-| input_im2col | 244,184,400 | 244,017,709 | 0.07% |
-| other_compute | 520,756,478 | 520,308,378 | 0.09% |
-| 每帧记录耗时 | 68.1029秒 | 43.2521秒 | 36.5% |
-| run_roundtrip_seconds | 56.0150秒 | 31.2231秒 | 44.3% |
-
-相对v1累计模型周期下降70.2%，记录耗时下降60.8%。本轮模型少1,013,262,405周期，其中input_pack少1,012,443,964周期；其余主要阶段基本不变，下降与本次输入准备优化对应。other_compute占比升至45.7%是分母变小，绝对周期并未增加。
-
-v4的input_im2col占模型21.5%，input_pack占22.5%；节点278/274当时为原FP32深度卷积，合计14.6%模型周期。该分布促成v5直接深度卷积实现，现场结果见下一节；随后按完整节点表评估Add、Permute和Nearest，不将通用other_compute视为单一开销。
-
-本次热点（节点总周期，包含节点cache）：
-
-| 节点 | 操作 | 平均周期 |
-|---:|---|---:|
-| 278 | 深度卷积 | 92,271,919 |
-| 274 | 深度卷积 | 73,812,251 |
-| 12 | Add | 37,286,158 |
-| 284 | 深度卷积 | 36,801,486 |
-| 314 | Permute | 30,977,720 |
-| 155 | Nearest | 28,133,018 |
-| 0 | 普通卷积 | 25,087,616 |
-| 2 | 普通卷积 | 23,237,520 |
-| 288 | 深度卷积 | 23,000,503 |
-| 16 | 普通卷积 | 20,123,886 |
-
-其余阶段：service=1,224,149,968、graph=1,131,299,461、matrix_submit=23,382,057、matrix_wait=2,812,270、bias_dequant=48,580,575、boundary_cache=34,210,111周期。启动权重准备74,873,508周期，94层/5,033,984字节/2,391,664个有效值；帧内转换仍为0。
-
-Host平均upload=4.7873、download=1.8878、profile_read=1.8885、prepare=0.0176、postprocess=0.0037秒；elapsed最大47.6653秒。pbload全程116次/109.456秒，pbcopy 11次/10.379秒，均无失败；累计工具时间与板端计算重叠，不能与模型时间直接相加。只覆盖本次3帧，不解除历史长视频PCIe故障的待验状态。
-
-### v5验收与比较
-
-v5计时版号5，输入路径 `rvv_window_fp16_reuse_dw3x3`；布局保持24320字节并兼容旧版。性能报告优先匹配同输入、计数有效的v4 `run-sup5jvd9`，缺合格v4才向前匹配。保留该基线；操作只在[OPERATIONS](OPERATIONS.md#2-视频运行与结果)维护。
-
-现场运行 `run-2i3ciq3m`：用户提供性能三页，3帧计数全部有效，无trace/finite/capture排除帧，自动匹配上述v4基线。**同次VIDEO CHECK结果尚未提供，数值状态可从菜单5离线确认，不要求重跑板子。**
-
-| 对比项 | v4 | v5 | 降幅 |
-|---|---:|---:|---:|
-| model_cycles | 1,137,382,966 | 884,603,103 | 22.2%（1.286倍） |
-| graph_cycles | 1,131,299,461 | 878,519,703 | 22.3% |
-| service_cycles | 1,224,149,968 | 969,554,678 | 20.8% |
-| 每帧记录耗时 | 43.2521秒 | 37.0487秒 | 14.3%（少6.2034秒） |
-| run_roundtrip_seconds | 31.2231秒 | 24.9601秒 | 20.1% |
-
-报告填写core=40MHz，按该频率换算模型22.115078秒、板端服务24.238867秒，分别约0.0452和0.0413帧/秒；不等同于host展示帧率。相对v1累计模型周期下降76.8%、每帧记录耗时下降66.5%。
-
-固定图8层走直接路径，整帧input_im2col实测为0。input_pack=255,815,802、matrix_submit=23,384,863、matrix_wait=2,811,595、bias_dequant=44,131,740、other_compute=516,093,552、boundary_cache=34,210,151周期；帧内weight_prepare和权重转换次数均为0。启动94层准备81,413,039周期，5,033,984字节、2,391,664个有效权重值。
-
-直接深度卷积含bias和内部缓存交接，整体记入节点compute/other_compute；bias_dequant只剩AMU卷积的独立偏置阶段。因边界变化，**不能把im2col/bias减少全部称作节省，也不能把other_compute增长直接称作退化**。本轮减少252,779,863模型周期；八个深度卷积的具体降幅仍需完整node-timing.csv，前十热点列表不足以计算各层收益。
-
-当前热点（节点总周期，包含节点cache）：
-
-| 节点 | 操作 | 平均周期 |
-|---:|---|---:|
-| 12 | Add | 36,938,876 |
-| 314 | Permute | 30,983,363 |
-| 155 | Nearest | 28,133,043 |
-| 0 | 普通卷积 | 25,046,573 |
-| 2 | 普通卷积 | 23,214,037 |
-| 16 | 普通卷积 | 20,124,095 |
-| 8 | 普通卷积 | 20,079,736 |
-| 26 | Add | 18,479,582 |
-| 83 | Pool | 17,760,610 |
-| 84 | Pool | 17,760,145 |
-
-深度卷积退出前十热点。单节点12占graph约4.2%，不能从它外推全部Add/Sub收益；input_pack仍占模型28.9%。依据这些热点及用户合并优化授权，v6将明确保持数值规则的内核修改统一交付，原理只在[本页v6原理](#v6合并优化的原理)维护。
-
-Host平均prepare=0.0165、postprocess=0.0061、upload=4.7671、download=1.9052、profile_read=1.9109秒；elapsed最大40.9181秒。pbload全程97次/92.819秒，pbcopy 11次/10.478秒，均无失败；累计工具时间与计算重叠，不能相加为额外串行成本。本次只有三帧，不解除旧长视频工具退出-11的待验状态。重启host后本次运行恢复正常，也不据此将此前BAR资源异常与旧退出-11归为同一原因。
-
-### v6验收与比较
-
-本轮标识 `rvv_bulk_v6`、计时版号6，24320字节布局和所有原字段保持不变。包含RVV连续/周期寻址、整缓冲区交接、转置/复制/上采样/池化、四行有序BMM、Max/堆Top-K、FP16打包分支和CRC查表；各项原理见[本页v6原理](#v6合并优化的原理)。
-
-现场运行 `run-bivzu9qm`：用户提供性能前两页，3帧均完成并有有效计数，无trace/finite/capture排除帧，自动按相同输入匹配v5 `run-2i3ciq3m`。**实板性能已取得，同次VIDEO CHECK结果尚未提供；用菜单5离线查看已有运行，不必重跑。**
-
-| 对比项 | v5 | v6 | 降幅 |
-|---|---:|---:|---:|
-| model_cycles | 884,603,103 | 465,117,933 | 47.4%（1.902倍） |
-| graph_cycles | 878,519,703 | 459,034,418 | 47.7% |
-| service_cycles | 969,554,678 | 499,782,783 | 48.5% |
-| 每帧记录耗时 | 37.0487秒 | 24.7261秒 | 33.3%（少12.3226秒） |
-| run_roundtrip_seconds | 24.9601秒 | 12.6179秒 | 49.4% |
-
-实际频率40MHz下，模型11.627948秒、板端服务12.494570秒，分别约0.0860和0.0800帧/秒。相比v1累计模型周期下降87.8%、每帧记录耗时下降77.6%，仍未达到5FPS目标。
-
-| 阶段 | v5周期 | v6周期 | 变化 |
-|---|---:|---:|---|
-| input_pack | 255,815,802 | 213,614,172 | 减少16.5%，占v6模型45.9% |
-| other_compute | 516,093,552 | 126,682,052 | 减少75.5%，占v6模型27.2% |
-| bias_dequant | 44,131,740 | 56,266,892 | 增加27.5%，占v6模型12.1%，需结合节点继续定位 |
-| matrix_submit | 23,384,863 | 23,375,503 | 基本不变 |
-| matrix_wait | 2,811,595 | 2,811,412 | 基本不变，不代表AMU总执行时间 |
-| boundary_cache | 34,210,151 | 34,210,034 | 基本不变 |
-
-weight_prepare、input_im2col及帧内权重转换次数均为0。启动准备76,606,996周期，94层、5,033,984字节、2,391,664个有效值。合并优化共减少419,485,170模型周期，但仅凭阶段合计不能将收益分配到每项改动；本次未提供v6第三页或完整node-timing.csv，不编造节点收益。
-
-Host平均prepare=0.0169、postprocess=0.0069、upload=4.7754、download=1.9110、profile_read=1.9114秒；elapsed最大29.2480秒。pbload全程62次/59.331秒，pbcopy 11次/10.499秒，均无失败。每帧记录耗时与PCIe往返之差约12.1082秒，模型提速后，传输、报告读取及会话等成本占比更高；累计pbload时间包含与板端计算重叠的轮询，不能直接相加。本次3帧不证明旧长视频PCIe故障已解决。
-
-菜单6自动优先按相同输入匹配v5，缺合格v5再向前匹配；原始结果及基线保留，不要求逐节点重采实板。
-
-阶段边界沿用v5：DW含bias/cache记入other_compute，普通卷积的独立bias仍计入bias_dequant；input_pack涵盖1×1直接读取、内部窗口及边缘掩码路径。CRC优化作用于input_crc/service，不能全部归为模型周期收益。比较model/service/节点总周期与host记录耗时，不将QEMU执行速度换算为实板收益。
+前十合计149,414,143周期，40MHz下3.735354秒，占graph的32.55%、模型的32.12%；单层0只占graph约5.3%，因此应改善普通卷积共享路径。该基线的旧bias通用调用在前十合计88,064次，占当时全网217,076次的40.6%；当前已改为94次整层调用。节点2/8/16/255的输出通道分别为32/8/64/16，却都需准备1,557,504个窗口项，说明MAC规模不能替代输入准备成本分析；具体打包耗时仍须对应节点六阶段，不能从总周期反推。当前回归覆盖这些3×3形状和全部94层输入；1×1另看14/157/4作为后续布局候选。
 
 ### 计时字段与解释
 
@@ -622,12 +501,12 @@ Host平均prepare=0.0169、postprocess=0.0069、upload=4.7754、download=1.9110�
 | 每节点cache | 输入缓存clean及CACHE阶段标记 |
 | 每节点compute | `accel_model_node`调用，包含内部AMU等待、数据打包及同步 |
 | weight_prepare | 帧内权重转换，预打包版本应为0；不含启动准备 |
-| input_im2col | 生成FP32窗口矩阵；v3/v4只用于原RVV分组卷积；v5/v6固定图全部为0，通用回退仍可计时 |
-| input_pack | v2仅转换/打包；v3含标量窗口及clean；v4/v5含RVV索引/gather、整数RNE、补零与scratch交接；v6含直接/内部/边缘取数分支，每空间块一次 |
+| input_im2col | 生成FP32窗口矩阵；当前固定图全部为0，通用分组回退仍可计时 |
+| input_pack | 当前含输入行缓存begin/end、行转换、半字gather或1×1直接转换、尾部及scratch交接，每空间块一次 |
 | matrix_submit | 矩阵配置/加载/乘加/存储提交及内部缓存维护，不能视为纯指令发射 |
 | matrix_wait | 提交后读取xmfflags排空的剩余等待及标志发布；不是AMU总运行时间 |
-| bias_dequant | 独立偏置遍历的周期；v5/v6不含直接深度卷积内部的bias，此版本无量化 |
-| other_compute | compute减去六阶段之和；v5/v6还包含完整直接深度卷积，不能当作纯软件开销 |
+| bias_dequant | 独立偏置遍历的周期；当前不含直接深度卷积内部的bias，当前无量化 |
+| other_compute | compute减去六阶段之和；当前还包含完整直接深度卷积，不能当作纯软件开销 |
 | 每节点check | 计算后的有限值检查分支；普通模式仅最终输出扫描 |
 | graph_overhead_cycles | 图总周期减去全部节点cache/compute/check之和，含进度日志、诊断提交、记账等 |
 
@@ -635,7 +514,7 @@ Host平均prepare=0.0169、postprocess=0.0069、upload=4.7754、download=1.9110�
 
 性能报告询问的是**当前FPGA上N550实际运行频率MHz**，未知直接回车，仅报周期。不能用RTL目标频率或QEMU计数推算板端秒数。Host的PCIe等待包含pbload轮询和工具启动；`elapsed_seconds`含录像保存，但未完整计入最终窗口显示和JSON落盘，不能称为采集到可见延迟。离线golden耗时单列，不算推理帧耗时。
 
-计时表uint64头固定16项：`magic version bytes frame nodes completed options state model_cycles graph_cycles input_check_cycles service_cycles input_crc_cycles output_cycles node_cycles session`。v1共8152字节；v2至v6均24320字节，布局不变。每节点为cache/compute/check及六阶段周期，随后全局六组cycles/calls、五项权重统计，末项uint64承载此前全部字节的CRC32。五项为weight_pack_bytes、weight_pack_values、weight_pack_cycles、prepared_layers、runtime_weight_conversions。Host兼容六版，核验CRC、会话/帧号、完成数量、阶段总账及权重不变量；离线重建核验SHA256。
+计时表uint64头固定16项：`magic version bytes frame nodes completed options state model_cycles graph_cycles input_check_cycles service_cycles input_crc_cycles output_cycles node_cycles session`。v1共8152字节；v2至v7均24320字节，布局不变。每节点为cache/compute/check及六阶段周期，随后全局六组cycles/calls、五项权重统计，末项uint64承载此前全部字节的CRC32。五项为weight_pack_bytes、weight_pack_values、weight_pack_cycles、prepared_layers、runtime_weight_conversions。Host兼容七版，核验CRC、会话/帧号、完成数量、阶段总账及权重不变量；离线重建核验SHA256。
 
 ### 检测效果
 
@@ -685,22 +564,19 @@ Host平均prepare=0.0169、postprocess=0.0069、upload=4.7754、download=1.9110�
 例：node2某次K=80起的16项，旧累加 `bffd7756`；RTL规格化后为 `c084d0aa`，额外保留sticky则为 `c084d0ab`。该实例已进入静态程序自测；237个旧异常抽样点也经独立Python整数模型复核。
 
 
-### 6.3 当前v6验证范围
+### 6.3 当前验证范围
 
-- `test_optimized.py`在QEMU VLEN128/512将实际v5提交 `0bad6ce` 的内核与v6同时编译、运行。固定图108种不同非卷积形状，每种两组输入、普通DDR/CLP模拟地址，共每种VLEN 432例；输入、输出及保护区逐字节一致。包含87个SiLU等重复节点所需的全部不同形状，不将重复形状重复计数。
-- 额外覆盖逐元素加/减/乘的五种frm、正负零/次正规数、向量尾部及原位输出；Top-K的K=1至67、同分/升降序/正负无穷、NaN原路径回退；CRC与原逐位实现对照及标准测试串。BMM/非线性/Softmax反汇编无FMA，保留原逐输出K顺序及标量求和。
-- 94层输入打包对标量FP16参考，含1×1定步长、内部/边缘窗口、跨行、尾块和复用；两种VLEN的全部布局、11种矩阵形状各两组输入、4种卷积形状通过。FP16转换规则、AMU提交和等待不变。
-- BUS正式启动、CLP自测、PCIe邮箱及完整334节点，在采集模式核对全部335个有效输出，均与既有QEMU节点归档逐位一致；最终7200字节、6个框、类别/置信度/坐标也完全一致。实际8层直接DW、5,710次RVV输入打包、阶段计数、CRC和常量视图guard通过。证据位于本地 `yolo26_pc/outputs/clp-model-validation/run-8c2adba0ee95/`，QEMU耗时210.4秒只记录测试时间。
-- 计时布局/重置原生C检查及Python3.8/3.12报告8项通过，兼容v1至v6并优先匹配v5同输入基线。独立host数值参考源码及规则保持不变；不以优化后的板端代码替换golden。
-- 本次真实C PCIe邮箱/host协议21项测试完成（20项通过、1项跳过）；发布包11项SHA256、冻结图/权重、节点来源、BIN/ELF及CLP布局校验通过。正式BIN为9,774,660字节，CLP预留仍为8,143,104字节。
-
-本轮保持冻结图、权重、arena、CLP预留和协议布局，不做NMS/量化改动。已取得run-bivzu9qm三帧有效实板计时，收益见[本页v6实测](#v6验收与比较)；同次功能与数值结论仍待已有VIDEO CHECK报告，持续运行仍待验证。不默认重跑三帧或重新采集全模型；v5同次数值也可离线确认，不由本轮QEMU通过替代。
+- VLEN128/512：全部94层形状、边缘/跨行/尾块、FP16 RNE边界与特殊值通过；39层3×3完整空间遍历的行缓存块与独立标量打包逐位一致，缓存跨batch/两帧、非法值及保护区检查通过。
+- 全部94层输出形状的整层bias，对独立标量FP32加法逐位一致；普通DDR/CLP模拟地址、五种frm、尾VL及输入/输出重叠拒绝通过。
+- BUS正式启动、CLP自测、PCIe和完整334节点采集：全部335个有效输出与冻结QEMU参考逐位一致；最终7200字节、6个框及类别/置信度/坐标完全一致。最新证据为本地 `yolo26_pc/outputs/clp-model-validation/run-49deebd4f37d/`。
+- 计数确认：5,710次输入打包、3,543个行缓存块、3,853,200个3×3源转换值、94次bias调用；8层直接深度卷积、无im2col及无帧内权重转换。
+- 新版实际物理缓存、持续运行及收益仍需host同三帧golden和计时；不默认重采全部节点。完整证据及交付检查见[VALIDATION](VALIDATION.md)。
 
 ### 6.4 事实来源和更新规则
 
-本页节点事实来自冻结图`reference/nodes/manifest.json`与已审核的`docs/operator-audit.csv/json`。形状、参数、类型、常量及arena偏移逐项校验；当前实现绑定v6源码，性能来自第5节列明的现场报告。人工说明负责“计算目的与优化原理”，静态资料不能证明任意新代码正确。
+本页节点事实来自冻结图`reference/nodes/manifest.json`与已审核的`docs/operator-audit.csv/json`。形状、参数、类型、常量及arena偏移逐项校验；当前实现绑定整层bias与三行缓存源码，性能来自第5节列明的现场报告。人工说明负责“计算目的与优化原理”，静态资料不能证明任意新代码正确。
 
-后续改实现时同步更新本页的路径、数值限制和节点说明；拿到新实测后更新第5节，不在多份模型说明中分别维护同一事实。旧版实测必须保留版本标签，不能当作当前版本单节点耗时。验证证据、操作命令和平台契约继续各自维护。
+后续改实现时同步更新本页的路径、数值限制和节点说明；拿到新实测后替换第5节的最近基线，不累计中间优化结果。当前待测时，最近基线必须注明原版号，不能当作新版单节点耗时。验证证据、操作命令和平台契约继续各自维护。
 
 ```bash
 # 从冻结图更新节点审查数据及源码哈希；不运行板子
@@ -718,7 +594,7 @@ python3 tools/build_operator_audit.py --check
 
 每个节点均列全部有效输入/输出，包括权重和bias。`weights+offset`相对原始常量区，`arena+offset`相对特征区；以字节计，不是可直接用于JTAG的绝对地址。以下“张量字节”描述逻辑规模，**不是实际DDR流量**；AMU会读取启动生成的FP16块，而不是逐帧读取并转换所有原始FP32权重。消费者/最后使用来自当前静态图，包含COPY别名，不代表已批准改变内存规划。末次使用只统计图内节点；最终候选还必须保留到host读回完成。
 
-“计算量”仅对卷积/BMM给MAC，对逐元素运算给元素数，对复制给物化规模；没有实测的节点不填写猜测周期。当前收到的最新性能为v5，v6全部节点周期待测。节点范围导航：
+“计算量”仅对卷积/BMM给MAC，对逐元素运算给元素数，对复制给物化规模；没有实测的节点不填写猜测周期。节点计时仅保留最近实板基线run-bivzu9qm已提供的十项；当前版号7的节点周期待实测。节点范围导航：
 
 导出时多个卷积复用了同一个SiLU对象，因此部分激活节点的原始module名统一显示为model.0.act；它不表示返回model.0执行。本页按相邻卷积的数据依赖恢复逻辑模块，并在相应节点保留导出名，节点编号和张量连接均不改变。
 
@@ -764,11 +640,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(2, 2)，pad=(1, 1)，groups=1；每输出累加27个乘积，最后加bias。 矩阵M=16、K=27、P=43264，batch=1；每N32空间块的FP16输入为[1,32,32]，固定容量2048字节，权重预打包2048字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：18,690,048 MAC；不含bias、索引、转换、补边与缓存工作。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期25,046,573（含节点cache）；v6待测，不能套用旧周期。
+**最近实板基线**：v6 run-bivzu9qm节点总周期24,226,834（cache=585,760、compute=23,641,059，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -806,11 +682,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(2, 2)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=32、K=144、P=10816，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：49,840,128 MAC；不含bias、索引、转换、补边与缓存工作。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期23,214,037（含节点cache）；v6待测，不能套用旧周期。
+**最近实板基线**：v6 run-bivzu9qm节点总周期21,090,546（cache=784,164、compute=20,306,369，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -848,9 +724,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加32个乘积，最后加bias。 矩阵M=32、K=32、P=10816，batch=1；每N32空间块的FP16输入为[1,32,32]，固定容量2048字节，权重预打包2048字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：11,075,584 MAC；不含bias、索引、转换、补边与缓存工作。
+
+**最近实板基线**：v6 run-bivzu9qm节点总周期8,113,823（cache=390,764、compute=7,723,048，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -920,11 +798,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=8、K=144、P=10816，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：12,460,032 MAC；不含bias、索引、转换、补边与缓存工作。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期20,079,736（含节点cache）；v6待测，不能套用旧周期。
+**最近实板基线**：v6 run-bivzu9qm节点总周期17,595,900（cache=196,199、compute=17,399,690，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -960,9 +838,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加72个乘积，最后加bias。 矩阵M=16、K=72、P=10816，batch=1；每N32空间块的FP16输入为[3,32,32]，固定容量6144字节，权重预打包6144字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：12,460,032 MAC；不含bias、索引、转换、补边与缓存工作。
+
+**最近实板基线**：v6 run-bivzu9qm节点总周期11,307,881（cache=98,850、compute=11,209,020，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -999,7 +879,7 @@ python3 tools/build_operator_audit.py --check
 
 **当前实现**：同形状RVV m2连续相加；其他广播回退。执行入口：`rvv_binary_periodic`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[rvv_model_ops.c](../yolo26_riscv/rvv_model_ops.c)、[rvv_access.h](../yolo26_riscv/rvv_access.h)。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期36,938,876（含节点cache）；v6待测，不能套用旧周期。
+
 
 **优化检查**：先测连续读取路径。必须保持：既有元素对应、FP32计算/整数语义及缓存交接。
 
@@ -1037,9 +917,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加48个乘积，最后加bias。 矩阵M=64、K=48、P=10816，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包8192字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：33,226,752 MAC；不含bias、索引、转换、补边与缓存工作。
+
+**最近实板基线**：v6 run-bivzu9qm节点总周期15,068,438（cache=587,796、compute=14,480,631，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -1077,11 +959,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(2, 2)，pad=(1, 1)，groups=1；每输出累加576个乘积，最后加bias。 矩阵M=64、K=576、P=2704，batch=1；每N32空间块的FP16输入为[18,32,32]，固定容量36864字节，权重预打包73728字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：99,680,256 MAC；不含bias、索引、转换、补边与缓存工作。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期20,124,095（含节点cache）；v6待测，不能套用旧周期。
+**最近实板基线**：v6 run-bivzu9qm节点总周期18,054,215（cache=820,482、compute=17,233,695，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -1119,7 +1001,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=64、K=64、P=2704，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包8192字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：11,075,584 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1191,7 +1073,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=16、K=288、P=2704，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：12,460,032 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1229,7 +1111,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=32、K=144、P=2704，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：12,460,032 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1268,7 +1150,7 @@ python3 tools/build_operator_audit.py --check
 
 **当前实现**：同形状RVV m2连续相加；其他广播回退。执行入口：`rvv_binary_periodic`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[rvv_model_ops.c](../yolo26_riscv/rvv_model_ops.c)、[rvv_access.h](../yolo26_riscv/rvv_access.h)。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期18,479,582（含节点cache）；v6待测，不能套用旧周期。
+
 
 **优化检查**：先测连续读取路径。必须保持：既有元素对应、FP32计算/整数语义及缓存交接。
 
@@ -1306,7 +1188,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加96个乘积，最后加bias。 矩阵M=128、K=96、P=2704，batch=1；每N32空间块的FP16输入为[3,32,32]，固定容量6144字节，权重预打包24576字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：33,226,752 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1346,9 +1228,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(2, 2)，pad=(1, 1)，groups=1；每输出累加1152个乘积，最后加bias。 矩阵M=128、K=1152、P=676，batch=1；每N32空间块的FP16输入为[36,32,32]，固定容量73728字节，权重预打包294912字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：99,680,256 MAC；不含bias、索引、转换、补边与缓存工作。
+
+**最近实板基线**：v6 run-bivzu9qm节点总周期9,729,312（cache=555,625、compute=9,173,661，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -1386,7 +1270,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=128、K=128、P=676，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包32768字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：11,075,584 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1458,7 +1342,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=32、K=64、P=676，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包4096字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1496,7 +1380,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1534,7 +1418,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1590,7 +1474,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1628,7 +1512,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1684,7 +1568,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=32、K=64、P=676，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包4096字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1740,7 +1624,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=64、K=64、P=676，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包8192字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：2,768,896 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1797,7 +1681,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加192个乘积，最后加bias。 矩阵M=128、K=192、P=676，batch=1；每N32空间块的FP16输入为[6,32,32]，固定容量12288字节，权重预打包49152字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：16,613,376 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1837,7 +1721,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(2, 2)，pad=(1, 1)，groups=1；每输出累加1152个乘积，最后加bias。 矩阵M=256、K=1152、P=169，batch=1；每N32空间块的FP16输入为[36,32,32]，固定容量73728字节，权重预打包589824字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：49,840,128 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1877,7 +1761,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加256个乘积，最后加bias。 矩阵M=256、K=256、P=169，batch=1；每N32空间块的FP16输入为[8,32,32]，固定容量16384字节，权重预打包131072字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：11,075,584 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1949,7 +1833,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=64、K=128、P=169，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包16384字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -1987,7 +1871,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加576个乘积，最后加bias。 矩阵M=64、K=576、P=169，batch=1；每N32空间块的FP16输入为[18,32,32]，固定容量36864字节，权重预打包73728字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2025,7 +1909,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加576个乘积，最后加bias。 矩阵M=64、K=576、P=169，batch=1；每N32空间块的FP16输入为[18,32,32]，固定容量36864字节，权重预打包73728字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2081,7 +1965,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加576个乘积，最后加bias。 矩阵M=64、K=576、P=169，batch=1；每N32空间块的FP16输入为[18,32,32]，固定容量36864字节，权重预打包73728字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2119,7 +2003,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加576个乘积，最后加bias。 矩阵M=64、K=576、P=169，batch=1；每N32空间块的FP16输入为[18,32,32]，固定容量36864字节，权重预打包73728字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2175,7 +2059,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=64、K=128、P=169，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包16384字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2231,7 +2115,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=128、K=128、P=169，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包32768字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：2,768,896 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2288,7 +2172,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加384个乘积，最后加bias。 矩阵M=256、K=384、P=169，batch=1；每N32空间块的FP16输入为[12,32,32]，固定容量24576字节，权重预打包196608字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：16,613,376 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2328,7 +2212,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加256个乘积，最后加bias。 矩阵M=128、K=256、P=169，batch=1；每N32空间块的FP16输入为[8,32,32]，固定容量16384字节，权重预打包65536字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：5,537,792 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2349,7 +2233,7 @@ python3 tools/build_operator_audit.py --check
 
 **当前实现**：RVV沿空间位置并行，跨通道复用窗口索引；无效lane取负无穷。执行入口：`maxpool_fp32_rvv`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[basic_rvv.c](../yolo26_riscv/basic_rvv.c)、[rvv_access.h](../yolo26_riscv/rvv_access.h)。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期17,760,610（含节点cache）；v6待测，不能套用旧周期。
+
 
 **优化检查**：先测空间并行路径，保留原ky/kx最大值语义。必须保持：既有元素对应、FP32计算/整数语义及缓存交接。
 
@@ -2368,7 +2252,7 @@ python3 tools/build_operator_audit.py --check
 
 **当前实现**：RVV沿空间位置并行，跨通道复用窗口索引；无效lane取负无穷。执行入口：`maxpool_fp32_rvv`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[basic_rvv.c](../yolo26_riscv/basic_rvv.c)、[rvv_access.h](../yolo26_riscv/rvv_access.h)。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期17,760,145（含节点cache）；v6待测，不能套用旧周期。
+
 
 **优化检查**：先测空间并行路径，保留原ky/kx最大值语义。必须保持：既有元素对应、FP32计算/整数语义及缓存交接。
 
@@ -2424,7 +2308,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加512个乘积，最后加bias。 矩阵M=256、K=512、P=169，batch=1；每N32空间块的FP16输入为[16,32,32]，固定容量32768字节，权重预打包262144字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：22,151,168 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2482,7 +2366,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加256个乘积，最后加bias。 矩阵M=256、K=256、P=169，batch=1；每N32空间块的FP16输入为[8,32,32]，固定容量16384字节，权重预打包131072字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：11,075,584 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -2554,7 +2438,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=256、K=128、P=169，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包65536字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：5,537,792 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3012,7 +2896,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=128、K=128、P=169，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包32768字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：2,768,896 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3051,7 +2935,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=256、K=128、P=169，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包65536字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：5,537,792 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3089,7 +2973,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加256个乘积，最后加bias。 矩阵M=128、K=256、P=169，batch=1；每N32空间块的FP16输入为[8,32,32]，固定容量16384字节，权重预打包65536字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：5,537,792 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3146,7 +3030,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加256个乘积，最后加bias。 矩阵M=256、K=256、P=169，batch=1；每N32空间块的FP16输入为[8,32,32]，固定容量16384字节，权重预打包131072字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：11,075,584 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3225,7 +3109,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加384个乘积，最后加bias。 矩阵M=128、K=384、P=676，batch=1；每N32空间块的FP16输入为[12,32,32]，固定容量24576字节，权重预打包98304字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：33,226,752 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3297,7 +3181,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=32、K=64、P=676，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包4096字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3335,7 +3219,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3373,7 +3257,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3429,7 +3313,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3467,7 +3351,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3523,7 +3407,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=32、K=64、P=676，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包4096字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3579,7 +3463,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=64、K=64、P=676，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包8192字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：2,768,896 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3636,7 +3520,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加192个乘积，最后加bias。 矩阵M=128、K=192、P=676，batch=1；每N32空间块的FP16输入为[6,32,32]，固定容量12288字节，权重预打包49152字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：16,613,376 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3676,7 +3560,7 @@ python3 tools/build_operator_audit.py --check
 
 **当前实现**：宽度2倍用RVV寄存器重复后连续写入；输出行复用。执行入口：`nearest_fp32_rvv`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[basic_rvv.c](../yolo26_riscv/basic_rvv.c)、[rvv_access.h](../yolo26_riscv/rvv_access.h)。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期28,133,043（含节点cache）；v6待测，不能套用旧周期。
+
 
 **优化检查**：与Concat融合需另评估布局。必须保持：既有元素对应、FP32计算/整数语义及缓存交接。
 
@@ -3717,9 +3601,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加256个乘积，最后加bias。 矩阵M=64、K=256、P=2704，batch=1；每N32空间块的FP16输入为[8,32,32]，固定容量16384字节，权重预打包32768字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：44,302,336 MAC；不含bias、索引、转换、补边与缓存工作。
+
+**最近实板基线**：v6 run-bivzu9qm节点总周期9,167,208（cache=797,468、compute=8,369,728，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -3789,7 +3675,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加32个乘积，最后加bias。 矩阵M=16、K=32、P=2704，batch=1；每N32空间块的FP16输入为[1,32,32]，固定容量2048字节，权重预打包2048字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3827,7 +3713,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=16、K=144、P=2704，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3865,7 +3751,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=16、K=144、P=2704，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3921,7 +3807,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=16、K=144、P=2704，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -3959,7 +3845,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=16、K=144、P=2704，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4015,7 +3901,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加32个乘积，最后加bias。 矩阵M=16、K=32、P=2704，batch=1；每N32空间块的FP16输入为[1,32,32]，固定容量2048字节，权重预打包2048字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4071,7 +3957,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加32个乘积，最后加bias。 矩阵M=32、K=32、P=2704，batch=1；每N32空间块的FP16输入为[1,32,32]，固定容量2048字节，权重预打包2048字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：2,768,896 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4128,7 +4014,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加96个乘积，最后加bias。 矩阵M=64、K=96、P=2704，batch=1；每N32空间块的FP16输入为[3,32,32]，固定容量6144字节，权重预打包12288字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：16,613,376 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4168,7 +4054,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(2, 2)，pad=(1, 1)，groups=1；每输出累加576个乘积，最后加bias。 矩阵M=64、K=576、P=676，batch=1；每N32空间块的FP16输入为[18,32,32]，固定容量36864字节，权重预打包73728字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：24,920,064 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4228,7 +4114,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加192个乘积，最后加bias。 矩阵M=128、K=192、P=676，batch=1；每N32空间块的FP16输入为[6,32,32]，固定容量12288字节，权重预打包49152字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：16,613,376 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4300,7 +4186,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=32、K=64、P=676，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包4096字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4338,7 +4224,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4376,7 +4262,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4432,7 +4318,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4470,7 +4356,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加288个乘积，最后加bias。 矩阵M=32、K=288、P=676，batch=1；每N32空间块的FP16输入为[9,32,32]，固定容量18432字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4526,7 +4412,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=32、K=64、P=676，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包4096字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,384,448 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4582,7 +4468,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=64、K=64、P=676，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包8192字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：2,768,896 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4639,7 +4525,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加192个乘积，最后加bias。 矩阵M=128、K=192、P=676，batch=1；每N32空间块的FP16输入为[6,32,32]，固定容量12288字节，权重预打包49152字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：16,613,376 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4679,7 +4565,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(2, 2)，pad=(1, 1)，groups=1；每输出累加1152个乘积，最后加bias。 矩阵M=128、K=1152、P=169，batch=1；每N32空间块的FP16输入为[36,32,32]，固定容量73728字节，权重预打包294912字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：24,920,064 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4739,7 +4625,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加384个乘积，最后加bias。 矩阵M=256、K=384、P=169，batch=1；每N32空间块的FP16输入为[12,32,32]，固定容量24576字节，权重预打包196608字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：16,613,376 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4811,7 +4697,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加1152个乘积，最后加bias。 矩阵M=64、K=1152、P=169，batch=1；每N32空间块的FP16输入为[36,32,32]，固定容量73728字节，权重预打包147456字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：12,460,032 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4849,7 +4735,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加576个乘积，最后加bias。 矩阵M=128、K=576、P=169，batch=1；每N32空间块的FP16输入为[18,32,32]，固定容量36864字节，权重预打包147456字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：12,460,032 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -4905,7 +4791,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=256、K=128、P=169，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包65536字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：5,537,792 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5363,7 +5249,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=128、K=128、P=169，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包32768字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：2,768,896 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5402,7 +5288,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=256、K=128、P=169，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包65536字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：5,537,792 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5440,7 +5326,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加256个乘积，最后加bias。 矩阵M=128、K=256、P=169，batch=1；每N32空间块的FP16输入为[8,32,32]，固定容量16384字节，权重预打包65536字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：5,537,792 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5498,7 +5384,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加384个乘积，最后加bias。 矩阵M=256、K=384、P=169，batch=1；每N32空间块的FP16输入为[12,32,32]，固定容量24576字节，权重预打包196608字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：16,613,376 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5538,9 +5424,11 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加576个乘积，最后加bias。 矩阵M=16、K=576、P=2704，batch=1；每N32空间块的FP16输入为[18,32,32]，固定容量36864字节，权重预打包36864字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：24,920,064 MAC；不含bias、索引、转换、补边与缓存工作。
+
+**最近实板基线**：v6 run-bivzu9qm节点总周期15,059,986（cache=205,281、compute=14,854,668，其余为check）。 当前版号7的该节点实测待取得。
 
 **优化检查**：按实测评估输入索引/打包及AMU调度。必须保持：FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接。
 
@@ -5576,7 +5464,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=16、K=144、P=2704，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5614,7 +5502,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加16个乘积，最后加bias。 矩阵M=4、K=16、P=2704，batch=1；每N32空间块的FP16输入为[1,32,32]，固定容量2048字节，权重预打包2048字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：173,056 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5652,7 +5540,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加1152个乘积，最后加bias。 矩阵M=16、K=1152、P=676，batch=1；每N32空间块的FP16输入为[36,32,32]，固定容量73728字节，权重预打包73728字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：12,460,032 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5690,7 +5578,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=16、K=144、P=676，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,557,504 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5728,7 +5616,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加16个乘积，最后加bias。 矩阵M=4、K=16、P=676，batch=1；每N32空间块的FP16输入为[1,32,32]，固定容量2048字节，权重预打包2048字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：43,264 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5766,7 +5654,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加2304个乘积，最后加bias。 矩阵M=16、K=2304、P=169，batch=1；每N32空间块的FP16输入为[72,32,32]，固定容量147456字节，权重预打包147456字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,230,016 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5804,7 +5692,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=3×3，stride=(1, 1)，pad=(1, 1)，groups=1；每输出累加144个乘积，最后加bias。 矩阵M=16、K=144、P=169，batch=1；每N32空间块的FP16输入为[5,32,32]，固定容量10240字节，权重预打包10240字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_rows_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：389,376 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5842,7 +5730,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加16个乘积，最后加bias。 矩阵M=4、K=16、P=169，batch=1；每N32空间块的FP16输入为[1,32,32]，固定容量2048字节，权重预打包2048字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：10,816 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -5937,7 +5825,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加64个乘积，最后加bias。 矩阵M=80、K=64、P=2704，batch=1；每N32空间块的FP16输入为[2,32,32]，固定容量4096字节，权重预打包12288字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：13,844,480 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -6013,7 +5901,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加80个乘积，最后加bias。 矩阵M=80、K=80、P=2704，batch=1；每N32空间块的FP16输入为[3,32,32]，固定容量6144字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：17,305,600 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -6051,7 +5939,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加80个乘积，最后加bias。 矩阵M=80、K=80、P=2704，batch=1；每N32空间块的FP16输入为[3,32,32]，固定容量6144字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：17,305,600 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -6127,7 +6015,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加128个乘积，最后加bias。 矩阵M=80、K=128、P=676，batch=1；每N32空间块的FP16输入为[4,32,32]，固定容量8192字节，权重预打包24576字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：6,922,240 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -6203,7 +6091,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加80个乘积，最后加bias。 矩阵M=80、K=80、P=676，batch=1；每N32空间块的FP16输入为[3,32,32]，固定容量6144字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：4,326,400 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -6241,7 +6129,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加80个乘积，最后加bias。 矩阵M=80、K=80、P=676，batch=1；每N32空间块的FP16输入为[3,32,32]，固定容量6144字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：4,326,400 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -6317,7 +6205,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加256个乘积，最后加bias。 矩阵M=80、K=256、P=169，batch=1；每N32空间块的FP16输入为[8,32,32]，固定容量16384字节，权重预打包49152字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：3,461,120 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -6393,7 +6281,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加80个乘积，最后加bias。 矩阵M=80、K=80、P=169，batch=1；每N32空间块的FP16输入为[3,32,32]，固定容量6144字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,081,600 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -6431,7 +6319,7 @@ python3 tools/build_operator_audit.py --check
 
 **计算与参数**：kernel=1×1，stride=(1, 1)，pad=(0, 0)，groups=1；每输出累加80个乘积，最后加bias。 矩阵M=80、K=80、P=169，batch=1；每N32空间块的FP16输入为[3,32,32]，固定容量6144字节，权重预打包18432字节。
 
-**当前实现**：启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → add_bias`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
+**当前实现**：启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias。执行入口：`convolution → amu_pack_conv_input_rvv / amu_matmul_packed_fp16 → rvv_bias_channels`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[amu.c](../yolo26_riscv/amu.c)、[amu_input_rvv.c](../yolo26_riscv/amu_input_rvv.c)。
 
 **点积规模**：1,081,600 MAC；不含bias、索引、转换、补边与缓存工作。
 
@@ -6646,7 +6534,7 @@ python3 tools/build_operator_audit.py --check
 
 **当前实现**：固定图均为末两轴转置：RVV跨步读、连续写；其他排列回退。执行入口：`rvv_transpose`。源码：[accel_model.c](../yolo26_riscv/accel_model.c)、[rvv_model_ops.c](../yolo26_riscv/rvv_model_ops.c)、[rvv_access.h](../yolo26_riscv/rvv_access.h)。
 
-**已有实测**：v5 `run-2i3ciq3m` 节点总周期30,983,363（含节点cache）；v6待测，不能套用旧周期。
+
 
 **优化检查**：更大转置分块需按实板访存测量。必须保持：既有元素对应、FP32计算/整数语义及缓存交接。
 

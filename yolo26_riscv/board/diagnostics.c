@@ -16,10 +16,9 @@ void board_profile_begin(unsigned nodes) {
     volatile uint64_t *p=(volatile uint64_t *)&board_profile;
     for(unsigned i=0;i<sizeof(board_profile)/8;++i) p[i]=0;
     for(unsigned i=0;i<PROFILE_PHASE_COUNT;++i) model_profile_phases[i]=(ModelProfilePhase){0};
-    /* v6 retains the v2-v5 wire layout; bulk RVV and FP16 pack shortcuts.
-     * Direct DW3x3 (including its bias/cache work) is node other_compute;
-     * it has no im2col or separately timed bias pass. */
-    board_profile.magic=BOARD_PROFILE_MAGIC; board_profile.version=6;
+    /* Row-cache setup/finish stays in input_pack; bias is once per layer.
+     * Wire layout remains unchanged. Direct DW3x3 is other_compute. */
+    board_profile.magic=BOARD_PROFILE_MAGIC; board_profile.version=7;
     board_profile.bytes=sizeof(board_profile); board_profile.frame=board_diag.frame;
     board_profile.nodes=nodes; board_profile.options=board_diag.options;
 #ifdef YOLO_N550_BOARD

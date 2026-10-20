@@ -33,7 +33,7 @@ bash tools/setup_host_video.sh
 
 ## 2. 视频运行与结果
 
-新版验收按 **1更新 → 3同一视频前三帧 → 确认VIDEO CHECK PASSED → 6新运行三页**。5可重看报告、补算未完成的golden及查看PNG。v6已有 `run-bivzu9qm` 三帧有效实板计时；同次数值结果尚未提供，直接用5查看旧运行，不必重跑。性能版本、基线匹配和检测效果对照见[模型手册](MODEL.md#performance)。第二页应显示 `rvv_bulk_v6`，固定图input_im2col=0；保留 `run-2i3ciq3m`，自动优先按相同输入匹配v5基线。
+当前模型验收按 **1更新 → 3同一视频前三帧 → 确认VIDEO CHECK PASSED → 6新运行三页**。5可重看报告、补算未完成的golden及查看PNG。第二页应显示 `rvv_rowcache_layer_bias`，计时版号7、input_im2col=0、runtime weight conversions=0；input_pack包含三行缓存的初始化/结束交接，bias每层调用一次。新实板周期取得前仅保留最近基线 `run-bivzu9qm`；完整原理、计时边界与当前实测见[模型手册](MODEL.md#performance)，不要求保留历轮优化结果。
 
 ```bash
 # 检查host并加载固件一次，按顺序处理默认视频的前三帧
@@ -132,7 +132,7 @@ bash tools/host.sh cleanup
 python3 tools/cleanup_host.py
 ```
 
-菜单9等价于清理入口。只删除安装缓存、源码字节码、白名单旧构建产物，以及无帧、未被引用且访问板子前失败的试运行。固件、工具链、环境、BUS原始证据、有效或中断帧、性能/精度记录、板端/PCIe故障、当前 `n550-board` 和 `host-verify` 构建均保留。
+菜单9等价于清理入口。删除安装缓存、源码字节码、白名单中间构建，以及已由新成功回归替代且无引用的旧 `clp-model-validation` 优化回归；同版优先按latest指针选择，不因host时钟回拨删除最新结果。无帧、未被引用且访问板子前失败的试运行也可删除。固件、工具链、环境、最新优化回归、BUS原始证据、正常/中断视频和板端/PCIe故障材料保留；当前 `n550-board` 和 `host-verify` 正式构建保留。
 
 结果JSON可能跨目录引用张量，不能整目录删除outputs；无法核实引用时保留，有任务持锁时拒绝清理。结束标志 `HOST CLEANUP COMPLETED`，记录位于 `yolo26_pc/outputs/cleanup/host-cleanup-*.json`；不按文件日期判旧。
 

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REVISION = '2026-10-20 / v6 bulk RVV / ordered BMM / FP16 shortcuts'
+REVISION = '2026-10-20 / FP16 three-row cache / whole-layer bias'
 # Maintained source review, not an automatic proof of implementation/speed.
 RULES = {
     'CONV': ('局部特征加权求和及通道组合', '按K顺序乘加，最后加bias', '见分组规则', 'accel_model.c;amu.c;amu_input_rvv.c', '输入准备；深度卷积专用路径'),
@@ -56,7 +56,7 @@ def rows_for(manifest):
         status = '候选未实施，按实测排序'
         if kind in ('SILU','ADD','SUB','MUL','SLICE','CONCAT','POOL','NEAREST','PERMUTE',
                     'EXPAND','BMM','SOFTMAX','SIGMOID','MAX','TOPK','GATHER'):
-            status = 'v6已实施；开发回归与实板状态见VALIDATION'
+            status = '当前已实施；开发回归与实板状态见VALIDATION'
             if kind in ('EXPAND','GATHER'): engine = 'RVV'
         constraint = '保持既有元素对应、FP32计算/整数语义及缓存交接'
         macs = 0; dims = ''; packed = ''; block_bytes = 0
@@ -68,18 +68,21 @@ def rows_for(manifest):
             dims = 'batch={} groups={} M/group={} N={} K={}'.format(out[0], p[4], m//p[4], n, k)
             if p[4] == 1:
                 engine = 'AMU FP16 / RVV input'
-                impl = '启动FP16权重预打包；1x1跨通道直接读/内部窗口无掩码/边界masked gather；整数RNE；N32输入复用；AMU K32顺序累加；RVV m2独立加bias'
+                if w[2:] == [3,3] and p[0] <= 2 and p[1] <= 2:
+                    impl = '启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias'
+                else:
+                    impl = '启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias'
                 packed = '[{},32,32]'.format((k+31)//32)
                 block_bytes = ((k+31)//32)*2048
-                status = 'v6输入准备已实施；实板与数值状态见VALIDATION'
-                todo = '按实测评估输入索引/打包及AMU调度'
+                status = '当前行缓存/整层bias已实施；实板与数值状态见VALIDATION'
+                todo = '按最新实测评估1x1布局、输入gather及AMU调度'
                 constraint = 'FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接'
             else:
                 engine = 'RVV FP32'
                 if (w[1] == 1 and p[:4] == [1, 1, 1, 1] and w[2:] == [3, 3] and
                         p[4] == inputs[0]['shape'][1] == out[1]):
                     impl = 'RVV m2按行直接读取3x3窗口；ky/kx九次独立乘加；最后独立加bias；整输出CLP交接，无im2col'
-                    status = 'v5已实施；开发回归与实板状态见VALIDATION'
+                    status = '当前已实施；开发回归与实板状态见VALIDATION'
                     todo = '先测直接窗口，后续复用不得改变每输出累加顺序'
                 else:
                     impl = '按组生成FP32 Kx32 im2col；RVV沿位置并行，按K顺序独立乘加；最后加bias'

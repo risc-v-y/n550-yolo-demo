@@ -124,6 +124,11 @@ for index,sample in enumerate(samples):
 comparisons=[item['reference'] for item in report['samples'].values() if item['reference'] is not None]
 report['status']='completed' if not comparisons else ('passed' if all(item['byte_identical'] for item in comparisons) else 'differences')
 (out/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
+if report['status']=='passed':
+    pointer=out.parent/'latest.json'
+    temporary=pointer.with_suffix('.tmp')
+    temporary.write_text(json.dumps({'directory':str(out)})+'\n',encoding='utf-8')
+    temporary.replace(pointer)
 print(f'Model validation {report["status"]}, {report["elapsed_seconds"]:.1f}s. Artifacts: {out}',flush=True)
 if report['status']=='differences':
     raise RuntimeError('Numerical differences recorded; no tolerance was used to hide them')

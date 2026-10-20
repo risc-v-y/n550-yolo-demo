@@ -36,6 +36,22 @@ int amu_conv_input_shape(const Conv2D *p, size_t *k, size_t *oh, size_t *ow);
 int amu_pack_conv_input_rvv(const Conv2D *p, const float *input, size_t batch,
                             size_t first, size_t columns, uint16_t *storage,
                             size_t capacity, AmuPackedInput *packed);
+/* Three FP16 input rows, private to one convolution/batch. begin/end transfer
+ * ownership of the complete backing cache lines. Never reuse across frames
+ * without begin; unused invalid source values are rejected only on selection. */
+typedef struct {
+    Conv2D shape;
+    const float *input;
+    uint16_t *data;
+    size_t batch, bytes, row[3];
+    uint64_t converted;
+} AmuInputRows;
+int amu_input_rows_begin(AmuInputRows *rows, const Conv2D *p, const float *input,
+                          size_t batch, uint16_t *storage, size_t capacity);
+void amu_input_rows_end(AmuInputRows *rows);
+int amu_pack_conv_rows_rvv(AmuInputRows *rows, size_t first, size_t columns,
+                          uint16_t *storage, size_t capacity, AmuPackedInput *packed);
+extern uint64_t amu_rvv_cached_blocks, amu_rvv_row_values;
 int amu_init(void);
 int amu_matmul_fp16(const float *a, const float *b, float *c,
                     size_t m, size_t n, size_t k, size_t lda, size_t ldb, size_t ldc);

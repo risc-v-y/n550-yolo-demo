@@ -131,6 +131,49 @@ static void binary_edges(void) {
     require(rvv_binary_periodic(a,b,a+1,32,32,0)==-1,9,0,0,0);
     require(rvv_binary_periodic(a,b,dest,33,2,0)==-1,10,0,0,0);
 }
+static void bias_cases(void) {
+    for(unsigned node=0;node<MODEL_NODE_COUNT;++node) {
+        const ModelNode *n=model_nodes+node;
+        if(n->op!=OP_CONV || n->p[4]!=1) continue;
+        const ModelTensor *t=model_tensors+n->out[0];
+        size_t channels=t->shape[1],columns=t->shape[2]*t->shape[3];
+        size_t bias_at=(GUARD+t->bytes+GUARD+63)&~(size_t)63;
+        size_t end=bias_at+channels*4+GUARD;
+        require(end<=CAPACITY,17,node,0,0);
+        for(unsigned mode=0;mode<2;++mode) for(unsigned frame=0;frame<2;++frame) {
+            unsigned char *data=mode ? clp.data : ram.data;
+            for(size_t i=0;i<end;++i) data[i]=old.data[i]=0xa5;
+            float *dest=(float *)(data+GUARD),*expected=(float *)(old.data+GUARD);
+            float *bias=(float *)(data+bias_at);
+            for(size_t c=0;c<channels;++c) bias[c]=value(c+7,frame);
+            for(size_t i=0;i<t->count;++i) {
+                dest[i]=value(i,frame);
+                volatile float x=dest[i],y=bias[i/columns];
+                expected[i]=x+y;
+            }
+            for(size_t i=bias_at;i<end;++i) old.data[i]=data[i];
+            require(!rvv_bias_channels(dest,bias,channels,columns),18,node,0,0);
+            for(size_t i=0;i<end;++i) require(data[i]==old.data[i],19,i,data[i],old.data[i]);
+        }
+    }
+    float *dest=(float *)(ram.data+64),*bias=(float *)(ram.data+2048);
+    for(unsigned frm=0;frm<5;++frm) {
+        __asm__ volatile("csrw frm,%0" :: "r"((uintptr_t)frm) : "memory");
+        for(size_t c=0;c<3;++c) bias[c]=value(c,0);
+        for(size_t i=0;i<111;++i) {
+            dest[i]=value(i+3,0);
+            volatile float x=dest[i],y=bias[i/37];
+            ((float *)old.data)[i]=x+y;
+        }
+        require(!rvv_bias_channels(dest,bias,3,37),20,frm,0,0);
+        for(size_t i=0;i<111;++i) require(bits(dest[i])==bits(((float *)old.data)[i]),21,i,0,0);
+    }
+    __asm__ volatile("csrw fcsr,zero" ::: "memory");
+    require(rvv_bias_channels(dest,dest+1,3,37)==-1,22,0,0,0);
+    require(rvv_bias_channels(dest,bias,SIZE_MAX,2)==-1,23,0,0,0);
+    require(rvv_bias_channels(dest,bias,3,0)==-1,24,0,0,0);
+}
+
 static void topk_edges(void) {
     ModelTensor tensors[3]={{.offset=64,.rank=2,.dtype=1,.shape={1,67}},
         {.offset=1024,.rank=2,.dtype=1,.shape={1,1}},
@@ -173,7 +216,7 @@ int main(void) {
         current_node=i; ++shapes;
         for (unsigned frame=0;frame<2;++frame) for (unsigned mode=0;mode<2;++mode) node_case(node,frame,mode);
     }
-    binary_edges(); topk_edges(); crc_cases();
+    binary_edges(); bias_cases(); topk_edges(); crc_cases();
     print("OPTIMIZED PASS frozen unique non-conv shapes="); hex(shapes); print(" cases="); hex(cases);
     print("; v5/v6 exact including inputs/guards, cached/CLP, 5 frm, Top-K ties/NaNs, CRC\n");
     platform_exit(0);

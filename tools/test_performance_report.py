@@ -23,6 +23,24 @@ def payload(frame=3, session=7, options=0, version=1):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_row_cache_layer_bias_profile_and_current_baseline(self):
+        profile=decode_profile(payload(version=7),3,7)
+        self.assertEqual(profile['input_path'],'rvv_rowcache_layer_bias')
+        self.assertEqual(validate_saved_profile(profile,3),profile)
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name); old=root/'baseline'; old.mkdir(); new=root/'latest'; new.mkdir()
+            row=dict(frame_id=0,input_sha256='abc',pcie_timing=dict(pcie_frame=3,board_profile=profile))
+            previous=dict(row,pcie_timing=dict(pcie_frame=3,board_profile=decode_profile(payload(version=6),3,7)))
+            (old/'report.json').write_text(json.dumps(dict(status='completed',results=[previous])))
+            (new/'report.json').write_text(json.dumps(dict(results=[row])))
+            result=app.analyze(new,40)
+            self.assertEqual(result['baseline']['version'],6)
+            self.assertIn('whole-layer bias',app.render(result,2))
+            for page in (1,2,3):
+                text=app.render(result,page)
+                self.assertLessEqual(len(text.splitlines()),22)
+                self.assertTrue(all(len(line)<=80 for line in text.splitlines()))
+
     def test_v6_bulk_and_v5_baseline(self):
         profile = decode_profile(payload(version=6), 3, 7)
         self.assertEqual(profile['input_path'], 'rvv_bulk_v6')

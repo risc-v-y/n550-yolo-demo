@@ -138,13 +138,11 @@ static int matmul(int amu, const AmuPackedWeights *packed, const float *a, const
     rvv_matmul_ordered(a, b, c, m, n, k, lda, ldb, ldc);
     return 0;
 }
-static void add_bias(float *dest, const float *bias, size_t channels, size_t columns, size_t stride) {
+static int add_bias(float *dest, const float *bias, size_t channels, size_t columns) {
     uint64_t start = model_ticks();
-    for (size_t oc = 0; oc < channels; ++oc) {
-        float *at = dest+oc*stride;
-        (void)rvv_binary_periodic(at, bias+oc, at, columns, 1, 0);
-    }
+    int status = rvv_bias_channels(dest, bias, channels, columns);
     model_profile_end(PROFILE_BIAS_DEQUANT, start);
+    return status;
 }
 static int convolution(const Conv2D *p, const float *input, const float *weight,
                         const float *bias, float *output, int amu, const AmuPackedWeights *packed) {
@@ -163,23 +161,35 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
             const float *biases = bias + group * ocg;
             float *dest = output + (batch * p->out_channels + group * ocg) * area;
             if(amu && packed) {
+                uint64_t begin=model_ticks();
+                AmuInputRows rows={0};
+                uint16_t *row_storage=(uint16_t *)((unsigned char *)&conv_scratch+sizeof(conv_scratch.fp16));
+                int cached=!amu_input_rows_begin(&rows,p,input,batch,row_storage,
+                                                  sizeof(conv_scratch)-sizeof(conv_scratch.fp16));
                 for(size_t first=0;first<area;first+=CONV_COLUMNS) {
                     size_t count=area-first<CONV_COLUMNS ? area-first : CONV_COLUMNS;
                     AmuPackedInput input_block;
-                    uint64_t start=model_ticks();
-                    int status=amu_pack_conv_input_rvv(p,input,batch,first,count,conv_scratch.fp16,
-                                                       sizeof(conv_scratch.fp16),&input_block);
+                    uint64_t start=first ? model_ticks() : begin;
+                    int status=cached ? amu_pack_conv_rows_rvv(&rows,first,count,conv_scratch.fp16,
+                                                               sizeof(conv_scratch.fp16),&input_block) :
+                                        amu_pack_conv_input_rvv(p,input,batch,first,count,conv_scratch.fp16,
+                                                               sizeof(conv_scratch.fp16),&input_block);
+                    if(status || first+count==area) amu_input_rows_end(&rows);
                     model_profile_end(PROFILE_INPUT_PACK,start);
-                    if(status || amu_matmul_packed_fp16(packed,&input_block,dest+first,area)) return -1;
+                    if(status || amu_matmul_packed_fp16(packed,&input_block,dest+first,area)) {
+                        amu_input_rows_end(&rows);
+                        return -1;
+                    }
                     /* All M blocks have completed: next pack may reuse scratch. */
-                    add_bias(dest+first,biases,ocg,count,area);
                 }
+                amu_input_rows_end(&rows);
+                if(add_bias(dest,biases,ocg,area)) return -1;
                 continue;
             }
             if (p->kernel_h == 1 && p->kernel_w == 1 && p->stride_h == 1 && p->stride_w == 1 && !p->pad_h && !p->pad_w) {
                 if (matmul(amu, packed, weights, input + (batch * p->in_channels + group * icg) * area,
                            dest, ocg, area, k, k, area, area)) return -1;
-                add_bias(dest, biases, ocg, area, area);
+                if(add_bias(dest, biases, ocg, area)) return -1;
                 continue;
             }
             for (size_t first = 0; first < area; first += CONV_COLUMNS) {
@@ -203,8 +213,8 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
                 }
                 model_profile_end(PROFILE_INPUT_IM2COL, start);
                 if (matmul(amu, packed, weights, conv_scratch.fp32, dest + first, ocg, count, k, k, CONV_COLUMNS, area)) return -1;
-                add_bias(dest + first, biases, ocg, count, area);
             }
+            if(add_bias(dest, biases, ocg, area)) return -1;
         }
     }
     return 0;

@@ -58,6 +58,29 @@ int rvv_binary_periodic(const float *left, const float *right, float *output,
     return 0;
 }
 
+int rvv_bias_channels(float *output, const float *bias, size_t channels, size_t columns) {
+    if (!output || !bias || !channels || !columns || channels > SIZE_MAX/columns ||
+        channels*columns > SIZE_MAX/sizeof(float) ||
+        ranges_overlap(output, channels*columns*sizeof(float), bias, channels*sizeof(float)))
+        return -1;
+    size_t bytes = channels*columns*sizeof(float);
+    const float *source = rvv_read_buffer(output, bytes);
+    (void)rvv_read_buffer(bias, channels*sizeof(float));
+    float *dest = rvv_write_buffer(output, bytes);
+    for (size_t channel = 0; channel < channels; ++channel) {
+        float value = bias[channel];
+        for (size_t column = 0; column < columns;) {
+            size_t vl = __riscv_vsetvl_e32m2(columns-column);
+            size_t at = channel*columns+column;
+            vfloat32m2_t x = __riscv_vle32_v_f32m2(source+at, vl);
+            __riscv_vse32_v_f32m2(dest+at, __riscv_vfadd_vf_f32m2(x, value, vl), vl);
+            column += vl;
+        }
+    }
+    rvv_publish_buffer(output, bytes);
+    return 0;
+}
+
 void rvv_transpose(const float *input, float *output,
                    size_t batches, size_t rows, size_t columns) {
     size_t count = batches*rows*columns;

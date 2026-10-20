@@ -17,6 +17,10 @@ void rvv_softmax(const float *input, float *output, size_t rows, size_t width);
  * Supports exact in-place elementwise output; no partial overlapping ranges. */
 int rvv_binary_periodic(const float *left, const float *right, float *output,
                         size_t count, size_t period, unsigned op);
+/* In-place [channels,columns] plus one scalar bias per channel. Owns the
+ * complete output cache lines for the synchronous call; bias must not overlap.
+ * Each element receives one independent FP32 add after its dot product. */
+int rvv_bias_channels(float *output, const float *bias, size_t channels, size_t columns);
 void rvv_transpose(const float *input, float *output,
                    size_t batches, size_t rows, size_t columns);
 void rvv_max_rows(const float *input, float *values, int64_t *indices,

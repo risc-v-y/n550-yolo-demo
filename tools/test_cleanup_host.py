@@ -23,6 +23,29 @@ class CleanupTests(unittest.TestCase):
         path = self.root/name; path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding='utf-8'); return path
 
+    def model_run(self,name,version,status='passed'):
+        base='yolo26_pc/outputs/clp-model-validation/'+name
+        self.put(base+'/report.json',json.dumps(dict(status=status,profile_version=version,
+                 qemu_exit=0,profile_sha256='0'*64)))
+        self.put(base+'/tensors.bin')
+        return self.root/base
+
+    def test_only_latest_successful_optimization_check_is_kept(self):
+        old=self.model_run('run-old',6); latest=self.model_run('run-latest',7)
+        failed=self.model_run('run-failed',7,'failed')
+        plan=app.make_plan(self.root,tracked=[])
+        names={str(self.root/item['path']) for item in plan['candidates']}
+        self.assertIn(str(old),names)
+        self.assertNotIn(str(latest),names); self.assertNotIn(str(failed),names)
+
+    def test_latest_pointer_works_with_backdated_clock(self):
+        first=self.model_run('run-first',7); second=self.model_run('run-second',7)
+        self.put('yolo26_pc/outputs/clp-model-validation/latest.json',
+                 json.dumps(dict(directory=str(first))))
+        self.assertEqual(app.superseded_model_runs(self.root),[second])
+        self.put('yolo26_pc/outputs/evidence.json',json.dumps(dict(source=str(second/'tensors.bin'))))
+        self.assertFalse(app.make_plan(self.root,tracked=[])['candidates'])
+
     def run_dir(self, name, **fields):
         report = dict(status='failed', stage='host_check', results=[], **fields)
         self.put('yolo26_pc/outputs/host-video/'+name+'/report.json', json.dumps(report))

@@ -1,4 +1,4 @@
-"""Remove rebuildable caches and unreferenced zero-frame preflight failures.
+"""Remove rebuildable caches, superseded model checks and preflight failures.
 
 Python 3.8 stdlib only. No board access. --apply is explicit; default is preview.
 """
@@ -16,7 +16,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 OLD_BUILDS = ('accel-model amu-kernel amu-semantics basic basic-v2 board-sync-test '
               'cleanup-tests clp-qemu-tests clp-selftest conv conv-v2 host-protocol-tests '
-              'int8-kernel memory-tests quant-policy rvv-amu scalar-model '
+              'int8-kernel memory-tests quant-policy rvv-amu scalar-model depthwise-tests optimized-tests '
               'elf_attributes.txt environment.txt golden_cases.h golden_manifest.json '
               'matmul.disasm matmul.elf matmul.map qemu-vlen128.log qemu-vlen256.log '
               'qemu-vlen512.log sha256.txt').split()
@@ -133,6 +133,29 @@ def runtime_paths(root):
     return paths
 
 
+def superseded_model_runs(root):
+    """Keep the newest successful model check; failures/evidence stay protected."""
+    base=root/'yolo26_pc/outputs/clp-model-validation'
+    runs=[]
+    for path in base.glob('run-*/report.json'):
+        try:
+            report=json.loads(path.read_text(encoding='utf-8'))
+            version=report['profile_version']
+            if (report.get('status')=='passed' and report.get('qemu_exit')==0 and
+                    isinstance(version,int) and version>0 and
+                    len(report.get('profile_sha256',''))==64):
+                runs.append((version,path.stat().st_mtime_ns,path.parent))
+        except (OSError,ValueError,TypeError,KeyError): continue
+    if not runs: return []
+    latest=max(runs)
+    try:
+        selected=Path(json.loads((base/'latest.json').read_text(encoding='utf-8'))['directory'])
+        for run in runs:
+            if run[0]==latest[0] and run[2].resolve()==selected.resolve(): latest=run; break
+    except (OSError,ValueError,TypeError,KeyError): pass
+    return [path for _,_,path in runs if path!=latest[2]]
+
+
 def make_plan(root, tracked=None):
     root = root.resolve()
     validate_path(root/'yolo26_pc/outputs', root)
@@ -152,6 +175,7 @@ def make_plan(root, tracked=None):
                        and not (Path(current)/name).is_symlink()]
     outputs = root/'yolo26_pc/outputs'
     targets += [p for p in (outputs/'host-video').glob('*') if p.is_dir() and preflight_only(p)]
+    targets += superseded_model_runs(root)
     incoming, unreadable = references(root)
     runtime = runtime_paths(root)
     planned, skipped = [], []

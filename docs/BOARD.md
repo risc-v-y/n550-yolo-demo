@@ -1,6 +1,6 @@
 # 板端平台契约
 
-本页只定义软件依赖的硬件前提、地址映射和缓存/完成语义。运行命令见[OPERATIONS](OPERATIONS.md)，模型布局与各缓冲区的具体交接见[IMPLEMENTATION](IMPLEMENTATION.md)。
+本页只定义软件依赖的硬件前提、地址映射和缓存/完成语义。运行命令见[OPERATIONS](OPERATIONS.md)，模型布局与各缓冲区的具体交接见[模型手册](MODEL.md#implementation)。
 
 ## 平台与地址
 
@@ -37,7 +37,7 @@
 - 不含标量参与的最小CLP链路为：RVV别名写 → fence → AMU全局地址读/算/写 → 等待 → fence → RVV别名读/写 → fence；该共享区不做标量访问或CBO。
 - 低地址邮箱、诊断和计时表仍通过缓存维护发布；各写入方分占缓存行，见[PCIE](PCIE.md)。
 
-逐缓冲区的权重、输入元数据、scratch及输出规则只在[实现总览](IMPLEMENTATION.md#4-缓存与执行顺序)维护。CLP测试形状、保护值和错误字段见[DIAGNOSTICS](DIAGNOSTICS.md#自测定位)，已通过范围见[VALIDATION](VALIDATION.md)。
+逐缓冲区的权重、输入元数据、scratch及输出规则只在[模型手册](MODEL.md#cache)维护。CLP测试形状、保护值和错误字段见[DIAGNOSTICS](DIAGNOSTICS.md#自测定位)，已通过范围见[VALIDATION](VALIDATION.md)。
 
 QEMU使用统一RAM，不模拟S2C重映射或物理DCache。测试镜像的数据区可位于 `0x84000000`，不能作为实板 `0xF0000000` 布局的固件加载。
 

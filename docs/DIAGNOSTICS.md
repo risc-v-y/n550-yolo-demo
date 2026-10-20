@@ -31,7 +31,7 @@ UART 等待有上限，初始化验证失败或发送超时后禁用后续日志
 
 `board_diag` 的前816字节维持版本1布局；新固件追加两个uint64字段（计时表地址、长度），共832字节，64字节对齐。PCIe信息区通告实际长度，新Host兼容816/832字节。旧RX/RPC计数字段保留。诊断快照经缓存clean发布，地址见 `firmware/pcie-symbols.txt`。
 
-`board_profile` 是独立计时表，完成后保存到逐帧JSON的 `pcie_timing.board_profile`。版本、布局、计时边界及无效记录规则只在[TUNING](TUNING.md)维护；诊断快照本身不是数值验收结果。
+`board_profile` 是独立计时表，完成后保存到逐帧JSON的 `pcie_timing.board_profile`。版本、布局、计时边界及无效记录规则只在[模型手册](MODEL.md#计时字段与解释)维护；诊断快照本身不是数值验收结果。
 
 CPU trap 使用独立 4 KiB 异常栈，保存整数寄存器及 `mcause/mepc/mtval`，尽力打印并发布 PCIe ERROR，然后停车；不自动恢复，不保存浮点/向量/矩阵寄存器。DDR、缓存指令或异常栈也故障时，记录可能不完整。
 

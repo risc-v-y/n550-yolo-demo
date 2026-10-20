@@ -1,6 +1,6 @@
 # PCIe 接口与同步约定
 
-本页只维护DDR收发协议、状态机与失败语义。运行命令见[OPERATIONS](OPERATIONS.md)，加载与缓存前提见[BOARD](BOARD.md)，输入张量及候选字段见[IMPLEMENTATION](IMPLEMENTATION.md#1-固定配置与完整链路)。UART不参与本协议。
+本页只维护DDR收发协议、状态机与失败语义。运行命令见[OPERATIONS](OPERATIONS.md)，加载与缓存前提见[BOARD](BOARD.md)，输入张量及候选字段见[模型手册](MODEL.md#overview)。UART不参与本协议。
 
 ## 传输与同步约定
 

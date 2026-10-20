@@ -1,6 +1,6 @@
 # Host操作手册
 
-本页集中维护运行命令、菜单、结果位置和清理步骤。host指物理连接S2C的Linux电脑；所有命令均在host仓库根目录执行，构建章节除外。当前实现见[IMPLEMENTATION](IMPLEMENTATION.md)，证据及通过条件见[VALIDATION](VALIDATION.md)。
+本页集中维护运行命令、菜单、结果位置和清理步骤。host指物理连接S2C的Linux电脑；所有命令均在host仓库根目录执行，构建章节除外。当前实现见[模型手册](MODEL.md#implementation)，证据及通过条件见[VALIDATION](VALIDATION.md)。
 
 ## 1. 准备与更新
 
@@ -30,7 +30,7 @@ bash tools/setup_host_video.sh
 
 ## 2. 视频运行与结果
 
-当前v6验收按 **1更新 → 15同一视频前三帧 → 确认VIDEO CHECK PASSED → 18新运行三页**。17可重看报告、补算未完成的golden及查看PNG。性能版本、基线匹配和检测效果对照见[TUNING](TUNING.md)。第二页应显示 `rvv_bulk_v6`，固定图input_im2col=0；保留 `run-2i3ciq3m`，自动优先按相同输入匹配v5基线。
+当前v6验收按 **1更新 → 15同一视频前三帧 → 确认VIDEO CHECK PASSED → 18新运行三页**。17可重看报告、补算未完成的golden及查看PNG。性能版本、基线匹配和检测效果对照见[模型手册](MODEL.md#performance)。第二页应显示 `rvv_bulk_v6`，固定图input_im2col=0；保留 `run-2i3ciq3m`，自动优先按相同输入匹配v5基线。
 
 ```bash
 # 检查host并加载固件一次，按顺序处理默认视频的前三帧

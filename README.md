@@ -30,10 +30,10 @@ bash tools/host.sh
 | 哪些输入和版本已验证、数值为何不同 | [VALIDATION：验收证据](docs/VALIDATION.md) |
 | 怎样比较周期、帧时间与检测效果 | [完整手册：性能与检测效果](docs/MODEL.md#performance) |
 
-维护原则：模型计算、实现、优化原理和实测统一更新MODEL；节点表由脚本生成，验证证据更新VALIDATION，操作步骤更新OPERATIONS。IMPLEMENTATION/TUNING只保留兼容入口，不维护第二份事实。
+维护原则：模型计算、实现、优化原理和实测统一更新MODEL；节点表由脚本生成，验证证据更新VALIDATION，操作步骤更新OPERATIONS。
 
 ## 交付与开发资料
 
 交付以当前main分支及 `firmware/` 为准，BIN用于加载，配套ELF用于符号调试；旧UART模型版本已停用。[构建与发布核对](docs/OPERATIONS.md#6-构建与发布核对)不会自动替换交付固件。
 
-本地的移植计划记录目标和后续步骤，决策文档记录授权；`docs/HANDOFF.md` 只保存私有环境上下文，不随Git发布。`yolo26_pc` 的PyTorch参考及旧QEMU实验属于开发资料，不能代替当前板端说明；未跟踪的环境、工具链、手册和原始采集不能整目录提交或删除。
+本地的移植计划统一记录目标、责任、已确认决定和后续步骤；`docs/HANDOFF.md` 只保存私有环境上下文，不随Git发布。`yolo26_pc` 的PyTorch参考及旧QEMU复现命令属于开发资料，不能代替当前板端说明；未跟踪的环境、工具链、手册和原始采集不能整目录提交或删除。

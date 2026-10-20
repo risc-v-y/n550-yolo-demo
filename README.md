@@ -15,23 +15,22 @@ bash tools/host.sh
 
 首次使用先按[环境准备](docs/OPERATIONS.md#1-准备与更新)安装离线视频依赖并确认图形会话。已有后台任务时先等待结束，菜单1会拒绝更新。
 
-当前v6合并保持数值规则的RVV寻址、数据复用、池化/上采样、BMM、选择和输入打包优化，逐项原理见[实现总览](docs/IMPLEMENTATION.md#v6合并优化的原理)。路径标记为 `rvv_bulk_v6`、input_im2col=0；使用同三帧独立golden及计时验收，保留v5 `run-2i3ciq3m` 供自动比较。v5实测及v6待测状态见[性能记录](docs/TUNING.md)，已验范围见[验收记录](docs/VALIDATION.md)；旧v5数值可用菜单17离线确认，不要求重新运行板子。
+当前v6合并保持数值规则的RVV寻址、数据复用、池化/上采样、BMM、选择和输入打包优化，逐项原理见[完整手册](docs/MODEL.md#v6合并优化的原理)。路径标记为 `rvv_bulk_v6`、input_im2col=0；使用同三帧独立golden及计时验收，保留v5 `run-2i3ciq3m` 供自动比较。v5实测及v6待测状态见[手册性能章节](docs/MODEL.md#performance)，完整证据见[验收记录](docs/VALIDATION.md)；旧v5数值可用菜单17离线确认，不要求重新运行板子。
 
 ## 按问题选择文档
 
 | 要解决的问题 | 唯一维护位置 |
 |---|---|
 | 如何更新、运行、看结果、导出日志和清理 | [OPERATIONS：操作手册](docs/OPERATIONS.md) |
-| 模型各模块做什么、为什么这样计算 | [MODEL：模型功能](docs/MODEL.md) |
-| 算子怎样实现、数据怎样流动、接下来可优化什么 | [IMPLEMENTATION：实现总览](docs/IMPLEMENTATION.md) |
-| 某个节点的形状、公式、布局及源码在哪里 | [334节点审查表](docs/operator-audit.csv)、[来源哈希](docs/operator-audit.json) |
+| 优化模型：整体结构、每步计算/形状、当前实现、数据通路、热点及约束 | **[MODEL：完整计算与优化手册](docs/MODEL.md)** |
+| 核对节点资料与冻结模型、源码是否一致 | [机器审查表](docs/operator-audit.csv)、[来源哈希](docs/operator-audit.json) |
 | 板端地址、硬件前提和缓存规则是什么 | [BOARD：平台契约](docs/BOARD.md) |
 | 一帧怎样提交、完成、校验和恢复 | [PCIE：协议](docs/PCIE.md) |
 | 错误字段、UART日志和自测怎样解释 | [DIAGNOSTICS：排障](docs/DIAGNOSTICS.md)、[串口识别](docs/SERIAL_PROBE.md) |
 | 哪些输入和版本已验证、数值为何不同 | [VALIDATION：验收证据](docs/VALIDATION.md) |
-| 怎样比较周期、帧时间与检测效果 | [TUNING：性能和精度评估](docs/TUNING.md) |
+| 怎样比较周期、帧时间与检测效果 | [完整手册：性能与检测效果](docs/MODEL.md#performance) |
 
-维护原则：操作步骤只改OPERATIONS，内核变化更新IMPLEMENTATION与节点表，验证结果更新VALIDATION，实测和计时口径更新TUNING；其他文档引用对应位置。节点表是生成产物，不手改CSV。
+维护原则：模型计算、实现、优化原理和实测统一更新MODEL；节点表由脚本生成，验证证据更新VALIDATION，操作步骤更新OPERATIONS。IMPLEMENTATION/TUNING只保留兼容入口，不维护第二份事实。
 
 ## 交付与开发资料
 

@@ -77,6 +77,53 @@ static size_t broadcast(const ModelTensor *from, const ModelTensor *to, size_t i
     }
     return at;
 }
+static int same_shape(const ModelTensor *a, const ModelTensor *b) {
+    if (a->dtype != b->dtype || a->rank != b->rank || a->count != b->count) return 0;
+    for (size_t i = 0; i < a->rank; ++i) if (a->shape[i] != b->shape[i]) return 0;
+    return 1;
+}
+/* Leading singleton dimensions can broadcast a contiguous trailing period. */
+static int trailing_period(const ModelTensor *from, const ModelTensor *to) {
+    if (from->dtype != 1 || from->rank > to->rank || !from->count) return 0;
+    size_t first = 0;
+    while (first < from->rank && from->shape[first] == 1) ++first;
+    size_t dims = from->rank-first;
+    for (size_t i = 0; i < dims; ++i)
+        if (from->shape[first+i] != to->shape[to->rank-dims+i]) return 0;
+    return 1;
+}
+/* Min heap: root is the worst retained candidate; ties retain the lower
+ * source index. Sorting the heap restores the exact original output order.
+ * NaNs use the original scalar path, whose insertion behavior is preserved. */
+static int better(float a, int64_t ai, float b, int64_t bi) {
+    return a > b || (a == b && ai < bi);
+}
+static void heap_down(float *values, int64_t *indices, size_t used, size_t at) {
+    float value = values[at]; int64_t index = indices[at];
+    while (at < used/2) {
+        size_t child = at*2+1;
+        if (child+1 < used && better(values[child], indices[child], values[child+1], indices[child+1])) ++child;
+        if (!better(value, index, values[child], indices[child])) break;
+        values[at] = values[child]; indices[at] = indices[child]; at = child;
+    }
+    values[at] = value; indices[at] = index;
+}
+static void heap_topk(const float *input, float *values, int64_t *indices, size_t width, size_t k) {
+    for (size_t i = 0; i < k; ++i) { values[i] = input[i]; indices[i] = (int64_t)i; }
+    for (size_t i = k/2; i > 0; --i) heap_down(values, indices, k, i-1);
+    for (size_t i = k; i < width; ++i) {
+        if (better(input[i], (int64_t)i, values[0], indices[0])) {
+            values[0] = input[i]; indices[0] = (int64_t)i;
+            heap_down(values, indices, k, 0);
+        }
+    }
+    for (size_t used = k; used > 1; --used) {
+        float value = values[0]; int64_t index = indices[0];
+        values[0] = values[used-1]; indices[0] = indices[used-1];
+        values[used-1] = value; indices[used-1] = index;
+        heap_down(values, indices, used-1, 0);
+    }
+}
 static int done(int status, int amu) {
     if (!status) {
         if (amu) ++accel_amu_nodes;
@@ -94,12 +141,8 @@ static int matmul(int amu, const AmuPackedWeights *packed, const float *a, const
 static void add_bias(float *dest, const float *bias, size_t channels, size_t columns, size_t stride) {
     uint64_t start = model_ticks();
     for (size_t oc = 0; oc < channels; ++oc) {
-        for (size_t i = 0; i < columns;) {
-            size_t vl = __riscv_vsetvl_e32m1(columns - i);
-            float *at = dest + oc * stride + i;
-            __riscv_vse32_v_f32m1(at, __riscv_vfadd_vf_f32m1(__riscv_vle32_v_f32m1(at, vl), bias[oc], vl), vl);
-            i += vl;
-        }
+        float *at = dest+oc*stride;
+        (void)rvv_binary_periodic(at, bias+oc, at, columns, 1, 0);
     }
     model_profile_end(PROFILE_BIAS_DEQUANT, start);
 }
@@ -175,6 +218,26 @@ int accel_model_node(const ModelNode *node, const ModelTensor *tensors,
         a[i] = tensors + node->in[i];
         x[i] = (a[i]->constant ? constants : arena) + a[i]->offset;
     }
+    if (node->op == OP_TOPK && node->out[1] >= 0 && node->p[0] >= 0 &&
+        (uint32_t)node->p[0]+1 == a[0]->rank && node->p[1] > 0) {
+        size_t width = a[0]->shape[node->p[0]], k = (size_t)node->p[1];
+        if (!width || k > width || a[0]->dtype != 1) goto scalar;
+        const ModelTensor *index_shape = tensors+node->out[1];
+        if (index_shape->constant || index_shape->dtype != 2) return -1;
+        size_t rows = a[0]->count/width;
+        if (index_shape->count != rows*k || (node->out[0] < 0 && k > 300)) goto scalar;
+        const float *source = x[0];
+        for (size_t i = 0; i < a[0]->count; ++i) if (source[i] != source[i]) goto scalar;
+        float temporary[300];
+        const ModelTensor *value_shape = node->out[0] >= 0 ? tensors+node->out[0] : 0;
+        if (value_shape && (value_shape->constant || value_shape->dtype != 1 || value_shape->count != rows*k)) return -1;
+        float *values = value_shape ? (float *)(arena+value_shape->offset) : temporary;
+        int64_t *indices = (int64_t *)(arena+index_shape->offset);
+        for (size_t row = 0; row < rows; ++row)
+            heap_topk(source+row*width, value_shape ? values+row*k : temporary, indices+row*k, width, k);
+        ++accel_scalar_nodes;
+        return 0;
+    }
     if (node->out[0] < 0) goto scalar;
     const ModelTensor *z = tensors + node->out[0];
     if (z->constant && node->op != OP_COPY) return -1;
@@ -246,6 +309,9 @@ int accel_model_node(const ModelNode *node, const ModelTensor *tensors,
         case OP_ADD:
         case OP_SUB:
         case OP_MUL:
+            if (same_shape(a[0], z) && trailing_period(a[1], z))
+                return done(rvv_binary_periodic(in, x[1], out, z->count, a[1]->count,
+                    node->op == OP_ADD ? 0 : node->op == OP_SUB ? 1 : 2), 0);
             for (size_t i = 0; i < z->count;) {
                 size_t vl = __riscv_vsetvl_e32m1(z->count - i < 64 ? z->count - i : 64);
                 uint32_t left[64], right[64];
@@ -263,10 +329,61 @@ int accel_model_node(const ModelNode *node, const ModelTensor *tensors,
                 i += vl;
             }
             return done(0, 0);
+        case OP_MAX: {
+            if (a[0]->dtype != 1 || z->dtype != 1 || p[0] < 0 ||
+                (uint32_t)p[0]+1 != a[0]->rank || !a[0]->shape[p[0]] ||
+                a[0]->shape[p[0]] > UINT32_MAX) goto scalar;
+            int64_t *indices = 0;
+            if (node->out[1] >= 0) {
+                const ModelTensor *other = tensors+node->out[1];
+                if (other->constant || other->dtype != 2 || other->count != z->count) return -1;
+                indices = (int64_t *)(arena+other->offset);
+            }
+            rvv_max_rows(in, out, indices, z->count, a[0]->shape[p[0]]);
+            return done(0, 0);
+        }
         case OP_PERMUTE:
         case OP_EXPAND:
         case OP_GATHER: {
+            if (node->op == OP_EXPAND && same_shape(a[0], z)) {
+                rvv_copy_bytes(y, x[0], z->bytes);
+                return done(0, 0);
+            }
+            if (node->op == OP_EXPAND && a[0]->dtype == 2 && z->dtype == 2 &&
+                a[0]->rank && a[0]->rank == z->rank &&
+                a[0]->shape[a[0]->rank-1] == 1 &&
+                z->count == a[0]->count*z->shape[z->rank-1]) {
+                int compatible = 1;
+                for (size_t d = 0; d+1 < z->rank; ++d)
+                    if (a[0]->shape[d] != z->shape[d]) compatible = 0;
+                if (compatible) {
+                    rvv_repeat_i64(x[0], y, a[0]->count, z->shape[z->rank-1]);
+                    return done(0, 0);
+                }
+            }
+            if (node->op == OP_GATHER && p[0] >= 0 && (uint32_t)p[0] < a[0]->rank &&
+                a[1]->dtype == 2 && a[1]->count == z->count && a[0]->rank == z->rank &&
+                a[0]->dtype == z->dtype) {
+                size_t axis = (size_t)p[0];
+                int compatible = 1;
+                for (size_t d = 0; d < z->rank; ++d)
+                    if (d != axis && a[0]->shape[d] != z->shape[d]) compatible = 0;
+                if (compatible)
+                    return done(rvv_gather_rows(x[0], x[1], y, product(a[0], 0, axis),
+                        a[0]->shape[axis], product(a[0], axis+1, a[0]->rank), z->shape[axis],
+                        z->dtype == 1 ? 4 : 8), 0);
+            }
             if (z->dtype != 1) goto scalar;
+            if (node->op == OP_PERMUTE && a[0]->rank >= 2 && a[0]->rank == z->rank) {
+                size_t rank = a[0]->rank;
+                int transpose = p[rank-2] == (int32_t)rank-1 && p[rank-1] == (int32_t)rank-2;
+                for (size_t d = 0; d+2 < rank; ++d) if (p[d] != (int32_t)d) transpose = 0;
+                if (transpose) {
+                    rvv_transpose(in, out, product(a[0], 0, rank-2),
+                                  a[0]->shape[rank-2], a[0]->shape[rank-1]);
+                    return done(0, 0);
+                }
+            }
             size_t strides[4], stride = 1;
             for (size_t d = a[0]->rank; d > 0; --d) { strides[d - 1] = stride; stride *= a[0]->shape[d - 1]; }
             for (size_t i = 0; i < z->count;) {

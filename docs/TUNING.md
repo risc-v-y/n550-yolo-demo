@@ -16,9 +16,10 @@
 | v2 启动权重预打包 | run-ls19m5ja | 2,862,430,017 | 86.0835秒 |
 | v3 标量融合窗口/FP16并复用 | run-llwcyfdf | 2,150,645,371 | 68.1029秒 |
 | v4 RVV窗口提取/整数FP16转换 | run-sup5jvd9 | 1,137,382,966 | 43.2521秒 |
-| v5 RVV直接3×3深度卷积 | 待同三帧现场运行 | 未测 | 未测 |
+| v5 RVV直接3×3深度卷积 | run-2i3ciq3m | 884,603,103 | 37.0487秒 |
+| v6 合并RVV/输入准备/选择与CRC | 待同三帧现场运行 | 未测 | 未测 |
 
-前四版均为3个普通帧、无无效计时记录，数据由现场菜单18提供。v3比v2模型周期减少24.9%、每帧记录耗时减少18秒；比v1累计减少43.7%周期、38.3%记录耗时。计时报告本身不是数值验收报告，各新运行仍须确认VIDEO CHECK PASSED。
+前五版均为3个普通帧、无无效计时记录，数据由现场菜单18提供。v3比v2模型周期减少24.9%、每帧记录耗时减少18秒；比v1累计减少43.7%周期、38.3%记录耗时。计时报告本身不是数值验收报告，各新运行仍须确认VIDEO CHECK PASSED。历次优化原理见[IMPLEMENTATION](IMPLEMENTATION.md#已实施优化的原理)。
 
 v3模型周期分布：input_pack=1,268,354,376（59.0%），input_im2col=244,184,400（11.4%），other_compute=520,756,478（24.2%）。前两项合计相比v2减少31.4%。节点278/274是RVV深度卷积，合计约7.7%模型周期；不把other_compute全部视为可删开销，也不把matrix_wait当作AMU总执行时间。
 
@@ -39,7 +40,7 @@ v4匹配同一父目录下完整、同帧号/输入哈希、计数有效的v3运
 
 相对v1累计模型周期下降70.2%，记录耗时下降60.8%。本轮模型少1,013,262,405周期，其中input_pack少1,012,443,964周期；其余主要阶段基本不变，下降与本次输入准备优化对应。other_compute占比升至45.7%是分母变小，绝对周期并未增加。
 
-当前input_im2col占模型21.5%，input_pack占22.5%；节点278/274仍为原FP32深度卷积，合计14.6%模型周期。该分布促成v5直接深度卷积实现，收益仍待现场测量；随后按完整节点表评估Add、Permute和Nearest，不将通用other_compute视为单一开销。
+v4的input_im2col占模型21.5%，input_pack占22.5%；节点278/274当时为原FP32深度卷积，合计14.6%模型周期。该分布促成v5直接深度卷积实现，现场结果见下一节；随后按完整节点表评估Add、Permute和Nearest，不将通用other_compute视为单一开销。
 
 本次热点（节点总周期，包含节点cache）：
 
@@ -62,9 +63,50 @@ Host平均upload=4.7873、download=1.8878、profile_read=1.8885、prepare=0.0176
 
 ### v5验收与比较
 
-当前固件计时版号5，输入路径 `rvv_window_fp16_reuse_dw3x3`；布局保持24320字节并兼容旧版。菜单18优先匹配同输入、计数有效的v4 `run-sup5jvd9`，缺合格v4才向前匹配。保留该基线；操作只在[OPERATIONS](OPERATIONS.md#2-视频运行与结果)维护。
+v5计时版号5，输入路径 `rvv_window_fp16_reuse_dw3x3`；布局保持24320字节并兼容旧版。其菜单18优先匹配同输入、计数有效的v4 `run-sup5jvd9`，缺合格v4才向前匹配。保留该基线；操作只在[OPERATIONS](OPERATIONS.md#2-视频运行与结果)维护。
 
-固定图8层全部走直接路径，整帧input_im2col应为0。直接深度卷积含bias和内部缓存交接，整体记入节点compute/other_compute；bias_dequant只剩AMU卷积的独立偏置阶段。因边界变化，**不能把im2col/bias减少全部称作节省，也不能把other_compute增长直接称作退化**；比较相同输入的model_cycles、八个节点总周期及host耗时，同时确认VIDEO CHECK PASSED。新版实板结果尚未取得，不预估收益。
+现场运行 `run-2i3ciq3m`：用户提供菜单18三页，3帧计数全部有效，无trace/finite/capture排除帧，自动匹配上述v4基线。**同次VIDEO CHECK结果尚未提供，数值状态可从菜单17离线确认，不要求重跑板子。**
+
+| 对比项 | v4 | v5 | 降幅 |
+|---|---:|---:|---:|
+| model_cycles | 1,137,382,966 | 884,603,103 | 22.2%（1.286倍） |
+| graph_cycles | 1,131,299,461 | 878,519,703 | 22.3% |
+| service_cycles | 1,224,149,968 | 969,554,678 | 20.8% |
+| 每帧记录耗时 | 43.2521秒 | 37.0487秒 | 14.3%（少6.2034秒） |
+| run_roundtrip_seconds | 31.2231秒 | 24.9601秒 | 20.1% |
+
+报告填写core=40MHz，按该频率换算模型22.115078秒、板端服务24.238867秒，分别约0.0452和0.0413帧/秒；不等同于host展示帧率。相对v1累计模型周期下降76.8%、每帧记录耗时下降66.5%。
+
+固定图8层走直接路径，整帧input_im2col实测为0。input_pack=255,815,802、matrix_submit=23,384,863、matrix_wait=2,811,595、bias_dequant=44,131,740、other_compute=516,093,552、boundary_cache=34,210,151周期；帧内weight_prepare和权重转换次数均为0。启动94层准备81,413,039周期，5,033,984字节、2,391,664个有效权重值。
+
+直接深度卷积含bias和内部缓存交接，整体记入节点compute/other_compute；bias_dequant只剩AMU卷积的独立偏置阶段。因边界变化，**不能把im2col/bias减少全部称作节省，也不能把other_compute增长直接称作退化**。本轮减少252,779,863模型周期；八个深度卷积的具体降幅仍需完整node-timing.csv，前十热点列表不足以计算各层收益。
+
+当前热点（节点总周期，包含节点cache）：
+
+| 节点 | 操作 | 平均周期 |
+|---:|---|---:|
+| 12 | Add | 36,938,876 |
+| 314 | Permute | 30,983,363 |
+| 155 | Nearest | 28,133,043 |
+| 0 | 普通卷积 | 25,046,573 |
+| 2 | 普通卷积 | 23,214,037 |
+| 16 | 普通卷积 | 20,124,095 |
+| 8 | 普通卷积 | 20,079,736 |
+| 26 | Add | 18,479,582 |
+| 83 | Pool | 17,760,610 |
+| 84 | Pool | 17,760,145 |
+
+深度卷积退出前十热点。单节点12占graph约4.2%，不能从它外推全部Add/Sub收益；input_pack仍占模型28.9%。依据这些热点及用户合并优化授权，v6将明确保持数值规则的内核修改统一交付，原理只在[IMPLEMENTATION](IMPLEMENTATION.md#v6合并优化的原理)维护。
+
+Host平均prepare=0.0165、postprocess=0.0061、upload=4.7671、download=1.9052、profile_read=1.9109秒；elapsed最大40.9181秒。pbload全程97次/92.819秒，pbcopy 11次/10.478秒，均无失败；累计工具时间与计算重叠，不能相加为额外串行成本。本次只有三帧，不解除旧长视频工具退出-11的待验状态。重启host后本次运行恢复正常，也不据此将此前BAR资源异常与旧退出-11归为同一原因。
+
+### v6验收与比较
+
+本轮标识 `rvv_bulk_v6`、计时版号6，24320字节布局和所有原字段保持不变。包含RVV连续/周期寻址、整缓冲区交接、转置/复制/上采样/池化、四行有序BMM、Max/堆Top-K、FP16打包分支和CRC查表。**本轮没有实板耗时数据，不声称每个候选或整帧已经提速。**
+
+下一次只需同一视频前三帧，确认独立golden后查看18，自动优先按相同输入匹配v5 `run-2i3ciq3m`，缺合格v5再向前匹配。原始结果及该基线保留，不要求逐节点重采实板。
+
+阶段边界沿用v5：DW含bias/cache记入other_compute，普通卷积的独立bias仍计入bias_dequant；input_pack涵盖1×1直接读取、内部窗口及边缘掩码路径。CRC优化作用于input_crc/service，不能全部归为模型周期收益。比较model/service/节点总周期与host记录耗时，不将QEMU执行速度换算为实板收益。
 
 ### 计时字段与解释
 
@@ -80,12 +122,12 @@ Host平均upload=4.7873、download=1.8878、profile_read=1.8885、prepare=0.0176
 | 每节点cache | 输入缓存clean及CACHE阶段标记 |
 | 每节点compute | `accel_model_node`调用，包含内部AMU等待、数据打包及同步 |
 | weight_prepare | 帧内权重转换，预打包版本应为0；不含启动准备 |
-| input_im2col | 生成FP32窗口矩阵；v3/v4只用于原RVV分组卷积；v5固定图全部为0，通用回退仍可计时 |
-| input_pack | v2仅转换/打包；v3含标量窗口及clean；v4/v5含RVV索引元数据准备、gather、整数RNE、补零与scratch所有权交接，每空间块一次 |
+| input_im2col | 生成FP32窗口矩阵；v3/v4只用于原RVV分组卷积；v5/v6固定图全部为0，通用回退仍可计时 |
+| input_pack | v2仅转换/打包；v3含标量窗口及clean；v4/v5含RVV索引/gather、整数RNE、补零与scratch交接；v6含直接/内部/边缘取数分支，每空间块一次 |
 | matrix_submit | 矩阵配置/加载/乘加/存储提交及内部缓存维护，不能视为纯指令发射 |
 | matrix_wait | 提交后读取xmfflags排空的剩余等待及标志发布；不是AMU总运行时间 |
-| bias_dequant | 独立偏置遍历的周期；v5不含直接深度卷积内部的bias，此版本无量化 |
-| other_compute | compute减去六阶段之和；v5还包含完整直接深度卷积，不能当作纯软件开销 |
+| bias_dequant | 独立偏置遍历的周期；v5/v6不含直接深度卷积内部的bias，此版本无量化 |
+| other_compute | compute减去六阶段之和；v5/v6还包含完整直接深度卷积，不能当作纯软件开销 |
 | 每节点check | 计算后的有限值检查分支；普通模式仅最终输出扫描 |
 | graph_overhead_cycles | 图总周期减去全部节点cache/compute/check之和，含进度日志、诊断提交、记账等 |
 
@@ -93,7 +135,7 @@ Host平均upload=4.7873、download=1.8878、profile_read=1.8885、prepare=0.0176
 
 18询问的是**当前FPGA上N550实际运行频率MHz**，未知直接回车，仅报周期。不能用RTL目标频率或QEMU计数推算板端秒数。Host的PCIe等待包含pbload轮询和工具启动；`elapsed_seconds`含录像保存，但未完整计入最终窗口显示和JSON落盘，不能称为采集到可见延迟。离线golden耗时单列，不算推理帧耗时。
 
-计时表uint64头固定16项：`magic version bytes frame nodes completed options state model_cycles graph_cycles input_check_cycles service_cycles input_crc_cycles output_cycles node_cycles session`。v1共8152字节；v2/v3/v4/v5均24320字节，布局不变。每节点为cache/compute/check及六阶段周期，随后全局六组cycles/calls、五项权重统计，末项uint64承载此前全部字节的CRC32。五项为weight_pack_bytes、weight_pack_values、weight_pack_cycles、prepared_layers、runtime_weight_conversions。Host兼容五版，核验CRC、会话/帧号、完成数量、阶段总账及权重不变量；离线重建核验SHA256。
+计时表uint64头固定16项：`magic version bytes frame nodes completed options state model_cycles graph_cycles input_check_cycles service_cycles input_crc_cycles output_cycles node_cycles session`。v1共8152字节；v2至v6均24320字节，布局不变。每节点为cache/compute/check及六阶段周期，随后全局六组cycles/calls、五项权重统计，末项uint64承载此前全部字节的CRC32。五项为weight_pack_bytes、weight_pack_values、weight_pack_cycles、prepared_layers、runtime_weight_conversions。Host兼容六版，核验CRC、会话/帧号、完成数量、阶段总账及权重不变量；离线重建核验SHA256。
 
 ## 检测效果
 

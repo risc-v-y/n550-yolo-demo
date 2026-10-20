@@ -15,7 +15,7 @@ bash tools/host.sh
 
 首次使用先按[环境准备](docs/OPERATIONS.md#1-准备与更新)安装离线视频依赖并确认图形会话。已有后台任务时先等待结束，菜单1会拒绝更新。
 
-当前v5将8个3×3深度卷积改为直接RVV计算，开发回归已通过，实板收益待测。运行同三帧确认 `VIDEO CHECK PASSED`，性能页应显示 `rvv_window_fp16_reuse_dw3x3`、input_im2col=0；保留v4运行 `run-sup5jvd9` 供自动比较。v4实测见[性能记录](docs/TUNING.md#v4现场结果run-sup5jvd9)，其同次数值结果仍以已有视频报告为准。历史证据以[验收记录](docs/VALIDATION.md)为准，实测数字只在[性能评估](docs/TUNING.md)维护。
+当前v6合并保持数值规则的RVV寻址、数据复用、池化/上采样、BMM、选择和输入打包优化，逐项原理见[实现总览](docs/IMPLEMENTATION.md#v6合并优化的原理)。路径标记为 `rvv_bulk_v6`、input_im2col=0；使用同三帧独立golden及计时验收，保留v5 `run-2i3ciq3m` 供自动比较。v5实测及v6待测状态见[性能记录](docs/TUNING.md)，已验范围见[验收记录](docs/VALIDATION.md)；旧v5数值可用菜单17离线确认，不要求重新运行板子。
 
 ## 按问题选择文档
 

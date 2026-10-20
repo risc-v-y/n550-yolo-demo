@@ -41,8 +41,10 @@ int amu_pack_conv_input_rvv(const Conv2D *p,const float *input,size_t batch,
 #ifdef YOLO_N550_BOARD
     board_diag_phase(PHASE_AMU_PACK);
 #endif
-    if(plan_k!=k || plan_h!=p->in_h || plan_w!=p->in_w ||
-       plan_kh!=p->kernel_h || plan_kw!=p->kernel_w) {
+    int pointwise=p->kernel_h==1 && p->kernel_w==1 && p->stride_h==1 &&
+                  p->stride_w==1 && !p->pad_h && !p->pad_w;
+    if(!pointwise && (plan_k!=k || plan_h!=p->in_h || plan_w!=p->in_w ||
+       plan_kh!=p->kernel_h || plan_kw!=p->kernel_w)) {
         size_t inner=0;
         for(size_t ic=0;ic<p->in_channels;++ic)
             for(size_t ky=0;ky<p->kernel_h;++ky) for(size_t kx=0;kx<p->kernel_w;++kx,++inner) {
@@ -75,16 +77,26 @@ int amu_pack_conv_input_rvv(const Conv2D *p,const float *input,size_t batch,
         uint32_t y0=(uint32_t)(pos/ow*p->stride_h-p->pad_h);
         uint32_t x0=(uint32_t)(pos%ow*p->stride_w-p->pad_w);
         uint32_t base=(y0*p->in_w+x0)*4;
+        int interior=y0<p->in_h && x0<p->in_w &&
+                     p->kernel_h<=p->in_h-y0 && p->kernel_w<=p->in_w-x0;
         for(size_t inner=0;inner<k;) {
             size_t count=k-inner<32-inner%32 ? k-inner : 32-inner%32;
             size_t vl=__riscv_vsetvl_e32m2(count);
-            vuint32m2_t y=__riscv_vadd_vx_u32m2(__riscv_vle32_v_u32m2(indices[1]+inner,vl),y0,vl);
-            vuint32m2_t x=__riscv_vadd_vx_u32m2(__riscv_vle32_v_u32m2(indices[2]+inner,vl),x0,vl);
-            vbool16_t valid=__riscv_vmand_mm_b16(__riscv_vmsltu_vx_u32m2_b16(y,p->in_h,vl),
-                                               __riscv_vmsltu_vx_u32m2_b16(x,p->in_w,vl),vl);
-            vuint32m2_t offset=__riscv_vadd_vx_u32m2(__riscv_vle32_v_u32m2(indices[0]+inner,vl),base,vl);
-            vuint32m2_t bits=__riscv_vluxei32_v_u32m2_m(valid,source,offset,vl);
-            bits=__riscv_vmerge_vvm_u32m2(__riscv_vmv_v_x_u32m2(0,vl),bits,valid,vl);
+            vuint32m2_t bits;
+            if(pointwise) {
+                bits=__riscv_vlse32_v_u32m2(source+inner*plane+pos,(ptrdiff_t)(plane*4),vl);
+            } else {
+                vuint32m2_t offset=__riscv_vadd_vx_u32m2(__riscv_vle32_v_u32m2(indices[0]+inner,vl),base,vl);
+                if(interior) bits=__riscv_vluxei32_v_u32m2(source,offset,vl);
+                else {
+                    vuint32m2_t y=__riscv_vadd_vx_u32m2(__riscv_vle32_v_u32m2(indices[1]+inner,vl),y0,vl);
+                    vuint32m2_t x=__riscv_vadd_vx_u32m2(__riscv_vle32_v_u32m2(indices[2]+inner,vl),x0,vl);
+                    vbool16_t valid=__riscv_vmand_mm_b16(__riscv_vmsltu_vx_u32m2_b16(y,p->in_h,vl),
+                                                       __riscv_vmsltu_vx_u32m2_b16(x,p->in_w,vl),vl);
+                    bits=__riscv_vluxei32_v_u32m2_m(valid,source,offset,vl);
+                    bits=__riscv_vmerge_vvm_u32m2(__riscv_vmv_v_x_u32m2(0,vl),bits,valid,vl);
+                }
+            }
             vuint32m2_t absolute=__riscv_vand_vx_u32m2(bits,0x7fffffffu,vl);
             if(__riscv_vfirst_m_b16(__riscv_vmsgeu_vx_u32m2_b16(absolute,0x477ff000u,vl),vl)>=0)
                 goto invalid;

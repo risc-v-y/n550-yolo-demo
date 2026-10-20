@@ -150,7 +150,7 @@ void __wrap_board_pcie_loop(int failure) {
            status.sequence!=expected_sequence || status.output_bytes!=7200 || board_current_node!=333 ||
            status.crc!=board_crc32(&status,60) ||
            status.output_crc!=board_crc32(board_model_output(),7200)) clp_qemu_exit(22);
-        if(board_profile.version!=5 || board_profile.bytes!=24320 ||
+        if(board_profile.version!=6 || board_profile.bytes!=24320 ||
            board_profile.runtime_weight_conversions ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].ticks ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].calls ||

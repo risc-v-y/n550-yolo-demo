@@ -157,7 +157,8 @@ def render(report, page):
             lines += ['Core MHz: {}'.format(report['core_mhz']),
                       'Model {:.6f}s | board service {:.6f}s'.format(report['model_seconds'], report['service_seconds'])]
         else: lines += ['Core frequency unknown: seconds/FPS are not inferred.']
-        lines += ['Direct DW3x3 (incl. bias/cache) is other_compute; no im2col.' if report.get('input_path') == 'rvv_window_fp16_reuse_dw3x3'
+        lines += ['Bulk RVV/ordered BMM/FP16 pack/heap Top-K; no im2col.' if report.get('input_path') == 'rvv_bulk_v6'
+                  else 'Direct DW3x3 (incl. bias/cache) is other_compute; no im2col.' if report.get('input_path') == 'rvv_window_fp16_reuse_dw3x3'
                   else 'RVV input_pack: gather/integer RNE/scratch ownership.' if report.get('input_path') == 'rvv_window_fp16_reuse'
                   else 'Fused input_pack includes windows/conversion/cache publication.' if report.get('input_path') == 'fused_window_fp16_reuse'
                   else 'Submit includes cache maintenance; wait is remaining drain.',

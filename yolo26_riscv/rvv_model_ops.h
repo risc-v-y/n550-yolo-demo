@@ -13,4 +13,17 @@ void rvv_matmul_ordered(const float *a, const float *b, float *c,
 void rvv_copy_bytes(void *output, const void *input, size_t bytes);
 void rvv_nonlinear(const float *input, float *output, size_t count, int silu);
 void rvv_softmax(const float *input, float *output, size_t rows, size_t width);
+/* Contiguous left/output, periodic right; op: 0 add, 1 subtract, 2 multiply.
+ * Supports exact in-place elementwise output; no partial overlapping ranges. */
+int rvv_binary_periodic(const float *left, const float *right, float *output,
+                        size_t count, size_t period, unsigned op);
+void rvv_transpose(const float *input, float *output,
+                   size_t batches, size_t rows, size_t columns);
+void rvv_max_rows(const float *input, float *values, int64_t *indices,
+                  size_t rows, size_t width);
+int rvv_gather_rows(const void *input, const int64_t *indices, void *output,
+                     size_t outer, size_t axis, size_t inner,
+                     size_t out_axis, size_t element_bytes);
+void rvv_repeat_i64(const int64_t *input, int64_t *output,
+                     size_t count, size_t repeats);
 #endif

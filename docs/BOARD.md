@@ -1,53 +1,44 @@
-# 板端条件
+# 板端平台契约
 
-操作命令统一见 [README](../README.md)，本页仅定义平台条件和同步边界。
+本页只定义软件依赖的硬件前提、地址映射和缓存/完成语义。运行命令见[OPERATIONS](OPERATIONS.md)，模型布局与各缓冲区的具体交接见[IMPLEMENTATION](IMPLEMENTATION.md)。
+
+## 平台与地址
 
 | 项目 | 固定配置 |
 |---|---|
-| CPU | N550，RV64，单 hart0，M 模式；其他 hart 停车 |
-| 运算 | RVV+AMU FP16，FP32 激活与输出，334 节点 |
-| DDR | 程序/权重/栈/诊断独占 `0x80000000–0x81FFFFFF` 32 MiB；模型数据独占 `0xF0000000–0xF0FFFFFF` 16 MiB |
-| 数据区 | CLP共8,143,104字节，布局不变；普通DDR保留9,678,644字节常量，另预留5MiB BSS作FP16预打包权重，实际5,033,984字节 |
-| RVV Memory port | `0x8000…` 地址使用 DCache，不能当作无缓存访问 |
-| RVV CLP | `0x10000000–0x1FFFFFFF` 无缓存，NoC 映射为 `0xF0000000–0xFFFFFFFF` |
-| AMU | 独立AXI使用全局DDR地址；右输入块和输出在CLP区，只读预打包权重在普通DDR |
-| DCache | 保持开启，cacheline 与维护步长均为 64 字节，标准 Zicbom |
-| UART0 | DW_apb_uart，基址 `0x20100000`，32-bit MMIO，寄存器间距 4 字节 |
-| UART 格式 | pclk=sclk=10 MHz，115200、8N1，无软硬流控，仅输出调试文字 |
-| PCIe | 模型数据偏移范围 `0x70000000–0x70FFFFFF`；邮箱和诊断仍在原32 MiB区 |
+| CPU | N550，RV64，单hart0，M模式；其他hart停车 |
+| 指令 | RVV、AMU FP16、标准Zicbom缓存指令 |
+| 普通DDR | CPU `0x80000000–0x81FFFFFF`，独占32MiB，供程序、常量、BSS、栈和诊断使用 |
+| 模型DDR | 全局 `0xF0000000–0xF0FFFFFF`，独占16MiB；当前预留布局见实现总览 |
+| RVV Memory port | `0x8000…` 等普通内存地址经过DCache，不能当作无缓存访问 |
+| RVV CLP | `0x10000000–0x1FFFFFFF` 无缓存，NoC重映射为 `0xF0000000–0xFFFFFFFF` |
+| AMU | 独立AXI，使用全局DDR地址；不能给它RVV CLP别名 |
+| DCache | 保持开启，cacheline和维护步长均为64字节 |
+| PCIe | CPU运行期间可访问DDR；地址为CPU全局地址减 `0x80000000` |
+| UART0 | DW_apb_uart，基址 `0x20100000`，32-bit MMIO，寄存器间距4字节 |
+| UART格式 | pclk=sclk=10MHz，115200、8N1，无软硬流控，仅调试输出 |
 
-## 加载与启动
+完整模型只使用已批准的两个独占DDR区；CLP地址范围不意味着整个范围都能随意使用。符号以当前 `firmware/pcie-symbols.txt` 和配套ELF为准，禁止沿用旧固件的固定地址。
 
-平台方负责 DDR/时钟/引脚/缓存使能及 JTAG 配置。启动前 DCache 已开启，DDR 可访问，下载后的代码/数据对 CPU 可见，旧脏缓存不能覆盖下载内容。UART 时钟、复位和引脚须可访问；MMIO 总线异常会触发 CPU trap。
+## 启动前提与责任
 
-部署脚本使用现场已提供的 `reset1.sh` 保持 S2C 复位，加载完整 BIN 到 PCIe `0x0`，再用 `reset.sh` 释放复位。平台方须保证该时序有效、释放不清除 DDR、启动入口为 CPU `0x80000000`。我们的启动代码关闭中断，设置栈、异常入口，清 BSS，启用浮点/RVV 状态，不初始化 DDR、不关闭 DCache。
+平台方负责DDR、时钟、引脚、缓存使能、PCIe驱动及JTAG。软件启动前，DDR已可访问，DCache开启；下载后的指令/数据对CPU可见，旧脏缓存不能覆盖下载内容。UART MMIO不可访问会触发总线异常，不只是打印超时。
 
-`demo-pcie.bin/elf` 为当前CLP模型版，启动通过RVV初始化高地址数据，执行32轮CLP自测，再准备94层FP16权重并发布READY。新增权重存储在普通BSS中，启动清零后生成，不扩展BIN数据量。`.clp_data` 是NOLOAD且独立于BSS，BIN不含高地址空洞。独立 `clp-selftest.bin/elf` 保留现场已通过版本。
+现场 `reset1.sh` 保持S2C复位，PCIe加载完整BIN后 `reset.sh` 释放。平台方保证释放不清DDR，并从CPU `0x80000000` 启动。我们的启动代码关闭中断、设置栈与异常入口、清普通BSS、启用浮点/RVV状态；不初始化DDR，也不关闭DCache。
 
-UART 动态识别 4/5/6 位 DLF 并计算小数分频，验证寄存器；实际波特率的整数记录约为 114942/115273。空闲检测、分频验证或发送等待失败后禁用文字输出，记录 `board_uart_status` 和 `board_diag.tx_errors`，不阻止 PCIe 模型执行。每个 MMIO 访问本身无法返回或触发异常时，不能靠轮询上限恢复。
+高地址 `.clp_data` 为独立NOLOAD段，BIN不含高地址空洞；启动时通过RVV初始化。程序执行CLP自测及权重准备后才发布READY。正常推理不重复部署。
 
-## 缓存与执行同步
+## 缓存与执行完成
 
-RVV对模型数据的连续、跨步和索引读取均转换成CLP别名，标量及AMU使用全局DDR地址。普通缓存区的RVV写入只做fence，禁止写后invalidate；原错误交接已修正。编译器隐式RVV拷贝保持关闭，便于审查实际路径。
+- 标量和AMU访问全局地址，RVV模型张量访存使用CLP别名。普通缓存内存的RVV写入只做fence，不能盲目写后invalidate；编译器隐式RVV拷贝保持关闭。
+- 标量产生的数据在外部/无缓存读取前clean；外部写入后，标量读取前invalidate。共享缓冲区完整缓存行独占，禁止并发混用缓存写和无缓存写。
+- 覆盖外部将要写的缓冲区前，先等待旧使用者完成并交出缓存所有权，防止旧脏行以后回写覆盖新数据。不能只在写后补一次维护。
+- AMU指令完成由读取 `xmfflags` 的既有约定等待，再执行fence并交接结果。FENCE只约束顺序，不能替代CBO，也不能自行证明AMU已完成。
+- 不含标量参与的最小CLP链路为：RVV别名写 → fence → AMU全局地址读/算/写 → 等待 → fence → RVV别名读/写 → fence；该共享区不做标量访问或CBO。
+- 低地址邮箱、诊断和计时表仍通过缓存维护发布；各写入方分占缓存行，见[PCIE](PCIE.md)。
 
-CLP 测试的数据路径为 RVV 别名写入 → `fence iorw,iorw` → AMU 全局地址读取/运算/存储 → 读取 `xmfflags` 等待 → fence → RVV 别名读取/存储 → fence。整个共享区不做标量访问或 CBO，消除该最小链路的 DCache 所有权切换；AMU 完成语义仍须实板确认。
+逐缓冲区的权重、输入元数据、scratch及输出规则只在[实现总览](IMPLEMENTATION.md#4-缓存与执行顺序)维护。CLP测试形状、保护值和错误字段见[DIAGNOSTICS](DIAGNOSTICS.md#自测定位)，已通过范围见[VALIDATION](VALIDATION.md)。
 
-标量若参与共享缓冲区，仍须在标量→无缓存读取前 clean、外部写入后标量读取前 invalidate，且完整缓存行独占、先等待外部完成。低地址诊断继续 clean 发布；PCIe 邮箱协议不变，见 [PCIe 协议](PCIE.md)。FENCE 负责顺序，不能替代缓存维护或 AMU 完成等待。
+QEMU使用统一RAM，不模拟S2C重映射或物理DCache。测试镜像的数据区可位于 `0x84000000`，不能作为实板 `0xF0000000` 布局的固件加载。
 
-预打包权重按64字节对齐，在READY前由标量转换并逐区clean，之后只读，AMU重复读取不再需要每块clean。每条AMU指令之后的完成等待、输入缓冲区复用和输出交接机制保留；不能将这一只读权重规则用于可变激活。
-
-同一FP16空间块由所有输出通道分块只读复用；每条AMU指令及最后输出存储仍等待完成，整个同步调用返回后才能覆盖下一块。工作区union保留原512KiB尺寸和地址，FP16部分最多使用256KiB，不增加实板访问范围。
-
-v4将上述输入生成改为RVV：节点边界已clean输入；通过CLP别名masked gather，整数RNE后连续写半字。scratch在写前整块flush移交，写后fence/invalidate归还，再交AMU读取；不混用标量缓存写。新增49,152字节索引元数据位于普通DDR，不扩大CLP；形状变化重建后clean。数据通路统一见 [IMPLEMENTATION](IMPLEMENTATION.md)。
-
-现场已报告独立CLP扩展版32轮通过，形状为 `(3,5,17)/(1,1,1)/(2,3,32)/(3,5,31)`。模型启动复用同一用例；当前BUS的334节点旧采集已完成逐位解释，见[验收状态](VALIDATION.md)。
-
-A/B/C/D 各512字节，DDR 相对偏移为 `0x000/0x200/0x400/0x600`，有效行都从各区 `+0x40` 起、行距64字节。A 为 `[M,K]`、B 为转置的 `[N,K]`、C/D 为 `[M,N]`；剩余2 KiB为保护区。全部在已确认独占的4 KiB内，不扩大实板访问范围。
-
-QEMU使用统一RAM，不模拟S2C重映射或物理DCache。模型测试使用 `0x84000000` 的模拟数据区，实板固件使用 `0xF0000000`；测试镜像不交付为板端固件。
-
-## 故障定位
-
-优先看 UART 文字及 host 日志，随后检查 `board_diag`。保留 `board_error`、`board_current_node`、`board_test_stage`、`board_trap_cause/pc/value` 和 `board_uart_status`；含义见 [诊断说明](DIAGNOSTICS.md)。
-
-依据为用户提供的 core/NoC 地址图、DW_apb_uart 4.02a 手册及已确认板级参数；厂商手册不能替代实际 RTL 参数。
+平台依据为用户提供的core/NoC地址图、DW_apb_uart 4.02a手册及已确认板级参数；厂商手册不能替代实际RTL参数。

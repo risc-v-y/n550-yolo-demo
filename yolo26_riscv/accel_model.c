@@ -107,6 +107,10 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
                         const float *bias, float *output, int amu, const AmuPackedWeights *packed) {
     size_t oh, ow;
     if (conv2d_output_shape(p, &oh, &ow)) return -1;
+    if (!amu && p->groups == p->in_channels && p->out_channels == p->in_channels &&
+        p->kernel_h == 3 && p->kernel_w == 3 && p->stride_h == 1 && p->stride_w == 1 &&
+        p->pad_h == 1 && p->pad_w == 1)
+        return rvv_depthwise3x3(p, input, weight, bias, output);
     size_t icg = p->in_channels / p->groups, ocg = p->out_channels / p->groups;
     size_t k = icg * p->kernel_h * p->kernel_w, area = oh * ow;
     if (k > MAX_CONV_K) return -1;

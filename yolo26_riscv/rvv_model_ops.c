@@ -1,6 +1,84 @@
 #include "rvv_model_ops.h"
 #include <stdint.h>
 #include <riscv_vector.h>
+#ifdef YOLO_N550_BOARD
+#include "board/cache.h"
+#include "board/memory.h"
+#endif
+
+/* Private coverage counter, not a new mailbox/profile ABI field. */
+uint64_t rvv_depthwise3x3_calls;
+
+static int ranges_overlap(const void *a, size_t na, const void *b, size_t nb) {
+    uintptr_t aa = (uintptr_t)a, bb = (uintptr_t)b;
+    if (na > UINTPTR_MAX - aa || nb > UINTPTR_MAX - bb) return 1;
+    return aa < bb + nb && bb < aa + na;
+}
+
+int rvv_depthwise3x3(const Conv2D *p, const float *input, const float *weight,
+                     const float *bias, float *output) {
+    size_t oh, ow;
+    if (!input || !weight || !bias || !output || conv2d_output_shape(p, &oh, &ow) ||
+        p->groups != p->in_channels || p->out_channels != p->in_channels ||
+        p->kernel_h != 3 || p->kernel_w != 3 || p->stride_h != 1 || p->stride_w != 1 ||
+        p->pad_h != 1 || p->pad_w != 1 || oh != p->in_h || ow != p->in_w) return -1;
+    size_t area = oh * ow, bytes = (size_t)p->batch * p->in_channels * area * sizeof(float);
+    if (ranges_overlap(input, bytes, output, bytes) ||
+        ranges_overlap(weight, (size_t)p->in_channels * 9 * sizeof(float), output, bytes) ||
+        ranges_overlap(bias, p->in_channels * sizeof(float), output, bytes)) return -1;
+    const float *source = input;
+    float *dest = output;
+#ifdef YOLO_N550_BOARD
+    int clp_output = board_is_clp(output);
+    if ((board_is_clp(input) && bytes > BOARD_CLP_BYTES - ((uintptr_t)input - BOARD_CLP_DDR_BASE)) ||
+        (clp_output && bytes > BOARD_CLP_BYTES - ((uintptr_t)output - BOARD_CLP_DDR_BASE))) return -1;
+    if (board_is_clp(input)) board_clean(input, bytes);
+    if (clp_output) board_prepare_write(output, bytes);
+    source = (const float *)board_rvv_address(input);
+    dest = (float *)board_rvv_address(output);
+#endif
+    /* m2 loads/stores intentionally bypass the per-vector m1 coherence
+     * wrappers: output ownership covers this entire synchronous call.
+     * Cached normal-DDR vector stores must never be invalidated afterward. */
+    for (size_t batch = 0; batch < p->batch; ++batch) {
+        for (size_t channel = 0; channel < p->in_channels; ++channel) {
+            const float *plane = source + (batch * p->in_channels + channel) * area;
+            const float *w = weight + channel * 9;
+            float *out = dest + (batch * p->in_channels + channel) * area;
+            for (size_t y = 0; y < oh; ++y) {
+                for (size_t x = 0; x < ow;) {
+                    /* Only edge pixels need horizontal bounds checks. Interior
+                     * vectors stop before the right edge, never cross a row. */
+                    int edge = x == 0 || x + 1 == ow;
+                    size_t vl = __riscv_vsetvl_e32m2(edge ? 1 : ow - x - 1);
+                    vfloat32m2_t sum = __riscv_vfmv_v_f_f32m2(0.0f, vl);
+                    for (size_t ky = 0; ky < 3; ++ky) {
+                        size_t iy = y + ky - 1;
+                        for (size_t kx = 0; kx < 3; ++kx) {
+                            size_t ix = x + kx - 1;
+                            vfloat32m2_t value = __riscv_vfmv_v_f_f32m2(0.0f, vl);
+                            if (iy < oh && (!edge || ix < ow))
+                                value = __riscv_vle32_v_f32m2(plane + iy * ow + ix, vl);
+                            /* Do not skip padded zeros: signed-zero and directed
+                             * rounding must match the former nine-term path. */
+                            vfloat32m2_t term = __riscv_vfmul_vf_f32m2(value, w[ky * 3 + kx], vl);
+                            sum = __riscv_vfadd_vv_f32m2(sum, term, vl);
+                        }
+                    }
+                    sum = __riscv_vfadd_vf_f32m2(sum, bias[channel], vl);
+                    __riscv_vse32_v_f32m2(out + y * ow + x, sum, vl);
+                    x += vl;
+                }
+            }
+        }
+    }
+#ifdef YOLO_N550_BOARD
+    if (clp_output) board_finish_write(output, bytes);
+    else board_fence();
+#endif
+    ++rvv_depthwise3x3_calls;
+    return 0;
+}
 
 /* Separate multiply/add keeps the scalar baseline's rounding contract.
  * FMA can be introduced as a separately measured numerical scheme later. */

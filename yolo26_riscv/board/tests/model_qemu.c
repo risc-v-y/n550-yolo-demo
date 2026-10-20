@@ -11,6 +11,7 @@
 #include "model_generated.h"
 extern const unsigned char model_weights[];
 extern uint64_t amu_rvv_input_blocks;
+extern uint64_t rvv_depthwise3x3_calls;
 extern void clp_qemu_exit(uintptr_t code) __attribute__((noreturn));
 extern volatile uint32_t board_current_node,board_test_stage;
 #ifdef MODEL_CAPTURE_TEST
@@ -149,16 +150,22 @@ void __wrap_board_pcie_loop(int failure) {
            status.sequence!=expected_sequence || status.output_bytes!=7200 || board_current_node!=333 ||
            status.crc!=board_crc32(&status,60) ||
            status.output_crc!=board_crc32(board_model_output(),7200)) clp_qemu_exit(22);
-        if(board_profile.version!=4 || board_profile.bytes!=24320 ||
+        if(board_profile.version!=5 || board_profile.bytes!=24320 ||
            board_profile.runtime_weight_conversions ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].ticks ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].calls ||
            board_profile.crc!=board_crc32((const void *)&board_profile,offsetof(BoardProfile,crc)))
             clp_qemu_exit(26);
-        uint64_t input_blocks=0;
+        uint64_t input_blocks=0,depthwise_nodes=0;
         for(unsigned i=0;i<MODEL_NODE_COUNT;++i) {
             const ModelNode *node=model_nodes+i;
-            if(node->op!=OP_CONV || node->p[4]!=1) continue;
+            if(node->op!=OP_CONV) continue;
+            if(node->p[4]!=1) {
+                ++depthwise_nodes;
+                if(board_profile.node[i].phase_cycles[PROFILE_INPUT_IM2COL] ||
+                   board_profile.node[i].phase_cycles[PROFILE_BIAS_DEQUANT]) clp_qemu_exit(35);
+                continue;
+            }
             const ModelTensor *out=model_tensors+node->out[0];
             size_t area=out->shape[2]*out->shape[3];
             input_blocks+=out->shape[0]*(area/32+(area%32!=0));
@@ -167,6 +174,9 @@ void __wrap_board_pcie_loop(int failure) {
         }
         if(board_profile.phases[PROFILE_INPUT_PACK].calls!=input_blocks ||
            amu_rvv_input_blocks!=input_blocks) clp_qemu_exit(29);
+        if(depthwise_nodes!=8 || rvv_depthwise3x3_calls!=depthwise_nodes ||
+           board_profile.phases[PROFILE_INPUT_IM2COL].calls ||
+           board_profile.phases[PROFILE_INPUT_IM2COL].ticks) clp_qemu_exit(36);
         for(unsigned phase=0;phase<PROFILE_PHASE_COUNT;++phase) {
             uint64_t sum=0;
             for(unsigned i=0;i<334;++i) sum+=board_profile.node[i].phase_cycles[phase];

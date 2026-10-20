@@ -1,5 +1,5 @@
 {
-  "revision": "2026-10-19 / input path v4",
+  "revision": "2026-10-20 / input path v5 / direct DW3x3",
   "nodes": 334,
   "operators": {
     "CONV": 102,
@@ -32,18 +32,19 @@
     "scalar C": 9
   },
   "source_sha256_lf": {
-    "accel_model.c": "ce2c45b07c862bf6c37999dba6058d24324097e31e8a27f0354ddacbdba015bc",
+    "accel_model.c": "dbd8aa4e0f56fcb2329e914a34553c41ad44522e9258cd776b25bd668dc2c691",
     "amu.c": "55a6f62ca5d422af87da294357715684216e89790c160f14b87a2a0fc8906b06",
     "amu.h": "1396e401c5cd5db1d440cd69912bcb93f55abfecc39b144784a4c3456534ad16",
     "amu_input_rvv.c": "1c5fb2c7b2d84675b42791c6a690ffd412e5803ec788290da00a957a4cc489e8",
     "amu_half_rvv.h": "3518f43039c36d7382e54d41523526a951132645ff28b2eaa1c3d293a0915d78",
-    "rvv_model_ops.c": "e26cf0c195d47c4255141ece5215e1ef35327648ec243ce0e21fb4273bf1668f",
+    "rvv_model_ops.c": "90e624a0920ec7827c8ebc44bd8795f6907018d86784d46a8b63520fc5ff7cee",
+    "rvv_model_ops.h": "4b9bca86b195717c89e247ef19880dc1d1747845d6173709bbb1fce8e16158db",
     "basic_rvv.c": "9a227ccb44a25b83df1747f883ca143a10be679a968c14c3e84357c53c0944b1",
     "scalar_model.c": "6b6077a4e4ec7740c6ed5910dfc000d9e3a5edd97513f60d1a80afb24799dba6",
     "board/coherent_rvv.h": "d4186182f64e10b2e7c8ade451c27f5df2e2263a4adf9e6fef03973d8d7afe20",
     "board/cache.h": "393a06047c94222be2e505685679ef17fc1f98e5d1ab82186cbb9672334db016",
     "board/main.c": "26b30fafd404beeb3db45cda14bd12e704be9dbd0b2f9d96ca49984a8e42b1d8",
-    "board/diagnostics.c": "7836a69a2901d31bfcbfde3c2082137c92ee93cfc2795c4e505e4bfa3b92f7b7",
+    "board/diagnostics.c": "38e350094bfc1e2db7b39139f78213aabb414fd868cca4f2ba7e4d28fdad9455",
     "board/diagnostics.h": "f9b229928186be14d1f53e8fbdc1e321c508119b6adb1cad550bd98f8000b9e7",
     "build_board.sh": "6e75747e2d0fdee207af131c76d4ecbe3ef1a50627bdcf4d6c7b4d0fa13f14aa"
   },
@@ -52,6 +53,6 @@
     "model_generated.c": "5ba73d90411632bf4ad8e254d1ddfe27eebf34bd5858bafd65e1ac7be213d47c",
     "model_generated.h": "6784eedef90341f3a2b22d2c8abaa97723c49c399d8e0aa07e906c3e20fe9cc6"
   },
-  "csv_sha256": "21c6008c2136c972cad75948197aa161087de59b691e0e0e8f96daa7975d7ef3",
+  "csv_sha256": "b39ca96ce85de0214e1a199bae9aaf0afc0fc60347b222e601cb83d5cb56b4ee",
   "scope": "Static current-source review; candidates are not speed or correctness proofs."
 }

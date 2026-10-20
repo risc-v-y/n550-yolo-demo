@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REVISION = '2026-10-19 / input path v4'
+REVISION = '2026-10-20 / input path v5 / direct DW3x3'
 # Maintained source review, not an automatic proof of implementation/speed.
 RULES = {
     'CONV': ('局部特征加权求和及通道组合', '按K顺序乘加，最后加bias', '见分组规则', 'accel_model.c;amu.c;amu_input_rvv.c', '输入准备；深度卷积专用路径'),
@@ -34,7 +34,7 @@ RULES = {
     'CAST': ('将类别索引转换为输出类型', '逐元素类型转换', '标量C', 'scalar_model.c', '保持类型、范围及元素顺序'),
 }
 SOURCES = ('accel_model.c', 'amu.c', 'amu.h', 'amu_input_rvv.c', 'amu_half_rvv.h',
-           'rvv_model_ops.c', 'basic_rvv.c', 'scalar_model.c',
+           'rvv_model_ops.c', 'rvv_model_ops.h', 'basic_rvv.c', 'scalar_model.c',
            'board/coherent_rvv.h', 'board/cache.h', 'board/main.c',
            'board/diagnostics.c', 'board/diagnostics.h', 'build_board.sh')
 
@@ -67,11 +67,18 @@ def rows_for(manifest):
                 impl = '启动FP16权重预打包；RVV gather+整数RNE直接输入打包；N32块供全部M32块复用；AMU K32顺序累加；RVV加bias'
                 packed = '[{},32,32]'.format((k+31)//32)
                 block_bytes = ((k+31)//32)*2048
-                status = '权重复用/标量融合已有实测；RVV输入版实板待验收'
+                status = 'v4输入准备已有实板性能；同次golden状态见VALIDATION'
+                todo = '按实测评估输入索引/打包及AMU调度'
                 constraint = 'FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接'
             else:
                 engine = 'RVV FP32'
-                impl = '按组生成FP32 Kx32 im2col；RVV沿位置并行，按K顺序独立乘加；最后加bias'
+                if (w[1] == 1 and p[:4] == [1, 1, 1, 1] and w[2:] == [3, 3] and
+                        p[4] == inputs[0]['shape'][1] == out[1]):
+                    impl = 'RVV m2按行直接读取3x3窗口；ky/kx九次独立乘加；最后独立加bias；整输出CLP交接，无im2col'
+                    status = 'v5已实施；开发回归与实板状态见VALIDATION'
+                    todo = '先测直接窗口，后续复用不得改变每输出累加顺序'
+                else:
+                    impl = '按组生成FP32 Kx32 im2col；RVV沿位置并行，按K顺序独立乘加；最后加bias'
                 files = 'accel_model.c;rvv_model_ops.c'
                 constraint = 'ky/kx顺序不变，不引入FMA；边界补零、尾VL及缓存交接'
         elif kind == 'BMM':

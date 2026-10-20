@@ -16,9 +16,10 @@ void board_profile_begin(unsigned nodes) {
     volatile uint64_t *p=(volatile uint64_t *)&board_profile;
     for(unsigned i=0;i<sizeof(board_profile)/8;++i) p[i]=0;
     for(unsigned i=0;i<PROFILE_PHASE_COUNT;++i) model_profile_phases[i]=(ModelProfilePhase){0};
-    /* v4 keeps the v2/v3 layout: RVV window gather, integer RNE conversion,
-     * and scratch cache ownership transfer once per spatial block. */
-    board_profile.magic=BOARD_PROFILE_MAGIC; board_profile.version=4;
+    /* v5 retains the v2-v4 wire layout and RVV FP16 input preparation.
+     * Direct DW3x3 (including its bias/cache work) is node other_compute;
+     * it has no im2col or separately timed bias pass. */
+    board_profile.magic=BOARD_PROFILE_MAGIC; board_profile.version=5;
     board_profile.bytes=sizeof(board_profile); board_profile.frame=board_diag.frame;
     board_profile.nodes=nodes; board_profile.options=board_diag.options;
 #ifdef YOLO_N550_BOARD

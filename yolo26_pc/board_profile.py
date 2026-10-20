@@ -24,7 +24,7 @@ def decode_profile(raw, frame, session):
         raise ValueError('Board timing CRC mismatch')
     report = dict(zip(FIELDS, struct.unpack_from('<16Q', raw)))
     version = report['version']
-    if (version not in (1, 2, 3, 4) or report['magic'] != PROFILE_MAGIC or
+    if (version not in (1, 2, 3, 4, 5) or report['magic'] != PROFILE_MAGIC or
             report['bytes'] != (PROFILE_BYTES if version == 1 else PROFILE_V2_BYTES) or
             report['bytes'] != len(raw)):
         raise ValueError('Unsupported board timing layout')
@@ -57,7 +57,8 @@ def decode_profile(raw, frame, session):
             raise ValueError('Prepared weight invariant failed')
         report.update(phases=phases, weights=weights,
                       input_path={2:'fp32_im2col_repack',3:'fused_window_fp16_reuse',
-                                  4:'rvv_window_fp16_reuse'}[version])
+                                  4:'rvv_window_fp16_reuse',
+                                  5:'rvv_window_fp16_reuse_dw3x3'}[version])
     total = sum(node['total'] for node in nodes)
     if (total != report['node_cycles'] or total > report['graph_cycles'] or
             report['graph_cycles']+report['input_check_cycles'] > report['model_cycles'] or

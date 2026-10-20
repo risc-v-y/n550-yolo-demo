@@ -277,7 +277,7 @@ def render(summary, page):
                   'Screenshot these 3 pages and preview.png.',
                   'For wrong boxes: send flagged detected-NNNNNN.png + frame ID.',
                   'Originals: source-NNNNNN.png; raw output: candidates-NNNNNN.bin.',
-                  'Golden cache is verified; menu 17 resumes unfinished frames.',
+                  'Golden cache is verified; menu 5 resumes unfinished frames.',
                   'Offline recheck does not access/reset/re-run the board.']
     else:
         raise ValueError('Page must be 1, 2 or 3')

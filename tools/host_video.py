@@ -373,7 +373,7 @@ def run(args, output):
             print('VIDEO NUMERICAL {}: exact={}/{}; golden check {:.1f}s'.format(
                 summary['numeric']['status'], summary['numeric']['exact_frames'],
                 summary['numeric']['expected_frames'], summary['numeric']['elapsed_seconds']), flush=True)
-            print('Menu 17: three report pages, preview.png and saved-frame flags.', flush=True)
+            print('Menu 5: three report pages, preview.png and saved-frame flags.', flush=True)
         elif not args.check:
             print('VIDEO CHECK FAILED | run={} | report unavailable; see error above'.format(output.name), flush=True)
     return report

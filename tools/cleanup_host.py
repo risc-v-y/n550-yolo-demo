@@ -223,7 +223,7 @@ def main():
         if args.apply:
             apply_plan(ROOT, report)
             print('HOST CLEANUP COMPLETED: {} targets'.format(len(report['deleted'])))
-        else: print('PREVIEW ONLY; use --apply or host menu 20 to delete.')
+        else: print('PREVIEW ONLY; use --apply or host menu 9 to delete.')
     return 0
 
 

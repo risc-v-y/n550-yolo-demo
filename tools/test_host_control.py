@@ -8,8 +8,114 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import ExitStack
 from unittest.mock import patch
 import host_control as host
+
+
+class MenuRoutingTests(unittest.TestCase):
+    def invoke(self,answers,action=None):
+        argv=['host_control.py']+([action] if action else [])
+        with patch.object(sys,'argv',argv),patch.object(sys,'platform','linux'), \
+             patch('builtins.input',side_effect=answers), \
+             patch('os.execv') as reload_menu,patch('sys.stdout',new_callable=io.StringIO) as output:
+            result=host.main()
+        return result,output.getvalue(),reload_menu
+
+    def test_every_main_number_dispatches_its_displayed_action(self):
+        cases=[('1','update',{}),('2','video',{'check':True}),('3','video',{}),
+               ('4','video',{'continuous':True}),('5','video_pages',{}),
+               ('6','performance_pages',{}),('7','accuracy_pages',{}),
+               ('8','diagnostics',{}),('9','cleanup',{})]
+        names={name for _,name,_ in cases}
+        for number,target,kwargs in cases:
+            with self.subTest(number=number),ExitStack() as stack:
+                handlers={name:stack.enter_context(patch.object(host,name)) for name in names}
+                result,_,reload_menu=self.invoke([number,'0'])
+                self.assertEqual(result,0)
+                handlers[target].assert_called_once_with(**kwargs)
+                for name,handler in handlers.items():
+                    if name!=target: handler.assert_not_called()
+                self.assertEqual(reload_menu.call_count,int(number=='1'))
+
+    def test_main_is_contiguous_and_omits_duplicate_capture_entries(self):
+        result,text,_=self.invoke(['0'])
+        numbers=[line.split()[0] for line in text.splitlines() if line[:1].isdigit()]
+        self.assertEqual(numbers,[str(i) for i in range(1,10)]+['0'])
+        self.assertIn('3 Run 3 video frames',text)
+        self.assertIn('5 Saved video report',text)
+        self.assertNotIn('Saved first difference',text)
+        self.assertNotIn('Start BUS capture',text)
+        self.assertEqual(result,0)
+
+    def test_diagnostic_submenu_routes_and_returns_without_exiting_main(self):
+        for number,target in [('1','progress'),('2','launch_full'),
+                              ('3','full_pages'),('4','restore')]:
+            with self.subTest(number=number),ExitStack() as stack:
+                handlers={name:stack.enter_context(patch.object(host,name))
+                          for name in ('progress','launch_full','full_pages','restore','video')}
+                result,text,_=self.invoke(['8',number,'0','0'])
+                self.assertEqual(result,0)
+                handlers[target].assert_called_once_with()
+                for name,handler in handlers.items():
+                    if name!=target: handler.assert_not_called()
+                self.assertEqual(text.count('YOLO host menu'),2)
+                self.assertIn('0 Return to main menu',text)
+
+    def test_invalid_or_retired_numbers_do_not_start_actions(self):
+        with patch.object(host,'video') as video,patch.object(host,'launch_full') as full, \
+             patch.object(host,'restore') as restore,patch.object(host,'cleanup') as cleanup:
+            result,text,_=self.invoke(['15','20','-1','abc','8','11','0','0'])
+        self.assertEqual(result,0)
+        self.assertEqual(text.count('Choose one of the displayed options.'),5)
+        for action in (video,full,restore,cleanup): action.assert_not_called()
+
+    def test_legacy_golden_report_number_is_offline_alias_only(self):
+        with patch.object(host,'video_pages') as report,patch.object(host,'video') as video, \
+             patch.object(host,'restore') as restore:
+            result,text,_=self.invoke(['17','0'])
+        self.assertEqual(result,0)
+        report.assert_called_once_with()
+        video.assert_not_called(); restore.assert_not_called()
+        self.assertNotIn('\n17 ',text)
+
+    def test_submenu_failure_stays_in_submenu_and_keeps_main_usable(self):
+        with patch.object(host,'launch_full',side_effect=RuntimeError('already active')), \
+             patch.object(host,'performance_pages') as performance:
+            result,text,_=self.invoke(['8','2','0','6','0'])
+        self.assertEqual(result,0)
+        self.assertEqual(text.count('YOLO diagnostics'),2)
+        self.assertIn('ERROR: already active',text)
+        performance.assert_called_once_with()
+
+    def test_failed_update_never_reloads_menu(self):
+        with patch.object(host,'update',side_effect=subprocess.CalledProcessError(1,['git'])):
+            result,text,reload_menu=self.invoke(['1','0'])
+        self.assertEqual(result,0)
+        self.assertIn('ERROR:',text)
+        reload_menu.assert_not_called()
+
+    def test_existing_named_commands_do_not_depend_on_menu_numbers(self):
+        cases=[('update','update',(),{}),('capture','launch',(),{}),
+               ('status','pages',('status',),{}),('difference','pages',('difference',),{}),
+               ('progress','progress',(),{}),('restore','restore',(),{}),
+               ('full-check','launch_full',(),{}),('full-report','full_pages',(),{}),
+               ('png','export_png',(),{}),('video-check','video',(),{'check':True}),
+               ('video','video',(),{}),('video-continuous','video',(),{'continuous':True}),
+               ('video-report','video_pages',(),{}),('performance','performance_pages',(),{}),
+               ('accuracy','accuracy_pages',(),{}),('cleanup','cleanup',(),{})]
+        for name,target,args,kwargs in cases:
+            with self.subTest(command=name),patch.object(host,target) as action:
+                result,_,reload_menu=self.invoke([],name)
+            self.assertEqual(result,0)
+            action.assert_called_once_with(*args,**kwargs)
+            reload_menu.assert_not_called()
+
+    def test_named_command_failure_returns_failure(self):
+        with patch.object(host,'video',side_effect=RuntimeError('cannot display')):
+            result,text,_=self.invoke([],'video')
+        self.assertEqual(result,1)
+        self.assertIn('cannot display',text)
 
 
 @unittest.skipUnless(sys.platform=='linux','Uses flock and detached Linux processes')

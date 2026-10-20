@@ -86,13 +86,15 @@ def launch_full():
         save_json(directory/'last-full.json',{'directory':str(result)})
         save_json(directory/'last-launch.json',{'pid':child.pid,'result':str(result),'log':str(log)})
     print('Full BUS-only check started in background; complete saved BUS evidence is reused.')
-    print('PID:',child.pid,'\nResult:',result,'\nOptions: 6 progress; 12 final three pages.')
+    print('PID:',child.pid,'\nResult:',result,
+          '\nDiagnostics: 1 progress; 3 saved summary (3 pages).')
     return child
 
 
 def full_pages():
     pointer=workspace()/'last-full.json'
-    if not pointer.exists(): raise ValueError('No full check started; use option 11.')
+    if not pointer.exists():
+        raise ValueError('No full check started; use Diagnostics > 2, or bash tools/host.sh full-check.')
     directory=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
     from full_check import saved_report,render,bus_capture
     try: report=saved_report(directory)
@@ -271,7 +273,7 @@ def selected():
             return result
     runs=candidates()
     if not runs:
-        raise ValueError('No saved capture report. Use option 5 to capture, or 6 to inspect its log.')
+        raise ValueError('No saved capture report. Use bash tools/host.sh capture, or Diagnostics > 1 for its log.')
     return runs[0]
 
 
@@ -307,7 +309,7 @@ def pages(kind):
 def progress():
     pointer=workspace()/'last-launch.json'
     if not pointer.exists():
-        print('No menu-launched capture. Older saved reports: options 2/3/7.')
+        print('No background diagnostic job. Use Diagnostics > 3 for a saved full BUS report.')
         return
     job=json.loads(pointer.read_text(encoding='utf-8'))
     print('PID:',job['pid'],'\nResult:',job['result'],'\nLog:',job['log'])
@@ -319,62 +321,92 @@ def progress():
             with guard(workspace()/'control.lock'):
                 print('No running menu job and no final report. Inspect the log below.')
         except RuntimeError:
-            print('Menu job active; select option 6 again to refresh.')
+            print('Menu job active; select Diagnostics > 1 again to refresh.')
     with Path(job['log']).open(encoding='utf-8',errors='replace') as stream:
         print(''.join(deque(stream,maxlen=12)),end='')
 
 
-def main():
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',nargs='?',choices=('update','capture','status','difference','progress','restore','full-check','full-report','png','video-check','video','video-continuous','video-report','performance','accuracy','cleanup'))
-    args=parser.parse_args()
-    if sys.platform!='linux':
-        parser.error('Run this menu on the Linux host.')
-    actions={'1':update,'2':lambda:pages('status'),'3':lambda:pages('difference'),
-             '5':launch,'6':progress,'7':choose,
-             '10':restore,'11':launch_full,'12':full_pages,'13':export_png,
-             '14':lambda:video(check=True),'15':video,
-             '16':lambda:video(continuous=True),'17':video_pages,
-             '18':performance_pages,'19':accuracy_pages,'20':cleanup}
-    names={'update':'1','status':'2','difference':'3','capture':'5','progress':'6',
-           'restore':'10','full-check':'11','full-report':'12','png':'13',
-           'video-check':'14','video':'15','video-continuous':'16','video-report':'17',
-           'performance':'18','accuracy':'19','cleanup':'20'}
+# Display and dispatch share these ordered action names; numbers are not copied.
+MAIN_MENU=(
+    ('update','Update repository'),
+    ('video-check','Check host video processing (no board access)'),
+    ('video','Run 3 video frames (PCIe, display + PNG + MP4)'),
+    ('video-continuous','Run selected video (default 30 frames; 0 = entire video)'),
+    ('video-report','Saved video report / golden / PNGs (offline)'),
+    ('performance','Timing summary / slowest nodes (offline, 3 pages)'),
+    ('accuracy','Detection quality comparisons (offline PNGs)'),
+    ('diagnostics','Diagnostics submenu'),
+    ('cleanup','Clean disposable files (no board access)'),
+)
+DIAGNOSTIC_MENU=(
+    ('progress','Background diagnostic progress / log'),
+    ('full-check','Full BUS-only check (background, reuse saved evidence)'),
+    ('full-report','Saved BUS summary (offline, 3 pages)'),
+    ('restore','Reload normal demo firmware'),
+)
+
+
+def action_handlers():
+    return {'update':update,'video-check':lambda:video(check=True),'video':video,
+            'video-continuous':lambda:video(continuous=True),'video-report':video_pages,
+            'performance':performance_pages,'accuracy':accuracy_pages,
+            'diagnostics':diagnostics,'cleanup':cleanup,'progress':progress,
+            'full-check':launch_full,'full-report':full_pages,'restore':restore,
+            # Retain named developer commands without duplicating menu entries.
+            'capture':launch,'status':lambda:pages('status'),
+            'difference':lambda:pages('difference'),'png':export_png}
+
+
+def menu_loop(title,entries,exit_label,handlers,aliases=None):
+    aliases=aliases or {}
     while True:
+        print('\n'+title)
+        for number,(_,label) in enumerate(entries,1):
+            print('{} {}'.format(number,label))
+        print('0 '+exit_label)
+        answer=input('Choice: ').strip()
+        if answer=='0':
+            return
+        choices={str(number):name for number,(name,_) in enumerate(entries,1)}
+        action=choices.get(answer,aliases.get(answer))
+        if action is None:
+            print('Choose one of the displayed options.')
+            continue
         try:
-            if args.action:
-                actions[names[args.action]]()
-                return 0
-            print('\nYOLO host menu\n1 Update repository\n2 Saved capture report\n3 Saved first difference'
-                  '\n5 Start BUS capture (background)'
-                  '\n6 Capture progress/log\n7 Select saved result'
-                  '\n10 Reload normal demo firmware'
-                  '\n11 Full BUS-only check (background, reuse complete evidence)'
-                  '\n12 Saved BUS summary (3 pages, offline)\n13 Export saved drawings to PNG (offline)'
-                  '\n14 Check host video processing (no board access)'
-                  '\n15 Run sequential video (3 frames, PCIe, display + PNG + MP4)'
-                  '\n16 Continuous video check (default 30 frames, B flags wrong boxes)'
-                  '\n17 Saved video report / flag frames / view PNGs (offline)'
-                  '\n18 Timing summary / slowest nodes (offline, 3 pages)'
-                  '\n19 Confidence and duplicate-box comparisons (offline PNGs)'
-                  '\n20 Clean disposable caches and unused preflight failures (no board access)\n0 Exit')
-            answer=input('Choice: ').strip()
-            if answer=='0':
-                return 0
-            if answer not in actions:
-                print('Choose one of the displayed options.'); continue
-            actions[answer]()
-            if answer=='1':
+            handlers[action]()
+            if action=='update':
                 # Reload updated menu code only after a successful fast-forward pull.
                 import os
                 os.execv(sys.executable,[sys.executable,str(ROOT/'tools/host_control.py')])
         except (OSError,ValueError,RuntimeError,subprocess.CalledProcessError) as exc:
             print('ERROR:',exc)
-            if args.action:
-                return 1
-        except (EOFError,KeyboardInterrupt):
-            print('\nMenu closed; a background capture remains independent.')
-            return 0
+
+
+def diagnostics():
+    menu_loop('YOLO diagnostics',DIAGNOSTIC_MENU,'Return to main menu',action_handlers())
+
+
+def main():
+    handlers=action_handlers()
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action',nargs='?',choices=tuple(handlers))
+    args=parser.parse_args()
+    if sys.platform!='linux':
+        parser.error('Run this menu on the Linux host.')
+    try:
+        if args.action:
+            handlers[args.action]()
+        else:
+            # The unchanged golden runner may still print its old report number.
+            # Keep that offline alias so existing golden cache hashes stay valid.
+            menu_loop('YOLO host menu',MAIN_MENU,'Exit',handlers,{'17':'video-report'})
+        return 0
+    except (OSError,ValueError,RuntimeError,subprocess.CalledProcessError) as exc:
+        print('ERROR:',exc)
+        return 1
+    except (EOFError,KeyboardInterrupt):
+        print('\nMenu closed; a background capture remains independent.')
+        return 0
 
 
 if __name__=='__main__':

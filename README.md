@@ -9,13 +9,15 @@
 在物理连接S2C的Linux host仓库根目录执行：
 
 ```bash
-# 打开统一菜单：1更新 → 15运行三帧 → 17查看数值报告 → 18查看性能
+# 打开统一菜单：1更新 → 3运行三帧 → 5查看数值报告 → 6查看性能
 bash tools/host.sh
 ```
 
 首次使用先按[环境准备](docs/OPERATIONS.md#1-准备与更新)安装离线视频依赖并确认图形会话。已有后台任务时先等待结束，菜单1会拒绝更新。
 
-当前v6合并保持数值规则的RVV寻址、数据复用、池化/上采样、BMM、选择和输入打包优化，逐项原理见[完整手册](docs/MODEL.md#v6合并优化的原理)。路径标记为 `rvv_bulk_v6`、input_im2col=0；使用同三帧独立golden及计时验收，保留v5 `run-2i3ciq3m` 供自动比较。v5实测及v6待测状态见[手册性能章节](docs/MODEL.md#performance)，完整证据见[验收记录](docs/VALIDATION.md)；旧v5数值可用菜单17离线确认，不要求重新运行板子。
+当前v6合并保持数值规则的RVV寻址、数据复用、池化/上采样、BMM、选择和输入打包优化，逐项原理见[完整手册](docs/MODEL.md#v6合并优化的原理)。路径标记为 `rvv_bulk_v6`、input_im2col=0；实板 `run-bivzu9qm` 三帧平均模型465,117,933周期，40MHz下11.627948秒，比v5减少47.4%。同次数值验收结果尚未提供，用菜单5离线查看已有运行，不必重跑。完整实测见[手册性能章节](docs/MODEL.md#performance)，证据见[验收记录](docs/VALIDATION.md)；保留v5 `run-2i3ciq3m` 供自动比较。
+
+主菜单连续编号1–9，排障集中在8的子菜单；完整功能表见[操作手册](docs/OPERATIONS.md#1-准备与更新)。原命名命令保持可用，例如 `bash tools/host.sh performance`。
 
 ## 按问题选择文档
 

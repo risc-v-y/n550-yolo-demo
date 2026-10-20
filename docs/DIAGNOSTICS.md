@@ -56,11 +56,11 @@ AMU 等待前记录阶段，返回后记录原始 `xmfflags`，不将所有非�
 
 ## 数值问题的定位资料
 
-逐节点实际输入重放、golden规则及通过条件统一见[VALIDATION](VALIDATION.md)。菜单11/12的采集与旧报告操作见[OPERATIONS](OPERATIONS.md#4-查验排障与反馈)，不为查看结果重新运行板子。
+逐节点实际输入重放、golden规则及通过条件统一见[VALIDATION](VALIDATION.md)。主菜单8进入排障，子菜单2采集、3查看旧BUS报告；操作见[OPERATIONS](OPERATIONS.md#4-查验排障与反馈)，不为查看结果重新运行板子。
 
 保留 `summary.json`、`nodes.csv`、`first_difference.json`、`snapshots/`、`tensors/` 及工具日志。首差异报告用于区分当前节点问题与上游传播；旧首层专项固件已移除。需要导出时使用 `tools/export_bus_evidence.py`。
 
-单图/节点采集图的PNG生成使用librsvg/Cairo，不要求DISPLAY；视频PNG由OpenCV保存。只有查看窗口才需要图形会话，菜单13可转换旧SVG。节点采集增加CRC、读回和等待开销，不能用于评估推理性能。
+单图/节点采集图的PNG生成使用librsvg/Cairo，不要求DISPLAY；视频PNG由OpenCV保存。只有查看窗口才需要图形会话。旧SVG需转换时运行 `bash tools/host.sh png`，不再占用菜单。节点采集增加CRC、读回和等待开销，不能用于评估推理性能。
 
 ## 自测定位
 

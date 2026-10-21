@@ -1,5 +1,5 @@
 {
-  "revision": "2026-10-20 / FP16 three-row cache / whole-layer bias",
+  "revision": "2026-10-21 / FP16 three-row cache / whole-layer bias / first-block probe",
   "nodes": 334,
   "operators": {
     "CONV": 102,
@@ -35,7 +35,7 @@
     "accel_model.c": "81fdfcc74715fe4ba75295eed99b27c5f0baa72656b3d0e0c6bd9903d85090aa",
     "amu.c": "55a6f62ca5d422af87da294357715684216e89790c160f14b87a2a0fc8906b06",
     "amu.h": "dab1ec606365d04a99bce3a13892dd4ca63edba3849aad1b3aa91d225fe9cd84",
-    "amu_input_rvv.c": "6653292b10c26c5d8b1d8e835f6720534719467fde722a5be93802af4c3073b4",
+    "amu_input_rvv.c": "8e45c8378689c79e8e9ae5bfbec1f318f4dabf11d62517d3510e0aba93a0e1d4",
     "amu_half_rvv.h": "3518f43039c36d7382e54d41523526a951132645ff28b2eaa1c3d293a0915d78",
     "rvv_model_ops.c": "cf794ded668c0496e016da5152daa5108b1a94d9469be17672c0b7f7a9bd89f2",
     "rvv_model_ops.h": "a638cf7826aadb6bcfae5375bd9d2783c19889a935ae3eecaba0873453ac01c1",
@@ -44,9 +44,9 @@
     "scalar_model.c": "6b6077a4e4ec7740c6ed5910dfc000d9e3a5edd97513f60d1a80afb24799dba6",
     "board/coherent_rvv.h": "d4186182f64e10b2e7c8ade451c27f5df2e2263a4adf9e6fef03973d8d7afe20",
     "board/cache.h": "393a06047c94222be2e505685679ef17fc1f98e5d1ab82186cbb9672334db016",
-    "board/main.c": "26b30fafd404beeb3db45cda14bd12e704be9dbd0b2f9d96ca49984a8e42b1d8",
-    "board/diagnostics.c": "a6910c1fd859a439d56140a5114d43484ff8af3fa95c06d483b709095c1f7a21",
-    "board/diagnostics.h": "f9b229928186be14d1f53e8fbdc1e321c508119b6adb1cad550bd98f8000b9e7",
+    "board/main.c": "1cfe5fdbed5b476501ea3b2709ad513b1181bc7c8807eb5fdb02fab2b5899c83",
+    "board/diagnostics.c": "d3a235da09abae96198a592c8aa8d27326ce2e1e5359cb7a2bb83d3edd3737e5",
+    "board/diagnostics.h": "f229ec6a9f06f8bc5892d45113ffa7e02f0267021630d32c5e4fc613a0fa31ca",
     "board/model_io.c": "0f28b0943c1e0e8f0bbcc7c44132b83af5db2018955ff298f4e63cdccb52b003",
     "build_board.sh": "6e75747e2d0fdee207af131c76d4ecbe3ef1a50627bdcf4d6c7b4d0fa13f14aa"
   },

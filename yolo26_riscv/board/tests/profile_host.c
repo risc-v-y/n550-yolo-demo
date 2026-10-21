@@ -5,6 +5,25 @@
 uint64_t board_profile_test_ticks;
 int main(void) {
     board_diag_init();
+    board_diag.node=0; board_diag.options=DIAG_TRACE;
+    size_t tags[3]={0,1,SIZE_MAX};
+    board_profile_test_ticks=100;
+    assert(board_pack_begin(0,1,27,0,0,0,0));
+    board_profile_test_ticks=400000101;
+    assert(board_pack_mark(PACK_ROW_CHECK,0,0,0,0,tags,2496)==-1);
+    assert(board_pack_probe.error==9 && board_diag.error==0x35);
+    board_diag_init(); board_diag.node=0; board_diag.options=DIAG_TRACE;
+    assert(board_pack_begin(0,1,27,0,0,0,0));
+    for(unsigned i=0;i<3;++i) assert(!board_pack_mark(PACK_ROW_CHECK,0,0,0,0,tags,0));
+    assert(board_pack_mark(PACK_ROW_CHECK,0,0,0,0,tags,0)==-1);
+    assert(board_pack_probe.error==3);
+    board_diag_init(); board_diag.node=0; board_diag.options=DIAG_TRACE;
+    assert(board_pack_begin(0,2,27,0,0,0,0));
+    assert(!board_pack_mark(PACK_STORE_DONE,0,0,-1,27,tags,0));
+    assert(!board_pack_mark(PACK_COLUMN_DONE,0,27,-1,0,tags,0));
+    assert(board_pack_mark(PACK_ROW_CHECK,0,0,0,0,tags,0)==-1);
+    assert(board_pack_probe.error==2);
+    board_diag_init();
     assert(offsetof(BoardDiagnostics,profile_address)==816);
     board_diag.frame=7; board_diag.options=DIAG_TRACE;
     board_profile_test_ticks=100;

@@ -46,9 +46,22 @@ void amu_input_rows_end(AmuInputRows *rows) {
     }
 }
 
-static void cache_row(AmuInputRows *rows,size_t y) {
+static int cache_row(AmuInputRows *rows,size_t y,int probe,size_t column) {
+#ifdef YOLO_N550_BOARD
+    if(probe && board_pack_mark(PACK_ROW_CHECK,column,0,(int64_t)y,0,rows->row,rows->converted)) return -1;
+#else
+    (void)probe; (void)column;
+#endif
     size_t slot=y%3;
-    if(rows->row[slot]==y) return;
+    if(rows->row[slot]==y) {
+#ifdef YOLO_N550_BOARD
+        if(probe && board_pack_mark(PACK_ROW_HIT,column,0,(int64_t)y,0,rows->row,rows->converted)) return -1;
+#endif
+        return 0;
+    }
+#ifdef YOLO_N550_BOARD
+    if(probe && board_pack_mark(PACK_ROW_FILL_BEGIN,column,0,(int64_t)y,0,rows->row,rows->converted)) return -1;
+#endif
     const Conv2D *p=&rows->shape;
     size_t plane=(size_t)p->in_h*p->in_w;
     const uint32_t *source=(const uint32_t *)rows->input;
@@ -72,6 +85,10 @@ static void cache_row(AmuInputRows *rows,size_t y) {
     rows->row[slot]=y;
     rows->converted+=(size_t)p->in_channels*p->in_w;
     amu_rvv_row_values+=(size_t)p->in_channels*p->in_w;
+#ifdef YOLO_N550_BOARD
+    if(probe && board_pack_mark(PACK_ROW_FILL_DONE,column,0,(int64_t)y,0,rows->row,rows->converted)) return -1;
+#endif
+    return 0;
 }
 
 static void zero_half(uint16_t *dst,size_t count) {
@@ -105,6 +122,16 @@ static int pack_input(const Conv2D *p,const float *input,size_t batch,
 #ifdef YOLO_N550_BOARD
     board_diag_phase(PHASE_AMU_PACK);
 #endif
+    int probe=0;
+#ifdef YOLO_N550_BOARD
+    if(rows) probe=board_pack_begin(first,columns,k,input,rows->data,storage,rows->bytes);
+#define PACK_MARK(step,c,i,r,v) do { \
+    if(probe && board_pack_mark(step,c,i,r,v,rows->row,rows->converted)) goto invalid; \
+} while(0)
+#else
+#define PACK_MARK(step,c,i,r,v) do { } while(0)
+#endif
+    PACK_MARK(PACK_PREPARE_BEGIN,0,0,-1,0);
     int pointwise=p->kernel_h==1 && p->kernel_w==1 && p->stride_h==1 &&
                   p->stride_w==1 && !p->pad_h && !p->pad_w;
     if(!pointwise && (plan_k!=k || plan_h!=p->in_h || plan_w!=p->in_w ||
@@ -138,6 +165,7 @@ static int pack_input(const Conv2D *p,const float *input,size_t batch,
         zero_half(destination+block*1024+columns*32,(32-columns)*32);
     if(k%32) for(size_t col=0;col<columns;++col)
         zero_half(destination+(kt-1)*1024+col*32+k%32,32-k%32);
+    PACK_MARK(PACK_PREPARE_DONE,0,0,-1,0);
     for(size_t col=0;col<columns;++col) {
         size_t pos=first+col;
         uint32_t y0=(uint32_t)(pos/ow*p->stride_h-p->pad_h);
@@ -151,12 +179,14 @@ static int pack_input(const Conv2D *p,const float *input,size_t batch,
             int64_t iy=(int64_t)(pos/ow*p->stride_h)-p->pad_h;
             slot=(uint32_t)((iy%3+3)%3);
             for(unsigned ky=0;ky<3;++ky)
-                if(iy+ky>=0 && iy+ky<p->in_h) cache_row(rows,(size_t)(iy+ky));
+                if(iy+ky>=0 && iy+ky<p->in_h && cache_row(rows,(size_t)(iy+ky),probe,col)) goto invalid;
+            PACK_MARK(PACK_ROWS_DONE,col,0,iy,0);
 #ifdef YOLO_N550_BOARD
             cached=(const uint16_t *)board_rvv_address(cached);
 #endif
         }
         for(size_t inner=0;inner<k;) {
+            PACK_MARK(PACK_INDEX_BEGIN,col,inner,-1,0);
             size_t count=k-inner<32-inner%32 ? k-inner : 32-inner%32;
             size_t vl=__riscv_vsetvl_e32m2(count);
             if(rows) {
@@ -167,20 +197,28 @@ static int pack_input(const Conv2D *p,const float *input,size_t batch,
                 vuint32m2_t offset=__riscv_vadd_vv_u32m2(__riscv_vle32_v_u32m2(indices[0]+inner,vl),
                     __riscv_vmul_vx_u32m2(s,(uint32_t)((size_t)p->in_channels*p->in_w*2),vl),vl);
                 offset=__riscv_vadd_vx_u32m2(offset,x0*2,vl);
+                PACK_MARK(PACK_INDEX_DONE,col,inner,-1,vl);
                 vuint16m1_t half;
-                if(interior) half=__riscv_vluxei32_v_u16m1(cached,offset,vl);
+                if(interior) {
+                    PACK_MARK(PACK_GATHER_BEGIN,col,inner,-1,vl);
+                    half=__riscv_vluxei32_v_u16m1(cached,offset,vl);
+                }
                 else {
                     vuint32m2_t y=__riscv_vadd_vx_u32m2(ky,y0,vl);
                     vuint32m2_t x=__riscv_vadd_vx_u32m2(__riscv_vle32_v_u32m2(indices[2]+inner,vl),x0,vl);
                     vbool16_t valid=__riscv_vmand_mm_b16(__riscv_vmsltu_vx_u32m2_b16(y,p->in_h,vl),
                                                        __riscv_vmsltu_vx_u32m2_b16(x,p->in_w,vl),vl);
+                    PACK_MARK(PACK_GATHER_BEGIN,col,inner,-1,vl);
                     half=__riscv_vluxei32_v_u16m1_m(valid,cached,offset,vl);
                     half=__riscv_vmerge_vvm_u16m1(__riscv_vmv_v_x_u16m1(0,vl),half,valid,vl);
                 }
+                PACK_MARK(PACK_GATHER_DONE,col,inner,-1,vl);
                 vuint16m1_t absolute=__riscv_vand_vx_u16m1(half,0x7fffu,vl);
                 if(__riscv_vfirst_m_b16(__riscv_vmsgeu_vx_u16m1_b16(absolute,0x7c00u,vl),vl)>=0)
                     goto invalid;
+                PACK_MARK(PACK_STORE_BEGIN,col,inner,-1,vl);
                 __riscv_vse16_v_u16m1(destination+(inner/32)*1024+col*32+inner%32,half,vl);
+                PACK_MARK(PACK_STORE_DONE,col,inner,-1,vl);
                 inner+=vl;
                 continue;
             }
@@ -206,13 +244,16 @@ static int pack_input(const Conv2D *p,const float *input,size_t batch,
                                   amu_half_bits_rvv(bits,vl),vl);
             inner+=vl;
         }
+        PACK_MARK(PACK_COLUMN_DONE,col,k,-1,0);
     }
 #ifdef YOLO_N550_BOARD
     board_finish_write(storage,bytes);
 #endif
+    PACK_MARK(PACK_BLOCK_DONE,columns,k,-1,0);
     *packed=(AmuPackedInput){storage,k,columns,bytes};
     ++amu_rvv_input_blocks;
     if(rows) ++amu_rvv_cached_blocks;
+#undef PACK_MARK
     return 0;
 invalid:
 #ifdef YOLO_N550_BOARD

@@ -45,6 +45,8 @@ def main():
         subprocess.run([str(tc)+'-objcopy','-O','binary',str(root/'firmware/demo-pcie.elf'),str(generated)],check=True)
         assert generated.read_bytes()==blob
     info,addresses,prefix=diag.firmware_info(root,'demo-pcie')
+    probe=diag.elf_symbols(elf,{'board_pack_probe':256})['board_pack_probe']
+    assert probe%64==0 and 0x80000000<=probe<=0x81f00000-256
     assert all(0x80000000<=address<0x82000000 for address in addresses.values())
     print(f'Physical CLP package verified: BIN={len(blob)} bytes, CLP NOLOAD=8143104 bytes.')
     print('Program, constants, diagnostic symbols and BIN/ELF match; physical inference remains to validate.')

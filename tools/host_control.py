@@ -129,6 +129,10 @@ def cleanup():
     subprocess.run([sys.executable,str(ROOT/'tools/cleanup_host.py'),'--apply'],cwd=ROOT,check=True)
 
 
+def pack_probe():
+    subprocess.run([sys.executable,str(ROOT/'tools/pack_probe.py'),'--load'],cwd=ROOT,check=True)
+
+
 def video(check=False, continuous=False):
     options=[]
     if continuous:
@@ -343,6 +347,7 @@ DIAGNOSTIC_MENU=(
     ('full-check','Full BUS-only check (background, reuse saved evidence)'),
     ('full-report','Saved BUS summary (offline, 3 pages)'),
     ('restore','Reload normal demo firmware'),
+    ('pack-probe','First input-block probe (preserve original input)'),
 )
 
 
@@ -352,6 +357,7 @@ def action_handlers():
             'performance':performance_pages,'accuracy':accuracy_pages,
             'diagnostics':diagnostics,'cleanup':cleanup,'progress':progress,
             'full-check':launch_full,'full-report':full_pages,'restore':restore,
+            'pack-probe':pack_probe,
             # Retain named developer commands without duplicating menu entries.
             'capture':launch,'status':lambda:pages('status'),
             'difference':lambda:pages('difference'),'png':export_png}

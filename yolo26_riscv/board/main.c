@@ -99,7 +99,10 @@ int board_model_run(void) {
         uint64_t compute_start=board_diag_ticks();
         int status=accel_model_node(node,model_tensors,arena,model_weights);
         uint64_t compute_cycles=board_diag_ticks()-compute_start;
-        if(status) { board_diag_error(0x31,status); return -2; }
+        if(status) {
+            if(!board_diag.error) board_diag_error(0x31,status);
+            return -2;
+        }
         uint64_t check_start=board_diag_ticks();
         if((board_diag.options&DIAG_FINITE) || step+1==MODEL_NODE_COUNT) {
             board_diag_phase(PHASE_CHECK);

@@ -16,6 +16,7 @@ import time
 root=Path(__file__).resolve().parents[3]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--capture',action='store_true',help='Exercise node snapshots/ACK and export all tensors')
+parser.add_argument('--pack-probe',action='store_true',help='Enable first-block probe and exclude diagnostic timing')
 parser.add_argument('--manifest',type=Path,default=root/'reference/prepared/manifest.json',
                     help='Validate the first prepared sample (normally BUS)')
 args=parser.parse_args()
@@ -40,6 +41,7 @@ flags=['-march=rv64gcv_zicbom_zifencei_xewmatrix1p0','-mabi=lp64d','-mcmodel=med
        '-I',str(src),'-I',str(root/'model')]
 if args.capture:
     flags+=['-DMODEL_CAPTURE_TEST=1','-Wl,--wrap=board_pcie_node_end']
+if args.pack_probe: flags+=['-DMODEL_PACK_PROBE_TEST=1']
 subprocess.run([tc+'-gcc',*flags,'-c','board/start.S','-o',str(out/'start.o')],cwd=src,check=True)
 (out/'weights.S').write_text('.section .rodata.weights,"a",@progbits\n.balign 64\n'
                             '.global model_weights,model_weights_end\nmodel_weights:\n'
@@ -84,6 +86,12 @@ if result.returncode or 'QEMU MODEL BUS PASS' not in text:
     raise RuntimeError(f'QEMU model failed; inspect {out}/uart.log')
 from board_profile import decode_profile
 profile=decode_profile((out/'frame-0-profile.bin').read_bytes(),1,0x12345678)
+if args.pack_probe:
+    sys.path.insert(0,str(root/'tools'))
+    from pack_probe import decode
+    probe=decode((out/'pack-probe.bin').read_bytes(),0x12345678,1)
+    assert probe['stage_name']=='block.done' and not profile['representative']
+    report['pack_probe']=probe
 report.update(profile_version=profile['version'],input_path=profile['input_path'],
               profile_sha256=profile['sha256'],phases=profile['phases'])
 for index,sample in enumerate(samples):

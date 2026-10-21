@@ -58,4 +58,28 @@ void board_diag_trap(uintptr_t cause, uintptr_t pc, uintptr_t value, const uintp
 uint64_t board_diag_ticks(void);
 /* Best-effort debug text. Native PCIe fixtures keep this silent. */
 void board_diag_event(void);
+
+/* First input-block probe, enabled only by DIAG_TRACE on node 0. Separate
+ * from the stable PCIe diagnostics/profile wire layouts. Ordinary frames
+ * never enable it. All fields are u64; signed row uses two's complement. */
+#define BOARD_PACK_MAGIC UINT64_C(0x314b435036325959)
+enum {
+    PACK_BEGIN=1, PACK_PREPARE_BEGIN, PACK_PREPARE_DONE, PACK_ROW_CHECK,
+    PACK_ROW_FILL_BEGIN, PACK_ROW_FILL_DONE, PACK_ROW_HIT, PACK_ROWS_DONE,
+    PACK_INDEX_BEGIN, PACK_INDEX_DONE, PACK_GATHER_BEGIN, PACK_GATHER_DONE,
+    PACK_STORE_BEGIN, PACK_STORE_DONE, PACK_COLUMN_DONE, PACK_BLOCK_DONE,
+    PACK_GUARD_FAIL
+};
+typedef struct {
+    uint64_t magic,version,bytes,generation,session,frame,node,stage;
+    uint64_t first,columns,column,inner,row,vl,events,error;
+    uint64_t input,cache,output,cache_bytes,row0,row1,row2,converted;
+    uint64_t next_column,next_inner,row_visits,elapsed,started,updated,k,checksum;
+} BoardPackProbe;
+_Static_assert(sizeof(BoardPackProbe)==256,"pack probe layout");
+extern volatile BoardPackProbe board_pack_probe;
+int board_pack_begin(size_t first,size_t columns,size_t k,const void *input,
+                     const void *cache,void *output,size_t cache_bytes);
+int board_pack_mark(unsigned stage,size_t column,size_t inner,int64_t row,
+                    size_t vl,const size_t tags[3],uint64_t converted);
 #endif

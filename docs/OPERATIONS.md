@@ -25,7 +25,7 @@ bash tools/setup_host_video.sh
 | 5 | 已有视频数值报告、错框标记及PNG |
 | 6 | 已有运行的性能三页及完整节点计时 |
 | 7 | 已有帧的检测效果对照 |
-| 8 | 排障子菜单：1进度、2完整BUS查验、3旧BUS报告、4重载固件 |
+| 8 | 排障子菜单：1进度、2完整BUS查验、3旧BUS报告、4重载固件、5首块自动诊断 |
 | 9 | 清理临时材料 |
 | 0 | 退出 |
 
@@ -33,7 +33,16 @@ bash tools/setup_host_video.sh
 
 ## 2. 视频运行与结果
 
-当前模型验收按 **1更新 → 3同一视频前三帧 → 确认VIDEO CHECK PASSED → 6新运行三页**。5可重看报告、补算未完成的golden及查看PNG。第二页应显示 `rvv_rowcache_layer_bias`，计时版号7、input_im2col=0、runtime weight conversions=0；input_pack包含三行缓存的初始化/结束交接，bias每层调用一次。新实板周期取得前仅保留最近基线 `run-bivzu9qm`；完整原理、计时边界与当前实测见[模型手册](MODEL.md#performance)，不要求保留历轮优化结果。
+当前实板停在首个输入块，先用 **1更新 → 8排障 → 5首块自动诊断**。GDB若仍连接，先执行`detach`、`quit`，避免加载后核心继续处于调试暂停。该入口会先尝试读取当前首层RUN请求的原输入并核对CRC，保存成功后才加载诊断固件；空闲板使用冻结BUS。原输入无法核实时明确报错，不复位、不回退覆盖。随后自动采样，结束时截图一页`PACK PROBE`报告及UART最后几条`[PACK]`。不需要OpenCV、图形窗口或host编译器。
+
+```bash
+# 自动保留当前首层输入、加载诊断固件、运行一帧并保存定位报告
+bash tools/host.sh pack-probe
+```
+
+结果在`yolo26_pc/outputs/pack-probe/run-*/`，`latest.json`指向最新运行；保留`source-input.bin`、报告、逐次原始快照和工具日志。20秒无已完成打包工作推进时host结束等待，整帧上限120秒；结束后不自动复位，核心可能仍在运行。诊断标记及结论边界见[DIAGNOSTICS](DIAGNOSTICS.md#首个输入块自动诊断)。
+
+阻塞解决后，普通模型验收仍按 **3同一视频前三帧 → 确认VIDEO CHECK PASSED → 6新运行三页**。主菜单5可重看视频报告、补算golden及查看PNG。第二页应显示 `rvv_rowcache_layer_bias`，计时版号7、input_im2col=0、runtime weight conversions=0。首块探针使用trace选项，计时不进入排行；新实板周期取得前仅保留最近基线`run-bivzu9qm`。原理和实测统一见[模型手册](MODEL.md#performance)。
 
 ```bash
 # 检查host并加载固件一次，按顺序处理默认视频的前三帧

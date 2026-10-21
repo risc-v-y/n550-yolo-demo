@@ -25,6 +25,31 @@
 
 UART 等待有上限，初始化验证失败或发送超时后禁用后续日志，PCIe 继续工作。`board_uart_status=0` 表示可用；`-1` 空闲超时、`-2` DLF 掩码、`-3/-4/-5` 寄存器验证失败、`-6` 尚未初始化、`-7` 发送超时。`board_diag.tx_errors` 记录故障次数。UART MMIO 本身总线异常仍会触发 trap；嵌套异常可能直接停车，不能保证打印。
 
+## 首个输入块自动诊断
+
+排障菜单5／`bash tools/host.sh pack-probe`只定位当前首层输入打包异常，不改变FP16数值、AMU累加顺序或整层bias规则。它先验证当前PCIe状态、首层诊断及RUN请求；若仍在node0/phase5，读回原输入、核对请求CRC并保存，再加载当前固件复现。空闲板使用冻结BUS；忙于其他阶段或原输入无法核实时停止，不复位覆盖现场。
+
+专用运行使用`DIAG_TRACE`：仅node0、第一个空间块记录细分标记；普通视频不启用探针。UART形如：
+
+```text
+[PACK] row.check col=25 k=0 row=1 vl=0 seq=...
+[PACK] row.hit col=25 k=0 row=1 vl=0 seq=...
+[PACK] gather.begin col=25 k=0 row=-1 vl=27 seq=...
+[PACK] gather.done col=25 k=0 row=-1 vl=27 seq=...
+[PACK] store.begin col=25 k=0 row=-1 vl=27 seq=...
+[PACK] store.done col=25 k=0 row=-1 vl=27 seq=...
+[PACK] column.done col=25 k=27 row=-1 vl=0 seq=...
+[PACK] block.done col=32 k=27 row=-1 vl=0 seq=...
+```
+
+标记覆盖scratch准备、行检查/填充/命中、索引、gather和写入。`col`为本块空间列号，`k`为K项位置，`row=-1`表示该步骤不对应某一输入行。只有`store.done`之后才推进已完成K位置，`column.done`之后才推进已完成列数；相邻begin/done只缩小执行区间，不能单凭它断言某条硬件指令故障。
+
+独立ELF符号`board_pack_probe`是64字节对齐的256字节版本1快照，保留帧、会话、输入/缓存地址、行标签、转换数量、阶段及已完成进度。偶数generation与覆盖前31个u64字段的64位逐字校验拒绝撕裂读取；host每次最多重读3次，另保存原始BIN和SHA256。原816/832字节诊断和24320字节计时布局保持不变。
+
+软件检查列/K推进、VL范围、每列最多三次行检查及8192次事件上限；真实板端首块超过400M周期也报`0x35`。reason依次为1列越界、2列不推进、3重复行检查、4K不推进、5VL/K增量非法、6列K未完成、7块列未完成、8事件超限、9周期超限。40MHz下400M周期约10秒；若访存本身不能返回，软件检查无法执行，由host观察无推进或整帧超时后保存末次快照。QEMU周期速率不同，功能回归不使用实板周期阈值，阈值由确定的原生计数夹具验证。
+
+结束标志为`PACK PROBE: COMPLETED/FAILED/STOPPED`；`COMPLETED`要求完整帧返回及有效`block.done`，不是原故障已修复的结论。新增调用、spill、日志和同步可能改变原现象，诊断帧自动排除性能排行。反馈末尾一页报告和UART最后几条标记即可，完整数据保留host；先保留现场，不自动重试整帧或复位。
+
 ## host 日志与 DDR 快照
 
 单图日志在 `yolo26_pc/outputs/board-pcie/<时间>/`，顺序视频在 `yolo26_pc/outputs/host-video/run-*/`（旧摄像头入口仍在 `outputs/live-demo/<时间>/`），部署日志在 `outputs/deploy-*/load.log`。`diagnostics.jsonl` 包括 PCIe 工具参数、退出码、输出尾部、状态变化和完成/失败时的板端快照。Python 异常保存 traceback。UART 文字不自动写入 JSONL，需使用终端会话日志另存。
@@ -41,6 +66,7 @@ CPU trap 使用独立 4 KiB 异常栈，保存整数寄存器及 `mcause/mepc/mt
 | 3/4 | AMU 初始化/自测失败，detail 为原返回值 |
 | 5 | READY前权重准备失败；检查模型元数据、FP16转换和5MiB容量 |
 | 0x30 | 输入 NaN/Inf，查看 tensor/element/observed |
+| 0x35 | 首个输入块进度保护触发，reason见首块自动诊断；保留最后PACK快照 |
 | 0x31 | 算子失败，查看 node/phase/detail |
 | 0x32 | 输出 NaN/Inf，查看张量、下标和原始位 |
 | 0x40–0x44 | PCIe 请求、会话、输入 CRC、模型失败或采集取消，见 PCIE.md |

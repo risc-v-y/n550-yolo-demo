@@ -86,8 +86,10 @@ def verify_clp_blob(blob):
                                  for index, actual, want in wrong[:16]]}
 
 
-def elf_symbols(data):
+def elf_symbols(data, extra_symbols=None):
     """Parse ELF64 little-endian RISC-V symbols without a cross toolchain."""
+    sizes={name:size_of(name) for name in SYMBOLS}
+    sizes.update(extra_symbols or {})
     def region(start, size):
         if start < 0 or size < 0 or start + size > len(data):
             raise ValueError('Truncated ELF table')
@@ -122,15 +124,15 @@ def elf_symbols(data):
             if name_at >= len(names) or end < 0:
                 raise ValueError('Invalid ELF symbol name')
             name = names[name_at:end].decode('ascii', errors='replace')
-            if name not in SYMBOLS:
+            if name not in sizes:
                 continue
-            if info & 15 != 1 or size < size_of(name):  # STT_OBJECT
+            if info & 15 != 1 or size < sizes[name]:  # STT_OBJECT
                 raise ValueError(f'Invalid object symbol: {name}')
-            offset(address, size_of(name))
+            offset(address, sizes[name])
             if name in found and found[name] != address:
                 raise ValueError(f'Conflicting ELF symbol: {name}')
             found[name] = address
-    missing = SYMBOLS.keys() - found.keys()
+    missing = sizes.keys() - found.keys()
     if missing:
         raise ValueError('Missing ELF symbols: ' + ', '.join(sorted(missing)))
     if found['board_diag'] % 64:

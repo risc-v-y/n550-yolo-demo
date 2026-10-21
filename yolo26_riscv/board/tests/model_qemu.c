@@ -53,6 +53,9 @@ int __wrap_board_pcie_node_end(void) {
     PcieRequest request={.session=0x12345678,.frame=capture_frame,.command=PCIE_ADVANCE,
                         .sequence=++capture_sequence,.input_crc=board_node_snapshot.token,
                         .options=DIAG_FINITE|PCIE_CAPTURE};
+#ifdef MODEL_PACK_PROBE_TEST
+    request.options|=DIAG_TRACE;
+#endif
     request.crc=board_crc32(&request,60);
     const unsigned char *src=(const unsigned char *)&request;
     volatile unsigned char *dst=(volatile unsigned char *)&board_pcie_mailbox.request;
@@ -81,6 +84,9 @@ static void submit(unsigned command,unsigned sequence,unsigned frame) {
                         .sequence=sequence,.options=DIAG_FINITE};
 #ifdef MODEL_CAPTURE_TEST
     request.options|=PCIE_CAPTURE;
+#endif
+#ifdef MODEL_PACK_PROBE_TEST
+    request.options|=DIAG_TRACE;
 #endif
     if(command==PCIE_RUN) {
         request.input_bytes=board_model_input_size();
@@ -195,6 +201,12 @@ void __wrap_board_pcie_loop(int failure) {
             if(poison[i]!=0xffffffffu) clp_qemu_exit(24);
         file(outputs[sample],(void *)board_model_output(),7200,1);
         file("frame-0-profile.bin",(void *)&board_profile,sizeof(board_profile),1);
+#ifdef MODEL_PACK_PROBE_TEST
+        if(board_pack_probe.stage!=PACK_BLOCK_DONE || board_pack_probe.error ||
+           board_pack_probe.column!=32 || board_pack_probe.next_column!=32 ||
+           board_pack_probe.converted!=2496 || !(board_profile.options&DIAG_TRACE)) clp_qemu_exit(38);
+        file("pack-probe.bin",(void *)&board_pack_probe,sizeof(board_pack_probe),1);
+#endif
         board_uart_text("QEMU MODEL FRAME PASS sample="); board_uart_u64(sample);
         board_uart_text(" nodes=334\n");
     }

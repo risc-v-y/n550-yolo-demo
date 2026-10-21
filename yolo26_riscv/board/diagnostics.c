@@ -3,12 +3,14 @@
 #include "cache.h"
 #include "../accel_model.h"
 #include "../amu.h"
+#include "pcie.h"
 #endif
 #if defined(YOLO_N550_BOARD) || defined(BOARD_LOG_TEST)
 #include "uart.h"
 #endif
 volatile BoardDiagnostics board_diag __attribute__((aligned(64)));
 volatile BoardProfile board_profile __attribute__((aligned(64)));
+volatile BoardPackProbe board_pack_probe __attribute__((aligned(64)));
 ModelProfilePhase model_profile_phases[PROFILE_PHASE_COUNT];
 static uint64_t frame_start;
 static uint64_t profile_start;
@@ -118,6 +120,8 @@ void board_diag_commit(void) {
 void board_diag_init(void) {
     volatile uint64_t *p=(volatile uint64_t *)&board_diag;
     for(unsigned i=0;i<sizeof(board_diag)/8;++i) p[i]=0;
+    p=(volatile uint64_t *)&board_pack_probe;
+    for(unsigned i=0;i<sizeof(board_pack_probe)/8;++i) p[i]=0;
     board_diag.version=1;
     board_diag.node=board_diag.tensor=UINT64_MAX;
     board_diag.op=UINT64_MAX;
@@ -173,4 +177,104 @@ void board_diag_trap(uintptr_t cause,uintptr_t pc,uintptr_t value,const uintptr_
     board_diag.stage=DIAG_TRAP;
     board_diag_commit(); /* Best effort: a nested cache/bus fault parks in the assembly fallback. */
     board_diag_event();
+}
+
+static void pack_publish(void) {
+    /* Generation+checksum reject torn live reads. These volatile scalar
+     * stores must not become compiler-generated vector aggregate copies. */
+    uint64_t generation=(board_pack_probe.generation&~UINT64_C(1))+2;
+    board_pack_probe.generation=generation-1;
+#ifdef YOLO_N550_BOARD
+    board_clean((const void *)&board_pack_probe,64);
+#endif
+    board_pack_probe.generation=generation;
+    uint64_t hash=UINT64_C(14695981039346656037);
+    const volatile uint64_t *words=(const volatile uint64_t *)&board_pack_probe;
+    for(unsigned i=0;i<31;++i) hash=(hash^words[i])*UINT64_C(1099511628211);
+    board_pack_probe.checksum=hash;
+#ifdef YOLO_N550_BOARD
+    board_clean((const void *)&board_pack_probe,sizeof(board_pack_probe));
+#endif
+#if defined(YOLO_N550_BOARD) || defined(BOARD_LOG_TEST)
+    if(!board_uart_status) {
+        static const char *const names[]={"none","begin","prepare.begin","prepare.done",
+            "row.check","row.fill.begin","row.fill.done","row.hit","rows.done",
+            "index.begin","index.done","gather.begin","gather.done","store.begin",
+            "store.done","column.done","block.done","GUARD.FAIL"};
+        board_uart_text("[PACK] ");
+        board_uart_text(board_pack_probe.stage<=PACK_GUARD_FAIL ? names[board_pack_probe.stage] : "unknown");
+        board_uart_text(" col="); board_uart_u64(board_pack_probe.column);
+        board_uart_text(" k="); board_uart_u64(board_pack_probe.inner);
+        board_uart_text(" row="); board_uart_i64((int64_t)board_pack_probe.row);
+        board_uart_text(" vl="); board_uart_u64(board_pack_probe.vl);
+        board_uart_text(" seq="); board_uart_u64(generation);
+        if(board_pack_probe.error) {
+            board_uart_text(" reason="); board_uart_u64(board_pack_probe.error);
+        }
+        board_uart_text("\n");
+    }
+#endif
+}
+
+int board_pack_begin(size_t first,size_t columns,size_t k,const void *input,
+                     const void *cache,void *output,size_t cache_bytes) {
+    if(!(board_diag.options&DIAG_TRACE) || board_diag.node || first ||
+       board_pack_probe.magic==BOARD_PACK_MAGIC) return 0;
+    volatile uint64_t *words=(volatile uint64_t *)&board_pack_probe;
+    for(unsigned i=0;i<32;++i) words[i]=0;
+    board_pack_probe.magic=BOARD_PACK_MAGIC;
+    board_pack_probe.version=1; board_pack_probe.bytes=sizeof(board_pack_probe);
+#ifdef YOLO_N550_BOARD
+    board_pack_probe.session=board_pcie_mailbox.status.session;
+#endif
+    board_pack_probe.frame=board_diag.frame; board_pack_probe.node=board_diag.node;
+    board_pack_probe.first=first; board_pack_probe.columns=columns; board_pack_probe.k=k;
+    board_pack_probe.input=(uintptr_t)input; board_pack_probe.cache=(uintptr_t)cache;
+    board_pack_probe.output=(uintptr_t)output; board_pack_probe.cache_bytes=cache_bytes;
+    board_pack_probe.started=board_diag_ticks(); board_pack_probe.updated=board_pack_probe.started;
+    board_pack_probe.stage=PACK_BEGIN;
+    pack_publish();
+    return 1;
+}
+
+int board_pack_mark(unsigned stage,size_t column,size_t inner,int64_t row,
+                    size_t vl,const size_t tags[3],uint64_t converted) {
+    uint64_t error=0,now=board_diag_ticks();
+    if(board_pack_probe.magic!=BOARD_PACK_MAGIC || board_pack_probe.error) return -1;
+    if(stage!=PACK_BLOCK_DONE && column>=board_pack_probe.columns) error=1;
+    if(column!=board_pack_probe.next_column) error=2;
+    if(stage==PACK_ROW_CHECK && ++board_pack_probe.row_visits>3) error=3;
+    if(stage==PACK_INDEX_BEGIN && inner!=board_pack_probe.next_inner) error=4;
+    if(stage==PACK_STORE_DONE) {
+        if(!vl || vl>32 || inner!=board_pack_probe.next_inner ||
+           inner>board_pack_probe.k || vl>board_pack_probe.k-inner) error=5;
+        else board_pack_probe.next_inner=inner+vl;
+    }
+    if(stage==PACK_COLUMN_DONE) {
+        if(board_pack_probe.next_inner!=board_pack_probe.k) error=6;
+        else {
+            ++board_pack_probe.next_column;
+            board_pack_probe.next_inner=0; board_pack_probe.row_visits=0;
+        }
+    }
+    if(stage==PACK_BLOCK_DONE && board_pack_probe.next_column!=board_pack_probe.columns) error=7;
+    if(++board_pack_probe.events>8192) error=8;
+#ifndef BOARD_CLP_SIM
+    /* QEMU's rdcycle rate is not the physical N550 clock. Its functional
+     * regression uses bounds/checkpoints; native tests cover this limit. */
+    if(now-board_pack_probe.started>UINT64_C(400000000)) error=9;
+#endif
+    board_pack_probe.stage=error ? PACK_GUARD_FAIL : stage;
+    board_pack_probe.column=column; board_pack_probe.inner=inner;
+    board_pack_probe.row=(uint64_t)row; board_pack_probe.vl=vl;
+    board_pack_probe.row0=tags[0]; board_pack_probe.row1=tags[1]; board_pack_probe.row2=tags[2];
+    board_pack_probe.converted=converted; board_pack_probe.updated=now;
+    board_pack_probe.elapsed=now-board_pack_probe.started; board_pack_probe.error=error;
+    pack_publish();
+    if(error) {
+        board_diag.element=column; board_diag.observed=inner; board_diag.expected=board_pack_probe.k;
+        board_diag_error(0x35,(int)error);
+        return -1;
+    }
+    return 0;
 }

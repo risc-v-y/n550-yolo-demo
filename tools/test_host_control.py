@@ -50,10 +50,10 @@ class MenuRoutingTests(unittest.TestCase):
 
     def test_diagnostic_submenu_routes_and_returns_without_exiting_main(self):
         for number,target in [('1','progress'),('2','launch_full'),
-                              ('3','full_pages'),('4','restore')]:
+                              ('3','full_pages'),('4','restore'),('5','pack_probe')]:
             with self.subTest(number=number),ExitStack() as stack:
                 handlers={name:stack.enter_context(patch.object(host,name))
-                          for name in ('progress','launch_full','full_pages','restore','video')}
+                          for name in ('progress','launch_full','full_pages','restore','pack_probe','video')}
                 result,text,_=self.invoke(['8',number,'0','0'])
                 self.assertEqual(result,0)
                 handlers[target].assert_called_once_with()

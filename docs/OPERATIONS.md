@@ -25,7 +25,7 @@ bash tools/setup_host_video.sh
 | 5 | 已有视频数值报告、错框标记及PNG |
 | 6 | 已有运行的性能三页及完整节点计时 |
 | 7 | 已有帧的检测效果对照 |
-| 8 | 排障子菜单：1进度、2完整BUS查验、3旧BUS报告、4重载固件、5首块自动诊断 |
+| 8 | 排障子菜单：1进度、2完整BUS查验、3旧BUS报告、4重载固件、5首块诊断、6原输入普通复跑 |
 | 9 | 清理临时材料 |
 | 0 | 退出 |
 
@@ -33,7 +33,7 @@ bash tools/setup_host_video.sh
 
 ## 2. 视频运行与结果
 
-当前实板停在首个输入块，先用 **1更新 → 8排障 → 5首块自动诊断**。GDB若仍连接，先执行`detach`、`quit`，避免加载后核心继续处于调试暂停。该入口会先尝试读取当前首层RUN请求的原输入并核对CRC，保存成功后才加载诊断固件；空闲板使用冻结BUS。原输入无法核实时明确报错，不复位、不回退覆盖。随后自动采样，结束时截图一页`PACK PROBE`报告及UART最后几条`[PACK]`。不需要OpenCV、图形窗口或host编译器。
+普通模式曾停在首个输入块；**已有`PACK PROBE: COMPLETED`时，直接用下方的原输入普通复跑，无需重复探针或排查UART。** 只有需要重新定位首块时才用 **8排障 → 5首块自动诊断**。GDB若仍连接，先执行`detach`、`quit`，避免加载后核心继续处于调试暂停。探针入口会先尝试读取当前首层RUN请求的原输入并核对CRC，保存成功后才加载诊断固件；空闲板使用冻结BUS。原输入无法核实时明确报错，不复位、不回退覆盖。随后自动采样，结束时截图一页`PACK PROBE`报告。不需要OpenCV、图形窗口或host编译器。
 
 ```bash
 # 自动保留当前首层输入、加载诊断固件、运行一帧并保存定位报告
@@ -42,7 +42,30 @@ bash tools/host.sh pack-probe
 
 结果在`yolo26_pc/outputs/pack-probe/run-*/`，`latest.json`指向最新运行；保留`source-input.bin`、报告、逐次原始快照和工具日志。20秒无已完成打包工作推进时host结束等待，整帧上限120秒；结束后不自动复位，核心可能仍在运行。诊断标记及结论边界见[DIAGNOSTICS](DIAGNOSTICS.md#首个输入块自动诊断)。
 
-阻塞解决后，普通模型验收仍按 **3同一视频前三帧 → 确认VIDEO CHECK PASSED → 6新运行三页**。主菜单5可重看视频报告、补算golden及查看PNG。第二页应显示 `rvv_rowcache_layer_bias`，计时版号7、input_im2col=0、runtime weight conversions=0。首块探针使用trace选项，计时不进入排行；新实板周期取得前仅保留最近基线`run-bivzu9qm`。原理和实测统一见[模型手册](MODEL.md#performance)。
+<a id="saved-input-replay"></a>
+
+### 保存输入普通复跑
+
+统一菜单 **8排障 → 6原输入普通复跑**，或以下命令。默认按`outputs/pack-probe/latest.json`定位，读取原报告与`source-input.bin`，验证输入SHA/原RUN CRC、已完成首块快照和固件哈希；不会重新加载固件或复位。当前板必须READY/DONE且没有待提交命令，否则停止。板端使用普通选项0，只提交一帧；不记录新探针，不进行中间节点采集。完成后在host独立计算334节点golden，逐位比较全部1800个FP32字，检查正式版号7的无诊断计时，最后输出一页报告及最慢三个节点。
+
+```bash
+# 复用最新成功探针保存的输入，普通推理一帧，再核对golden和周期
+bash tools/host.sh normal-replay
+
+# 明确指定本次已完成的探针，不重新采集原输入
+python3 tools/normal_replay.py --probe-run yolo26_pc/outputs/pack-probe/run-j4lg5tpz
+
+# 只有离线golden被中断/失败时：使用上次输出目录续算，不访问板子
+python3 tools/normal_replay.py --report /绝对路径/outputs/normal-replay/run-xxxxxxxx
+```
+
+结束标志为`NORMAL REPLAY: PASSED/FAILED/STOPPED`；`PASSED`要求整帧合法返回、golden逐位一致、全部334节点计时完整且options=0。`FAILED/STOPPED`保留现场，不自动重试整帧、重载或复位；PCIe读取沿用现有有限重试。RUN等待上限120秒，超时最后只读一次诊断。结果在`yolo26_pc/outputs/normal-replay/run-*/`，含原输入副本、候选BIN、`report.json`、`normal-check.txt`、全节点`node-timing.csv`和golden；截图最后一页即可。离线续算写`analysis.json`，原报告保留。
+
+默认已知核心频率40MHz，可用`--core-mhz 0`仅报告周期。PCIe帧墙钟从提交前的`infer_bytes`调用计起，排除OPEN、golden及图形显示；与视频`elapsed_seconds`口径不同。本次只验证一个原输入，不能据此宣称原阻塞根因已确定或长期稳定。该输入不同于旧三帧视频时不自动计算基线提速比例。
+
+### 视频演示
+
+视频仍用主菜单3运行、5查看golden与PNG、6查看性能三页。第二页应显示 `rvv_rowcache_layer_bias`，计时版号7、input_im2col=0、runtime weight conversions=0。首块探针使用trace选项，计时不进入排行；新普通运行周期取得前仅保留最近基线`run-bivzu9qm`。原理和实测统一见[模型手册](MODEL.md#performance)。
 
 ```bash
 # 检查host并加载固件一次，按顺序处理默认视频的前三帧

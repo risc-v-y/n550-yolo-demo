@@ -15,7 +15,7 @@ bash tools/host.sh
 
 首次使用先按[环境准备](docs/OPERATIONS.md#1-准备与更新)安装离线视频依赖并确认图形会话。已有后台任务时先等待结束，菜单1会拒绝更新。
 
-当前模型使用**整层RVV加bias与3×3 FP16三行缓存**，计时版号7、路径 `rvv_rowcache_layer_bias`。当前实板首个输入块异常停留，先按 **1更新 → 8排障 → 5首块诊断** 自动保留原输入、加载固件和采集短报告；不需要手动断点。诊断运行不参加性能排行，现阶段尚未确定阻塞原因。实现原理与最近实板基线见[完整手册](docs/MODEL.md#optimization-principles)，定位说明见[DIAGNOSTICS](docs/DIAGNOSTICS.md#首个输入块自动诊断)，证据见[验收记录](docs/VALIDATION.md)。
+当前模型使用**整层RVV加bias与3×3 FP16三行缓存**，计时版号7、路径 `rvv_rowcache_layer_bias`。普通模式曾停在首个输入块；host反馈首块探针已完成整帧，但根因仍未解释。下一步按 **1更新 → 8排障 → 6原输入普通复跑**：读取上次保存的同一输入，关闭trace及额外检查，运行一帧并自动核对golden、输出周期；不需要UART信息或图形窗口。操作见[保存输入复跑](docs/OPERATIONS.md#saved-input-replay)。实现原理与最近实板基线见[完整手册](docs/MODEL.md#optimization-principles)，证据见[验收记录](docs/VALIDATION.md)。
 
 只保留当前方案和最新优化回归，不维护中间优化结果表；分析/文档修改先留本地，随模型代码集中推送。
 

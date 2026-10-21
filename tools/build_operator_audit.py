@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REVISION = '2026-10-21 / FP16 three-row cache / whole-layer bias / first-block probe'
+REVISION = '2026-10-21 / direct RVV FP16 packing / whole-layer bias / profile v8'
 # Maintained source review, not an automatic proof of implementation/speed.
 RULES = {
     'CONV': ('局部特征加权求和及通道组合', '按K顺序乘加，最后加bias', '见分组规则', 'accel_model.c;amu.c;amu_input_rvv.c', '输入准备；深度卷积专用路径'),
@@ -68,13 +68,10 @@ def rows_for(manifest):
             dims = 'batch={} groups={} M/group={} N={} K={}'.format(out[0], p[4], m//p[4], n, k)
             if p[4] == 1:
                 engine = 'AMU FP16 / RVV input'
-                if w[2:] == [3,3] and p[0] <= 2 and p[1] <= 2:
-                    impl = '启动FP16权重预打包；三行FP16环形缓存复用RNE转换；RVV半字gather生成N32输入；AMU K32顺序累加；整层RVV独立加bias'
-                else:
-                    impl = '启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias'
+                impl = '启动FP16权重预打包；1x1跨通道直读/通用窗口masked gather；整数RNE；N32输入复用；AMU K32顺序累加；整层RVV独立加bias'
                 packed = '[{},32,32]'.format((k+31)//32)
                 block_bytes = ((k+31)//32)*2048
-                status = '当前行缓存/整层bias已实施；实板与数值状态见VALIDATION'
+                status = '当前直接打包/整层bias已实施；实板与数值状态见VALIDATION'
                 todo = '按最新实测评估1x1布局、输入gather及AMU调度'
                 constraint = 'FP16 RNE位模式一致；每输出K顺序/逐指令舍入/bias独立加法不变；CLP输出所有权交接'
             else:

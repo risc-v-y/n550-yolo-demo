@@ -10,7 +10,7 @@
 #include "../../accel_model.h"
 #include "model_generated.h"
 extern const unsigned char model_weights[];
-extern uint64_t amu_rvv_input_blocks,amu_rvv_cached_blocks,amu_rvv_row_values;
+extern uint64_t amu_rvv_input_blocks;
 extern uint64_t rvv_depthwise3x3_calls;
 extern void clp_qemu_exit(uintptr_t code) __attribute__((noreturn));
 extern volatile uint32_t board_current_node,board_test_stage;
@@ -156,13 +156,13 @@ void __wrap_board_pcie_loop(int failure) {
            status.sequence!=expected_sequence || status.output_bytes!=7200 || board_current_node!=333 ||
            status.crc!=board_crc32(&status,60) ||
            status.output_crc!=board_crc32(board_model_output(),7200)) clp_qemu_exit(22);
-        if(board_profile.version!=7 || board_profile.bytes!=24320 ||
+        if(board_profile.version!=8 || board_profile.bytes!=24320 ||
            board_profile.runtime_weight_conversions ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].ticks ||
            board_profile.phases[PROFILE_WEIGHT_PREPARE].calls ||
            board_profile.crc!=board_crc32((const void *)&board_profile,offsetof(BoardProfile,crc)))
             clp_qemu_exit(26);
-        uint64_t input_blocks=0,depthwise_nodes=0,cached_blocks=0,row_values=0;
+        uint64_t input_blocks=0,depthwise_nodes=0;
         for(unsigned i=0;i<MODEL_NODE_COUNT;++i) {
             const ModelNode *node=model_nodes+i;
             if(node->op!=OP_CONV) continue;
@@ -175,19 +175,13 @@ void __wrap_board_pcie_loop(int failure) {
             const ModelTensor *out=model_tensors+node->out[0];
             size_t area=out->shape[2]*out->shape[3];
             input_blocks+=out->shape[0]*(area/32+(area%32!=0));
-            const ModelTensor *weight=model_tensors+node->in[1];
-            if(weight->shape[2]==3 && weight->shape[3]==3) {
-                cached_blocks+=out->shape[0]*(area/32+(area%32!=0));
-                row_values+=model_tensors[node->in[0]].count;
-            }
             if(board_profile.node[i].phase_cycles[PROFILE_INPUT_IM2COL] ||
                !board_profile.node[i].phase_cycles[PROFILE_INPUT_PACK]) clp_qemu_exit(28);
         }
         if(board_profile.phases[PROFILE_INPUT_PACK].calls!=input_blocks ||
            amu_rvv_input_blocks!=input_blocks) clp_qemu_exit(29);
-        if(cached_blocks!=3543 || amu_rvv_cached_blocks!=cached_blocks ||
-           row_values!=3853200 || amu_rvv_row_values!=row_values ||
-           board_profile.phases[PROFILE_BIAS_DEQUANT].calls!=94) clp_qemu_exit(37);
+        if(input_blocks!=5710 || board_profile.phases[PROFILE_BIAS_DEQUANT].calls!=94)
+            clp_qemu_exit(37);
         if(depthwise_nodes!=8 || rvv_depthwise3x3_calls!=depthwise_nodes ||
            board_profile.phases[PROFILE_INPUT_IM2COL].calls ||
            board_profile.phases[PROFILE_INPUT_IM2COL].ticks) clp_qemu_exit(36);
@@ -204,12 +198,12 @@ void __wrap_board_pcie_loop(int failure) {
 #ifdef MODEL_PACK_PROBE_TEST
         if(board_pack_probe.stage!=PACK_BLOCK_DONE || board_pack_probe.error ||
            board_pack_probe.column!=32 || board_pack_probe.next_column!=32 ||
-           board_pack_probe.converted!=2496 || !(board_profile.options&DIAG_TRACE)) clp_qemu_exit(38);
+           board_pack_probe.converted!=864 || !(board_profile.options&DIAG_TRACE)) clp_qemu_exit(38);
         file("pack-probe.bin",(void *)&board_pack_probe,sizeof(board_pack_probe),1);
 #endif
         board_uart_text("QEMU MODEL FRAME PASS sample="); board_uart_u64(sample);
         board_uart_text(" nodes=334\n");
     }
-    board_uart_text("QEMU MODEL BUS PASS; cached rows/whole-layer bias, exact counters; physical cache unverified\n");
+    board_uart_text("QEMU MODEL BUS PASS; direct pack/whole-layer bias, exact counters; physical cache unverified\n");
     clp_qemu_exit(0);
 }

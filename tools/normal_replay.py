@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -19,14 +20,20 @@ from pcie_backend import BASE, MAILBOX, READY, DONE, STATUS, STATUS_KEYS, checke
 from video_golden import VideoGolden, sha, save_json
 
 
-def source_input(directory, firmware):
+def source_input(directory, firmware, allow_firmware_change=False):
     """Check the saved input and completed probe before any board access."""
     raw = (directory / 'report.json').read_bytes()
     report = json.loads(raw)
     if report.get('status') != 'completed':
         raise ValueError('Selected probe did not complete; original evidence preserved')
-    if report.get('firmware', {}).get('sha256') != firmware['sha256']:
-        raise ValueError('Probe/current firmware hashes differ; no automatic reload')
+    previous = report.get('firmware', {}).get('sha256', {})
+    changed = previous != firmware['sha256']
+    if changed:
+        if not allow_firmware_change:
+            raise ValueError('Probe/current firmware hashes differ; use --load for the current frozen model')
+        if (set(previous) != {'bin', 'elf'} or any(not isinstance(v, str) or len(v) != 64 or
+                any(c not in '0123456789abcdef' for c in v) for v in previous.values())):
+            raise ValueError('Source probe firmware hashes are missing/corrupt')
     data = (directory / 'source-input.bin').read_bytes()
     if len(data) != INPUT_BYTES or sha(data) != report['input']['sha256']:
         raise ValueError('Preserved input length/SHA256 mismatch')
@@ -45,13 +52,15 @@ def source_input(directory, firmware):
             probe['error'] or (probe['columns'], probe['next_column'], probe['k']) != (32, 32, 27)):
         raise ValueError('Missing/corrupt completed first-block evidence')
     return data, dict(directory=str(directory), run=report['id'], report_sha256=sha(raw),
-                      input_sha256=sha(data), original=report['input'])
+                      input_sha256=sha(data), original=report['input'], firmware_sha256=previous,
+                      firmware_changed=changed)
 
 
-def normal_profile(timing, session):
+def normal_profile(timing, session, expected_version=None):
     profile = validate_saved_profile(timing['board_profile'], timing['pcie_frame'])
-    if profile['session'] != session or profile['version'] != 7 or profile['options'] != 0:
-        raise ValueError('Expected current v7 profile with all diagnostic options disabled')
+    if (profile['session'] != session or profile['version'] not in (7, 8) or profile['options'] != 0 or
+            (expected_version is not None and profile['version'] != expected_version)):
+        raise ValueError('Expected verified normal profile with all diagnostic options disabled, version {}'.format(expected_version))
     return profile
 
 
@@ -72,7 +81,7 @@ def timing_files(directory, profile):
 def render(report):
     lines = ['NORMAL REPLAY: ' + report['status'].upper(), 'Run: ' + report['id'],
              'Probe source: ' + report.get('source', {}).get('run', 'not verified'),
-             'Mode: normal, options=0; one input; no reset/frame retry.',
+             'Mode: normal, options=0; one input; no automatic frame retry.',
              'Frame: ' + report.get('frame_status', 'not submitted')]
     golden = report.get('golden', {})
     lines.append('Golden: {} | different={}/1800 (no tolerance)'.format(
@@ -80,7 +89,7 @@ def render(report):
     timing = report.get('timing', {})
     profile = timing.get('board_profile') if report.get('normal_profile_verified') else None
     if profile:
-        lines.append('Profile: v7, 334/334 nodes; diagnostic options verified OFF.')
+        lines.append('Profile: v{}, 334/334 nodes; diagnostic options verified OFF.'.format(profile['version']))
         for key in ('model_cycles', 'service_cycles'):
             mhz = report.get('core_mhz', 0)
             seconds = ' = {:.6f}s @ {}MHz'.format(profile[key] / (mhz * 1e6), mhz) if mhz else ''
@@ -119,12 +128,13 @@ def execute(args, directory, probe_directory):
     report = dict(version=1, kind='normal_replay', id=directory.name, status='failed',
                   core_mhz=args.core_mhz, normal_profile_verified=False,
                   runner_sha256=sha(Path(__file__).read_bytes().replace(b'\r\n', b'\n')),
-                  note='No automatic reload/reset/frame retry. Failure may leave the core running.')
+                  load_requested=getattr(args, 'load', False),
+                  note='No reset/reload/frame retry after failure. Core may still be running.')
     log = DiagnosticLog(directory)
     engine = backend = link = None
     try:
         firmware, _, prefix = pack_probe.diag.firmware_info(ROOT, 'demo-pcie')
-        data, source = source_input(probe_directory, firmware)
+        data, source = source_input(probe_directory, firmware, allow_firmware_change=getattr(args, 'load', False))
         report.update(firmware=firmware, source=source, input_sha256=sha(data))
         (directory / 'source-input.bin').write_bytes(data)
         # Verify the independent reference before touching the board.
@@ -132,12 +142,21 @@ def execute(args, directory, probe_directory):
         report['stage'] = 'board_preflight'
         link = PBTools(args.pbcopy, args.pbload, timeout=args.tool_timeout, diagnostic=log.emit)
         deadline = time.monotonic() + args.tool_timeout * 3
-        if link.read(BASE, len(prefix), deadline) != prefix:
-            raise ValueError('DDR program prefix differs; no OPEN/RUN or reload performed')
         state = dict(zip(STATUS_KEYS, STATUS.unpack(checked(link.read(MAILBOX + 192, 64, deadline)))))
         doorbell = struct.unpack_from('<I', link.read(MAILBOX + 128, 64, deadline))[0]
         if (state['magic'], state['version']) != (pack_probe.PCIE_MAGIC, 1) or state['state'] not in (READY, DONE) or doorbell != state['sequence']:
             raise ValueError('Board not idle/ready; original state preserved, no OPEN/RUN performed')
+        if getattr(args, 'load', False):
+            link.close()
+            link = None
+            report['stage'] = 'load_current_firmware'
+            save_json(directory / 'report.json', report)
+            subprocess.run(['bash', str(ROOT/'tools/load_board.sh'), '--reset-dir', args.reset_dir,
+                            '--pbcopy', args.pbcopy], cwd=ROOT, check=True)
+            link = PBTools(args.pbcopy, args.pbload, timeout=args.tool_timeout, diagnostic=log.emit)
+            deadline = time.monotonic() + args.tool_timeout
+        if link.read(BASE, len(prefix), deadline) != prefix:
+            raise ValueError('DDR program prefix differs; current firmware not accepted')
         owned, link = link, None  # PCIeBackend closes its transport on constructor failure.
         backend = PCIeBackend(transport=owned, infer_timeout=args.infer_timeout,
                               tool_timeout=args.tool_timeout, diagnostic=log.emit,
@@ -152,7 +171,7 @@ def execute(args, directory, probe_directory):
                       output_sha256=sha(actual), frame_status='completed (7200 bytes; transport/values checked)',
                       last_board_diagnostic=backend.last_diagnostic)
         (directory / 'candidates.bin').write_bytes(actual)
-        profile = normal_profile(report['timing'], backend.session)
+        profile = normal_profile(report['timing'], backend.session, expected_version=8)
         report['normal_profile_verified'] = True
         report['slowest'] = timing_files(directory, profile)
         backend.close()
@@ -163,7 +182,7 @@ def execute(args, directory, probe_directory):
         report['status'] = 'passed' if report['golden']['status'] == 'EXACT' else 'failed'
         report['stage'] = 'finished'
     except KeyboardInterrupt:
-        report.update(status='stopped', error='Interrupted; no automatic board reset/retry')
+        report.update(status='stopped', error='Interrupted; no board reset/reload/frame retry after failure')
     except Exception as exc:
         report.update(status='failed', error=type(exc).__name__ + ': ' + str(exc))
         log.exception(exc)
@@ -229,6 +248,8 @@ def main():
     source = parser.add_mutually_exclusive_group()
     source.add_argument('--probe-run', type=Path, help='Completed probe directory; default: latest.json')
     source.add_argument('--report', type=Path, help='Resume only offline golden from a saved normal replay')
+    parser.add_argument('--load', action='store_true', help='Verify saved input and idle board, then load current firmware once')
+    parser.add_argument('--reset-dir', default='/rv/fpga/bin')
     parser.add_argument('--pbcopy', default='/rv/fpga/bin/pbcopy')
     parser.add_argument('--pbload', default='/rv/fpga/bin/pbload')
     parser.add_argument('--infer-timeout', type=float, default=120)

@@ -161,28 +161,17 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
             const float *biases = bias + group * ocg;
             float *dest = output + (batch * p->out_channels + group * ocg) * area;
             if(amu && packed) {
-                uint64_t begin=model_ticks();
-                AmuInputRows rows={0};
-                uint16_t *row_storage=(uint16_t *)((unsigned char *)&conv_scratch+sizeof(conv_scratch.fp16));
-                int cached=!amu_input_rows_begin(&rows,p,input,batch,row_storage,
-                                                  sizeof(conv_scratch)-sizeof(conv_scratch.fp16));
                 for(size_t first=0;first<area;first+=CONV_COLUMNS) {
                     size_t count=area-first<CONV_COLUMNS ? area-first : CONV_COLUMNS;
                     AmuPackedInput input_block;
-                    uint64_t start=first ? model_ticks() : begin;
-                    int status=cached ? amu_pack_conv_rows_rvv(&rows,first,count,conv_scratch.fp16,
-                                                               sizeof(conv_scratch.fp16),&input_block) :
-                                        amu_pack_conv_input_rvv(p,input,batch,first,count,conv_scratch.fp16,
-                                                               sizeof(conv_scratch.fp16),&input_block);
-                    if(status || first+count==area) amu_input_rows_end(&rows);
+                    uint64_t start=model_ticks();
+                    int status=amu_pack_conv_input_rvv(p,input,batch,first,count,conv_scratch.fp16,
+                                                       sizeof(conv_scratch.fp16),&input_block);
                     model_profile_end(PROFILE_INPUT_PACK,start);
-                    if(status || amu_matmul_packed_fp16(packed,&input_block,dest+first,area)) {
-                        amu_input_rows_end(&rows);
+                    if(status || amu_matmul_packed_fp16(packed,&input_block,dest+first,area))
                         return -1;
-                    }
                     /* All M blocks have completed: next pack may reuse scratch. */
                 }
-                amu_input_rows_end(&rows);
                 if(add_bias(dest,biases,ocg,area)) return -1;
                 continue;
             }

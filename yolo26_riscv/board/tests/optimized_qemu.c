@@ -14,6 +14,16 @@ static Buffer clp BOARD_CLP_DATA, ram __attribute__((aligned(64))), old __attrib
 volatile BoardDiagnostics board_diag;
 ModelProfilePhase model_profile_phases[PROFILE_PHASE_COUNT];
 void board_diag_phase(unsigned phase) { (void)phase; }
+int board_pack_begin(size_t first,size_t columns,size_t k,const void *input,
+                     const void *cache,void *output,size_t cache_bytes) {
+    (void)first; (void)columns; (void)k; (void)input; (void)cache;
+    (void)output; (void)cache_bytes; return 0;
+}
+int board_pack_mark(unsigned stage,size_t column,size_t inner,int64_t row,
+                    size_t vl,const size_t tags[3],uint64_t converted) {
+    (void)stage; (void)column; (void)inner; (void)row; (void)vl;
+    (void)tags; (void)converted; return -1;
+}
 extern int accel_model_node_v5(const ModelNode *, const ModelTensor *, unsigned char *, const unsigned char *);
 extern uint32_t board_crc32_v5(const void *, size_t);
 static unsigned cases, current_node, current_frame, current_mode;

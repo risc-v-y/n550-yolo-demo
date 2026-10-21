@@ -34,7 +34,8 @@ class NormalTests(unittest.TestCase):
                           input=dict(sha256=app.sha(self.data), crc32=zlib.crc32(self.data)),
                           samples=[dict(file='probe-000.bin', probe=app.pack_probe.decode(raw, 7, 1))])
         app.save_json(self.probe / 'report.json', self.saved)
-        self.args = SimpleNamespace(core_mhz=40, pbcopy='copy', pbload='read', tool_timeout=30, infer_timeout=120)
+        self.args = SimpleNamespace(core_mhz=40, pbcopy='copy', pbload='read', tool_timeout=30,
+                                    infer_timeout=120, load=False, reset_dir='reset')
         self.flags = dict(reads=[], writes=[], closed=0, golden=0)
         owner = self
         status = [app.pack_probe.PCIE_MAGIC, 1, app.DONE, 0, 7, 1, 2, 7200, 0, 0, 2, 0, 0, 0]
@@ -55,7 +56,7 @@ class NormalTests(unittest.TestCase):
             def __init__(self, **kwargs):
                 owner.flags['options'] = {k: kwargs[k] for k in ('trace', 'check_finite', 'capture')}
                 self.link = kwargs['transport']
-                self.last_timing = dict(pcie_frame=1, board_profile=decode_profile(profile_payload(1, 7, version=7), 1, 7),
+                self.last_timing = dict(pcie_frame=1, board_profile=decode_profile(profile_payload(1, 7, version=8), 1, 7),
                                         upload_seconds=1, run_roundtrip_seconds=2, download_seconds=1, profile_read_seconds=1)
             def infer_bytes(self, data):
                 owner.flags['writes'].append(data)
@@ -129,6 +130,33 @@ class NormalTests(unittest.TestCase):
             self.assertEqual(app.execute(self.args, self.output, self.probe), 1)
             connect.assert_not_called()
 
+    def test_new_firmware_reuses_original_input_and_loads_exactly_once(self):
+        self.args.load = True
+        self.saved['firmware'] = dict(sha256=dict(bin='a'*64, elf='b'*64))
+        app.save_json(self.probe / 'report.json', self.saved)
+        with self.patches(), patch.object(app.subprocess, 'run') as load:
+            self.assertEqual(app.execute(self.args, self.output, self.probe), 0)
+        load.assert_called_once()
+        self.assertEqual(Path(load.call_args.args[0][1]).name, 'load_board.sh')
+        self.assertEqual(self.flags['writes'], [self.data])
+        self.assertTrue(self.report()['source']['firmware_changed'])
+        self.assertEqual(self.report()['timing']['board_profile']['version'], 8)
+        self.assertEqual(self.flags['closed'], 2)
+
+    def test_load_failure_never_submits_a_frame_or_retries(self):
+        self.args.load = True
+        with self.patches(), patch.object(app.subprocess, 'run', side_effect=app.subprocess.CalledProcessError(1, ['load'])) as load:
+            self.assertEqual(app.execute(self.args, self.output, self.probe), 1)
+        load.assert_called_once()
+        self.assertEqual(self.flags['writes'], [])
+        self.assertEqual(self.flags['golden'], 0)
+        self.assertEqual(self.flags['closed'], 1)
+
+    def test_old_profile_is_offline_compatible_but_not_current_firmware(self):
+        timing = dict(pcie_frame=1, board_profile=decode_profile(profile_payload(1, 7, version=7), 1, 7))
+        self.assertEqual(app.normal_profile(timing, 7)['version'], 7)
+        with self.assertRaises(ValueError): app.normal_profile(timing, 7, expected_version=8)
+
     def test_timeout_keeps_scene_without_retry_and_golden_is_not_run(self):
         def timeout(backend, data):
             self.flags['writes'].append(data)
@@ -192,7 +220,7 @@ class NormalTests(unittest.TestCase):
                 self.assertEqual(host.main(), 0)
                 command = run.call_args.args[0]
                 self.assertEqual(Path(command[1]).name, 'normal_replay.py')
-                self.assertEqual(len(command), 2)
+                self.assertEqual(command[2:], ['--load'])
 
 
 if __name__ == '__main__':

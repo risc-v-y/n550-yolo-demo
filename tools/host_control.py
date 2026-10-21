@@ -134,7 +134,7 @@ def pack_probe():
 
 
 def normal_replay():
-    subprocess.run([sys.executable,str(ROOT/'tools/normal_replay.py')],cwd=ROOT,check=True)
+    subprocess.run([sys.executable,str(ROOT/'tools/normal_replay.py'),'--load'],cwd=ROOT,check=True)
 
 
 def video(check=False, continuous=False):
@@ -352,7 +352,7 @@ DIAGNOSTIC_MENU=(
     ('full-report','Saved BUS summary (offline, 3 pages)'),
     ('restore','Reload normal demo firmware'),
     ('pack-probe','First input-block probe (preserve original input)'),
-    ('normal-replay','Normal replay of preserved input + golden + cycles (no reset)'),
+    ('normal-replay','Load current firmware + preserved-input replay/golden/cycles'),
 )
 
 

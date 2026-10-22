@@ -1,0 +1,248 @@
+"""Bounded file-video pipeline; main thread owns GUI, one worker owns PCIe.
+
+Normal artifacts: demo.mp4 + report.json. Diagnostic evidence is created on
+failure or by the explicit acceptance runner, never by an automatic golden
+pass hidden in normal playback.
+"""
+from collections import deque
+import hashlib
+import json
+import math
+from pathlib import Path
+import queue
+import subprocess
+import threading
+import time
+from host_video import ROOT, dependencies, check_host, writer, even_frame, save_png, save_json
+
+
+class Preprocessor:
+    def __init__(self,video):
+        self.v=video
+        self.padded=video.np.empty((416,416,3),dtype=video.np.uint8)
+        self.chw=video.np.empty((3,416,416),dtype=video.np.uint8)
+        self.resized=None
+
+    def prepare(self,image):
+        v=self.v
+        h,w=image.shape[:2]
+        scale=min(416/h,416/w)
+        rw,rh=round(w*scale),round(h*scale)
+        left,top=round((416-rw)/2-.1),round((416-rh)/2-.1)
+        if self.resized is None or self.resized.shape!=(rh,rw,3):
+            self.resized=v.np.empty((rh,rw,3),dtype=v.np.uint8)
+        v.cv2.resize(image,(rw,rh),dst=self.resized,interpolation=v.cv2.INTER_LINEAR)
+        self.padded.fill(114)
+        self.padded[top:top+rh,left:left+rw]=self.resized
+        v.np.copyto(self.chw,self.padded[...,::-1].transpose(2,0,1))
+        mapping={'original_hw':[h,w],'resized_hw':[rh,rw],'scale':scale,
+                 'padding_ltrb':[left,top,416-rw-left,416-rh-top],
+                 'layout':'NCHW','channels':'RGB','dtype':'uint8','shape':[1,3,416,416],
+                 'normalization':'board LUT: FP32(uint8 / 255) -> FP16 RNE',
+                 'padding_value':114,'interpolation':'cv2.INTER_LINEAR'}
+        # Immutable bytes own their lifetime after the reusable buffers change.
+        return self.chw.tobytes(),mapping
+
+
+def configuration(root=ROOT):
+    path=root/'yolo26_pc/outputs/optimization/selected.json'
+    if not path.is_file(): return {}
+    record=json.loads(path.read_text(encoding='utf-8'))
+    digest=hashlib.sha256((root/'firmware/demo-pcie.bin').read_bytes()).hexdigest()
+    if record.get('status')!='passed' or record.get('firmware_sha256')!=digest:
+        return {}
+    return record['selected']
+
+
+def run(args,output,backend_factory=None,selected=None,retain=False):
+    from pcie_stream import StreamBackend
+    backend_factory=backend_factory or StreamBackend
+    stop=threading.Event()
+    prepared,completed,recording=[queue.Queue(maxsize=2) for _ in range(3)]
+    free_draw=queue.Queue(maxsize=3)
+    errors=queue.Queue()
+    events=deque(maxlen=128)
+    threads=[]
+    report={'version':3,'id':output.name,'status':'starting','source':str(args.source),
+            'transport':'PCIe v2 UINT8 double buffer','results':[],
+            'verification':'NOT_RUN','full_profile':'NOT_COLLECTED',
+            'requested_frames':args.max_frames,'recorded_frames':0}
+    start=time.monotonic()
+    v=None; visible=None; window=False; last_display=None; failed_item=[None]
+
+    def put(q,item):
+        while not stop.is_set():
+            try: q.put(item,timeout=.1); return True
+            except queue.Full: pass
+        return False
+
+    def get(q):
+        while not stop.is_set():
+            try: return q.get(timeout=.1)
+            except queue.Empty: pass
+        raise InterruptedError('Pipeline stopped')
+
+    def guarded(fn):
+        try: fn()
+        except BaseException as exc:
+            errors.put(exc); stop.set()
+
+    def decode():
+        cap=v.cv2.VideoCapture(str(args.source))
+        prep=Preprocessor(v)
+        try:
+            declared=cap.get(v.cv2.CAP_PROP_FRAME_COUNT)
+            i=0
+            while not stop.is_set() and (not args.max_frames or i<args.max_frames):
+                tick=time.monotonic(); ok,image=cap.read(); decoded=time.monotonic()
+                if not ok:
+                    if not i or (math.isfinite(declared) and declared>i):
+                        raise ValueError('Video ended before declared frame count at {}'.format(i))
+                    break
+                raw,mapping=prep.prepare(image)
+                if not put(prepared,{'frame_id':i,'image':image,'input':raw,'transform':mapping,
+                        'input_sha256':hashlib.sha256(raw).hexdigest(),'captured':tick,
+                        'decode_seconds':decoded-tick,'prepare_seconds':time.monotonic()-decoded}): break
+                i+=1
+            put(prepared,None)
+        finally: cap.release()
+
+    def inference():
+        board=None
+        try:
+            opened=time.monotonic()
+            board=backend_factory(args.pbcopy,args.pbload,stop,args.infer_timeout,
+                                  diagnostic=events.append,tool_timeout=args.tool_timeout)
+            chosen=configuration() if selected is None else selected
+            board.configure(chosen)
+            report['selected']=chosen; report['capabilities']=board.stream
+            report['open_configure_seconds']=time.monotonic()-opened
+            current=get(prepared)
+            if current is None: raise ValueError('No video input')
+            failed_item[0]=current
+            board.upload(current['input'],current['frame_id']+1); board.begin()
+            while not stop.is_set():
+                following=get(prepared)
+                if following is not None: board.upload(following['input'],following['frame_id']+1)
+                current['raw']=board.finish()
+                current['timing']=dict(board.last_timing)
+                if not put(completed,current): break
+                if following is None: break
+                current=following; failed_item[0]=current
+                board.begin()
+            put(completed,None)
+        finally:
+            if board is not None: board.close()
+
+    def record():
+        movie=None; expected=0
+        try:
+            while not stop.is_set():
+                item=get(recording)
+                if item is None: break
+                frame_id,image,entry=item
+                if frame_id!=expected: raise ValueError('Recording frame order changed')
+                tick=time.monotonic()
+                frame=even_frame(v,image)
+                if movie is None: movie=writer(v,output/'demo.mp4',report['playback_fps'],frame)
+                movie.write(frame)
+                entry['record_seconds']=time.monotonic()-tick
+                expected+=1; report['recorded_frames']=expected
+                put(free_draw,image)
+        finally:
+            if movie is not None: movie.release()
+
+    try:
+        v=dependencies()
+        # Preflight artifacts are temporary; normal output stays video+summary.
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='host-check-',dir=str(output)) as check_dir:
+            check=check_host(v,args.source,Path(check_dir),display=not args.no_display)
+        if args.load:
+            tick=time.monotonic()
+            subprocess.run(['bash',str(ROOT/'tools/load_board.sh'),'--reset-dir',args.reset_dir,
+                            '--pbcopy',args.pbcopy],cwd=ROOT,check=True)
+            report['load_seconds']=time.monotonic()-tick
+        report['cold_start_seconds']=time.monotonic()-start
+        report['playback_fps']=args.playback_fps or check['source_fps'] or 25
+        report['firmware_sha256']=hashlib.sha256((ROOT/'firmware/demo-pcie.bin').read_bytes()).hexdigest()
+        report['status']='running'; save_json(output/'report.json',report)
+        if not args.no_display:
+            v.cv2.namedWindow('YOLO PCIe',v.cv2.WINDOW_NORMAL); window=True
+        for fn in (decode,inference,record):
+            thread=threading.Thread(target=guarded,args=(fn,),daemon=True)
+            threads.append(thread); thread.start()
+        draw_count=0
+        while not stop.is_set():
+            try: item=completed.get(timeout=.02)
+            except queue.Empty: item=False
+            if item is None: break
+            if item is not False:
+                if item['frame_id']!=len(report['results']): raise ValueError('Frame loss or duplicate')
+                visible=item
+                tick=time.monotonic()
+                # StreamBackend already validates length, finite values and classes.
+                raw=v.np.frombuffer(item['raw'],dtype='<f4').reshape(300,6)
+                boxes=v.postprocess(raw,item['transform'],.25)
+                try: draw=free_draw.get_nowait()
+                except queue.Empty:
+                    if draw_count<3:
+                        draw=v.np.empty_like(item['image']); draw_count+=1
+                    else: draw=get(free_draw)
+                if draw.shape!=item['image'].shape: draw=v.np.empty_like(item['image'])
+                v.annotate(item['image'],boxes,draw)
+                post=time.monotonic()-tick
+                entry={k:item[k] for k in ('frame_id','input_sha256','transform','decode_seconds','prepare_seconds')}
+                entry.update(item['timing']); entry.update(detections=len(boxes),postprocess_seconds=post,
+                    output_sha256=hashlib.sha256(item['raw']).hexdigest())
+                tick=time.monotonic()
+                if window: v.cv2.imshow('YOLO PCIe',draw)
+                key=v.cv2.waitKey(1) if window else -1
+                submitted=time.monotonic()
+                entry['display_submit_seconds']=submitted-tick if window else None
+                entry['capture_to_submit_seconds']=submitted-item['captured'] if window else None
+                entry['completed_interval_seconds']=submitted-last_display if last_display is not None else None
+                last_display=submitted
+                if retain:
+                    prefix='frame-{:06d}'.format(item['frame_id'])
+                    (output/(prefix+'-input.bin')).write_bytes(item['input'])
+                    (output/(prefix+'-output.bin')).write_bytes(item['raw'])
+                    save_png(v,output/(prefix+'-source.png'),item['image'])
+                report['results'].append(entry)
+                if not put(recording,(item['frame_id'],draw,entry)): break
+                print('VIDEO frame={} completed; model cycles={}'.format(item['frame_id'],entry['cycles']['model_cycles']),flush=True)
+                if key&255 in (27,ord('q'),ord('Q')): raise KeyboardInterrupt()
+            if window:
+                key=v.cv2.waitKey(10)
+                if key&255 in (27,ord('q'),ord('Q')) or v.cv2.getWindowProperty('YOLO PCIe',v.cv2.WND_PROP_VISIBLE)<1:
+                    raise KeyboardInterrupt()
+        if not errors.empty(): raise errors.get()
+        put(recording,None)
+        for thread in threads: thread.join(timeout=args.tool_timeout+5)
+        if any(t.is_alive() for t in threads): raise RuntimeError('Pipeline worker failed to stop')
+        if not errors.empty(): raise errors.get()
+        if report['recorded_frames']!=len(report['results']): raise ValueError('Recording completion count mismatch')
+        report['status']='completed'
+    except KeyboardInterrupt:
+        report.update(status='stopped',error='Interrupted by user')
+    except BaseException as exc:
+        report.update(status='failed',error='{}: {}'.format(type(exc).__name__,exc))
+    finally:
+        stop.set()
+        for thread in threads: thread.join(timeout=args.tool_timeout+5)
+        if window: v.cv2.destroyAllWindows()
+        if report['status']!='completed':
+            item=failed_item[0] or visible
+            if item is not None:
+                (output/'failure-input.bin').write_bytes(item['input'])
+                save_json(output/'failure-frame.json',{'frame_id':item['frame_id'],'transform':item['transform']})
+                save_png(v,output/'failure-source.png',item['image'])
+                if 'raw' in item: (output/'failure-output.bin').write_bytes(item['raw'])
+            (output/'diagnostics.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events),encoding='utf-8')
+        report['wall_seconds']=time.monotonic()-start
+        report['timing_note']='Pipeline stages overlap. Display submission ends after OpenCV events; remote X11 presentation is not measured.'
+        save_json(output/'report.json',report)
+        print('VIDEO {}: {} frames, recorded={}'.format(report['status'].upper(),len(report['results']),report['recorded_frames']),flush=True)
+        if report.get('error'): print(report['error'],flush=True)
+        print('Output: '+str(output),flush=True)
+    return report

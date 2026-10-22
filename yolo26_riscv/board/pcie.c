@@ -4,6 +4,26 @@
 #ifdef YOLO_N550_BOARD
 #include "cache.h"
 #include "uart.h"
+#include "stream.h"
+#include "memory.h"
+#include "../amu.h"
+static PcieInputSlot input_slots[2] BOARD_CLP_DATA;
+static PcieStreamInfo stream_info __attribute__((aligned(64)));
+static PcieStreamResult stream_result __attribute__((aligned(64)));
+static int stream_active;
+static uint64_t stream_configuration;
+static void stream_capabilities(void) {
+    uintptr_t acc,vector;
+    __asm__ volatile("csrr %0,0xcc3" : "=r"(acc));
+    __asm__ volatile("csrr %0,vlenb" : "=r"(vector));
+    stream_info=(PcieStreamInfo){.magic=PCIE_MAGIC,.version=2,.bytes=sizeof(stream_info),
+        .slots=(uintptr_t)input_slots,.result=(uintptr_t)&stream_result,.profile=(uintptr_t)&board_profile,
+        .snapshot=(uintptr_t)&board_node_snapshot,.input_bytes=STREAM_INPUT_BYTES,
+        .slot_bytes=sizeof(PcieInputSlot),.result_bytes=sizeof(stream_result),.max_rows=amu_capacity_rows,
+        .accumulator_bytes=acc,.vector_bytes=vector,.option_mask=30};
+    stream_info.crc=board_crc32(&stream_info,offsetof(PcieStreamInfo,crc));
+    board_clean(&stream_info,sizeof(stream_info));
+}
 #else
 /* Native protocol regression only; physical cache behaviour is not emulated. */
 #define board_clean(p,n) ((void)(p),(void)(n))
@@ -28,6 +48,13 @@ static void publish(unsigned state,unsigned error,int detail) {
     status.state=state; status.error=error; status.detail=detail;
     ++status.generation;
     status.crc=board_crc32(&status,60);
+#ifdef YOLO_N550_BOARD
+    if(stream_active && state==PCIE_DONE) {
+        stream_result.status=status;
+        stream_result.crc=board_crc32(&stream_result,offsetof(PcieStreamResult,crc));
+        board_clean(&stream_result,sizeof(stream_result));
+    }
+#endif
     copy_to(&board_pcie_mailbox.status,&status,sizeof(status));
     board_clean((const void *)&board_pcie_mailbox.status,sizeof(status));
 #ifdef YOLO_N550_BOARD
@@ -53,9 +80,17 @@ void board_pcie_init(void) {
         .output_bytes=board_model_output_size(),.diagnostic_bytes=sizeof(board_diag),.nodes=334,
         .reserved2=(uint32_t)(uintptr_t)&board_node_snapshot};
     info.crc=board_crc32(&info,60);
+#ifdef YOLO_N550_BOARD
+    info.version=2; info.reserved|=PCIE_HAS_STREAM;
+    info.reserved2=(uint32_t)(uintptr_t)&stream_info;
+    info.crc=board_crc32(&info,60);
+#endif
     copy_to(&board_pcie_mailbox.info,&info,sizeof(info));
     board_clean((const void *)&board_pcie_mailbox.info,sizeof(info));
     status=(PcieStatus){.magic=PCIE_MAGIC,.version=1};
+#ifdef YOLO_N550_BOARD
+    status.version=2;
+#endif
     last_sequence=0; startup_failed=0;
     publish(PCIE_BOOT,0,0);
 }
@@ -66,6 +101,10 @@ void board_pcie_start(int failure) {
     startup_failed=failure;
     /* Hand host ownership of the entire input range, including dirty BSS. */
     board_prepare_write(board_model_input(),board_model_input_size());
+#ifdef YOLO_N550_BOARD
+    if(!failure) stream_capabilities();
+    board_prepare_write(input_slots,sizeof(input_slots));
+#endif
     publish(failure ? PCIE_ERROR : PCIE_READY,failure ? (unsigned)board_diag.error : 0,
             failure ? (int)board_diag.detail : 0);
 }
@@ -77,7 +116,7 @@ static void read_request(PcieRequest *request) {
 }
 static int valid_request(const PcieRequest *request,uint32_t sequence) {
     return request->sequence==sequence && request->crc==board_crc32(request,60) &&
-           request->session && !(request->options&~(DIAG_TRACE|DIAG_FINITE|PCIE_CAPTURE));
+           request->session && !(request->options&~(DIAG_TRACE|DIAG_FINITE|PCIE_CAPTURE|DIAG_LITE));
 }
 void board_pcie_node_begin(uint32_t id,const ModelNode *node,const ModelTensor *tensors,
                            unsigned char *arena,const unsigned char *constants) {
@@ -159,12 +198,28 @@ void board_pcie_poll(void) {
     if(!sequence || !distance || distance>=0x80000000u || startup_failed) return;
     PcieRequest request;
     read_request(&request);
+#ifdef YOLO_N550_BOARD
+    unsigned slot=board_pcie_mailbox.doorbell[1];
+    stream_active=0;
+    if(slot) {
+        if(slot>2) {last_sequence=sequence; status.sequence=sequence; publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;}
+        board_finish_write(input_slots+slot-1,sizeof(PcieInputSlot));
+        const unsigned char *from=(const unsigned char *)&input_slots[slot-1].request;
+        unsigned char *to=(unsigned char *)&request;
+        for(unsigned i=0;i<64;++i) to[i]=from[i];
+        stream_active=1;
+    }
+#endif
     last_sequence=sequence; /* Never repeat a command, including a failed one. */
     status.sequence=sequence; status.output_bytes=status.output_crc=0;
     if(!valid_request(&request,sequence)) {
         publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;
     }
     if(request.command==PCIE_OPEN) {
+#ifdef YOLO_N550_BOARD
+        if(slot || board_model_configure(32,32,0,0,0)) {publish(PCIE_ERROR,PCIE_MODEL_ERROR,-1); return;}
+        board_model_set_u8(0); stream_configuration=0;
+#endif
         status.session=request.session; status.frame=request.frame;
         board_diag.options=request.options;
         board_diag.frame=request.frame;
@@ -174,15 +229,40 @@ void board_pcie_poll(void) {
         publish(PCIE_READY,0,0); return;
     }
     if(request.session!=status.session) { publish(PCIE_ERROR,PCIE_BAD_SESSION,0); return; }
-    if(request.command!=PCIE_RUN || request.input_bytes!=board_model_input_size() || request.frame<=status.frame) {
+#ifdef YOLO_N550_BOARD
+    if(request.command==PCIE_CONFIGURE && !slot && !request.input_bytes) {
+        if(board_model_configure(request.reserved[0],request.reserved[1],request.reserved[2],
+                                  request.reserved[3],request.reserved[4])) {
+            startup_failed=1; publish(PCIE_ERROR,PCIE_MODEL_ERROR,-6); return;
+        }
+        stream_configuration=request.reserved[0] | (uint64_t)request.reserved[1]<<8 |
+            (uint64_t)request.reserved[2]<<16 | (uint64_t)request.reserved[3]<<24 |
+            (uint64_t)request.reserved[4]<<32;
+        publish(PCIE_READY,0,0); return;
+    }
+    int compact=request.command==PCIE_RUN_U8;
+    if(compact && (!slot || request.input_bytes!=STREAM_INPUT_BYTES || (request.options&PCIE_CAPTURE))) {
+        publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;
+    }
+    if(!compact && slot) {publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;}
+#else
+    int compact=0;
+#endif
+    if((!compact && (request.command!=PCIE_RUN || request.input_bytes!=board_model_input_size())) || request.frame<=status.frame) {
         publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;
     }
     status.frame=request.frame;
     uint64_t service_start=board_diag_ticks();
     publish(PCIE_BUSY,0,0);
     uint64_t crc_start=board_diag_ticks();
-    board_finish_write(board_model_input(),board_model_input_size());
-    uint32_t crc=board_crc32(board_model_input(),board_model_input_size());
+    const void *input_data=board_model_input();
+    size_t input_bytes=board_model_input_size();
+#ifdef YOLO_N550_BOARD
+    if(compact) {input_data=input_slots[slot-1].input; input_bytes=STREAM_INPUT_BYTES;}
+    board_model_set_u8(compact ? input_data : 0);
+#endif
+    board_finish_write(input_data,input_bytes);
+    uint32_t crc=board_crc32(input_data,input_bytes);
     uint64_t crc_cycles=board_diag_ticks()-crc_start;
     if(crc!=request.input_crc) {
         board_diag.frame=request.frame; board_diag.observed=crc; board_diag.expected=request.input_crc;
@@ -210,6 +290,22 @@ void board_pcie_poll(void) {
         board_profile.crc=board_crc32((const void *)&board_profile,offsetof(BoardProfile,crc));
         board_clean((const void *)&board_profile,sizeof(board_profile));
     }
+#ifdef YOLO_N550_BOARD
+    if(compact && !result) {
+        copy_to(stream_result.candidates,board_model_output(),7200);
+        stream_result.model=board_profile.model_cycles;
+        stream_result.service=board_diag_ticks()-service_start;
+        stream_result.input_crc=crc_cycles;
+        stream_result.output=board_diag_ticks()-output_start;
+        stream_result.pack=board_profile.phases[PROFILE_INPUT_PACK].ticks;
+        stream_result.bias=board_profile.phases[PROFILE_BIAS_DEQUANT].ticks;
+        stream_result.profiled=!(request.options&DIAG_LITE);
+        stream_result.configuration=stream_configuration;
+        /* Relinquish only the consumed slot. The other slot may currently be
+         * written by host; no cache operation or CPU store touches it. */
+        board_prepare_write(input_slots+slot-1,sizeof(PcieInputSlot));
+    }
+#endif
     unsigned error=board_diag.error==PCIE_ABORTED ? PCIE_ABORTED : PCIE_MODEL_ERROR;
     publish(result ? PCIE_ERROR : PCIE_DONE,result ? error : 0,result);
 }

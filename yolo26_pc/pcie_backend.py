@@ -184,13 +184,26 @@ class PCIeBackend:
         try:
             deadline=time.monotonic()+infer_timeout
             values=INFO.unpack(checked(self.link.read(MAILBOX,64,deadline)))
-            if (values[:3]!=(MAGIC,1,256) or (values[7],values[8],values[10])!=(INPUT_BYTES,self.output_bytes,self.node_count)
+            if ((values[0],values[2])!=(MAGIC,256) or values[1] not in (1,2) or
+                    (getattr(self,'required_version',None) is not None and values[1]!=self.required_version) or
+                    (values[7],values[8],values[10])!=(INPUT_BYTES,self.output_bytes,self.node_count)
                     or values[9] not in (816,832)
                     or (values[3]&self.required_capability)!=self.required_capability):
                 raise ValueError('Incompatible PCIe firmware; load firmware/'+self.firmware_name)
             self.input_address,self.output_address,self.diag_address=values[4:7]
             self.diag_bytes=values[9]
             self.capture_address=values[11] if values[3]&1 else 0
+            self.protocol_version=values[1]
+            self.stream=None
+            if self.protocol_version==2:
+                if not values[3]&2 or values[11]%64 or not BASE<=values[11]<=MAILBOX-128:
+                    raise ValueError('Invalid version-2 capability address')
+                raw=self.link.read(values[11],128,deadline)
+                fields=struct.unpack('<16Q',raw)
+                if fields[:3]!=(MAGIC,2,128) or fields[-1]!=zlib.crc32(raw[:120]):
+                    raise ValueError('Invalid version-2 capability CRC/schema')
+                self.stream=dict(zip('magic version bytes slots result profile snapshot input_bytes slot_bytes result_bytes max_rows accumulator_bytes vector_bytes option_mask reserved crc'.split(),fields))
+                self.capture_address=self.stream['snapshot']
             if capture and (not self.capture_address or self.capture_address%64 or
                             not BASE<=self.capture_address<=MAILBOX-512):
                 raise ValueError('Firmware lacks node capture; load the updated demo-pcie.bin')
@@ -202,7 +215,7 @@ class PCIeBackend:
                 raise ValueError('Firmware reports diagnostics outside reserved normal DDR')
             self.info={'input_address':self.input_address,'output_address':self.output_address,
                        'diagnostic_address':self.diag_address,'input_bytes':INPUT_BYTES,
-                       'output_bytes':self.output_bytes,'nodes':self.node_count,'mailbox':MAILBOX,'version':1,
+                       'output_bytes':self.output_bytes,'nodes':self.node_count,'mailbox':MAILBOX,'version':self.protocol_version,
                        'capture_address':self.capture_address}
             while True:
                 state=self._status(deadline)
@@ -245,7 +258,7 @@ class PCIeBackend:
             except ValueError:
                 self._pause(deadline)  # May have read during a board publication.
                 continue
-            if state['magic']!=MAGIC or state['version']!=1 or state['state'] not in range(6):
+            if state['magic']!=MAGIC or state['version']!=getattr(self,'protocol_version',1) or state['state'] not in range(6):
                 raise ValueError('Invalid PCIe status; firmware may have restarted')
             if state!=self.last_status:
                 self.diagnostic({'type':'pcie_status','message':f"PCIe state={state['state']} frame={state['frame']}",

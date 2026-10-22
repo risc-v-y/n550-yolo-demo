@@ -12,15 +12,17 @@ volatile BoardDiagnostics board_diag __attribute__((aligned(64)));
 volatile BoardProfile board_profile __attribute__((aligned(64)));
 volatile BoardPackProbe board_pack_probe __attribute__((aligned(64)));
 ModelProfilePhase model_profile_phases[PROFILE_PHASE_COUNT];
+int model_profile_enabled=1;
 static uint64_t frame_start;
 static uint64_t profile_start;
 void board_profile_begin(unsigned nodes) {
+    model_profile_enabled=!(board_diag.options&DIAG_LITE);
     volatile uint64_t *p=(volatile uint64_t *)&board_profile;
     for(unsigned i=0;i<sizeof(board_profile)/8;++i) p[i]=0;
     for(unsigned i=0;i<PROFILE_PHASE_COUNT;++i) model_profile_phases[i]=(ModelProfilePhase){0};
     /* Direct FP32 gather + RNE packing; bias remains once per layer.
      * Wire layout remains unchanged. Direct DW3x3 is other_compute. */
-    board_profile.magic=BOARD_PROFILE_MAGIC; board_profile.version=8;
+    board_profile.magic=BOARD_PROFILE_MAGIC; board_profile.version=9;
     board_profile.bytes=sizeof(board_profile); board_profile.frame=board_diag.frame;
     board_profile.nodes=nodes; board_profile.options=board_diag.options;
 #ifdef YOLO_N550_BOARD
@@ -141,7 +143,8 @@ void board_diag_stage(unsigned stage) {
 void board_diag_phase(unsigned phase) {
     board_diag.phase=phase;
 #ifdef YOLO_N550_BOARD
-    board_clean((const void *)&board_diag.phase,sizeof(board_diag.phase));
+    if(board_diag.options&DIAG_TRACE)
+        board_clean((const void *)&board_diag.phase,sizeof(board_diag.phase));
 #endif
 }
 void board_diag_error(unsigned code,int detail) {
@@ -166,7 +169,7 @@ void board_diag_node(uint32_t id,const ModelNode *node,const ModelTensor *tensor
     }
     board_diag.phase=PHASE_NODE_BEGIN;
     board_diag.node_cycles=0;
-    board_diag_commit();
+    if(!(board_diag.options&DIAG_LITE) || id%32==0) board_diag_commit();
     if((board_diag.options&DIAG_TRACE) || id%32==0) board_diag_event();
     board_diag.node_start=board_diag_ticks();
 }

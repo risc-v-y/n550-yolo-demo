@@ -5,16 +5,24 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 reset_dir=''
 pbcopy='pbcopy'
 firmware='demo-pcie.bin'
+explicit_image=''
+explicit_sha=''
 usage() {
     echo 'Usage: bash tools/load_board.sh --reset-dir /path/to/s2c [--pbcopy /path/to/pbcopy] [--clp-selftest]'
+    echo 'Acceptance only: --image FILE --sha256 DIGEST verifies a temporary baseline before reset.'
     echo 'reset1.sh holds reset; reset.sh releases reset. Upload failure keeps reset asserted.'
     echo 'CLP probe uses exclusive DDR 0xf0000000..0xf0000fff (RVV 0x10000000..0x10000fff).'
 }
 while (( $# )); do
     case "$1" in
-        --reset-dir|--pbcopy)
+        --reset-dir|--pbcopy|--image|--sha256)
             if (( $# < 2 )); then usage >&2; exit 2; fi
-            if [[ "$1" == --reset-dir ]]; then reset_dir="$2"; else pbcopy="$2"; fi
+            case "$1" in
+                --reset-dir) reset_dir="$2";;
+                --pbcopy) pbcopy="$2";;
+                --image) explicit_image="$2";;
+                --sha256) explicit_sha="$2";;
+            esac
             shift 2 ;;
         --clp-selftest)
             if [[ "$firmware" != demo-pcie.bin ]]; then echo 'Select only one selftest image' >&2; exit 2; fi
@@ -33,9 +41,19 @@ pbcopy="$(command -v -- "$pbcopy")"
 # Reset scripts change the working directory, so retain an absolute tool path.
 if [[ "$pbcopy" != /* ]]; then pbcopy="$(cd -- "$(dirname -- "$pbcopy")" && pwd)/$(basename -- "$pbcopy")"; fi
 bin="$root/firmware/$firmware"
+if [[ -n "$explicit_image" || -n "$explicit_sha" ]]; then
+    if [[ "$firmware" != demo-pcie.bin || ! "$explicit_sha" =~ ^[[:xdigit:]]{64}$ || ! -s "$explicit_image" ]]; then
+        echo 'Acceptance image requires an existing file and exact SHA256' >&2; exit 2
+    fi
+    bin="$(realpath -- "$explicit_image")"
+fi
 if [[ ! -s "$bin" || "$bin" == *:* ]]; then echo "Invalid firmware path: $bin" >&2; exit 1; fi
 # Check the selected image before changing hardware state.
-entry="$(awk -v path="firmware/$firmware" '$2==path {print}' "$root/firmware/SHA256SUMS")"
+if [[ -n "$explicit_image" ]]; then
+    entry="$explicit_sha  $bin"
+else
+    entry="$(awk -v path="firmware/$firmware" '$2==path {print}' "$root/firmware/SHA256SUMS")"
+fi
 if [[ -z "$entry" || "$entry" == *$'\n'* ]]; then echo 'Missing/duplicate firmware checksum' >&2; exit 1; fi
 (cd -- "$root" && printf '%s\n' "$entry" | sha256sum -c -)
 mkdir -p "$root/yolo26_pc/outputs"

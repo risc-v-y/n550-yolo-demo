@@ -17,9 +17,11 @@ root=Path(__file__).resolve().parents[3]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--capture',action='store_true',help='Exercise node snapshots/ACK and export all tensors')
 parser.add_argument('--pack-probe',action='store_true',help='Enable first-block probe and exclude diagnostic timing')
+parser.add_argument('--stream',action='store_true',help='Two UINT8 slots, wide tiles, graph fusion and lite/full modes')
 parser.add_argument('--manifest',type=Path,default=root/'reference/prepared/manifest.json',
                     help='Validate the first prepared sample (normally BUS)')
 args=parser.parse_args()
+if args.stream and (args.capture or args.pack_probe): parser.error('Stream is a separate functional test')
 manifest_path=args.manifest.resolve()
 manifest=json.loads(manifest_path.read_text())
 samples=list(manifest['samples'])[:1]
@@ -42,6 +44,7 @@ flags=['-march=rv64gcv_zicbom_zifencei_xewmatrix1p0','-mabi=lp64d','-mcmodel=med
 if args.capture:
     flags+=['-DMODEL_CAPTURE_TEST=1','-Wl,--wrap=board_pcie_node_end']
 if args.pack_probe: flags+=['-DMODEL_PACK_PROBE_TEST=1']
+if args.stream: flags+=['-DMODEL_STREAM_TEST=1']
 subprocess.run([tc+'-gcc',*flags,'-c','board/start.S','-o',str(out/'start.o')],cwd=src,check=True)
 (out/'weights.S').write_text('.section .rodata.weights,"a",@progbits\n.balign 64\n'
                             '.global model_weights,model_weights_end\nmodel_weights:\n'

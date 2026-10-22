@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REVISION = '2026-10-21 / direct RVV FP16 packing / whole-layer bias / profile v8'
+REVISION = '2026-10-22 / PCIe v2 UINT8 pipeline / measured candidate selection / profile v9'
 # Maintained source review, not an automatic proof of implementation/speed.
 RULES = {
     'CONV': ('局部特征加权求和及通道组合', '按K顺序乘加，最后加bias', '见分组规则', 'accel_model.c;amu.c;amu_input_rvv.c', '输入准备；深度卷积专用路径'),
@@ -36,7 +36,8 @@ RULES = {
 SOURCES = ('accel_model.c', 'amu.c', 'amu.h', 'amu_input_rvv.c', 'amu_half_rvv.h',
            'rvv_model_ops.c', 'rvv_model_ops.h', 'rvv_access.h', 'basic_rvv.c', 'scalar_model.c',
            'board/coherent_rvv.h', 'board/cache.h', 'board/main.c',
-           'board/diagnostics.c', 'board/diagnostics.h', 'board/model_io.c', 'build_board.sh')
+           'board/diagnostics.c', 'board/diagnostics.h', 'board/model_io.c',
+           'board/graph_plan.h', 'board/pcie.c', 'board/stream.h', 'build_board.sh')
 
 
 def tensor_text(t):
@@ -97,6 +98,20 @@ def rows_for(manifest):
             engine = 'scalar C'
         if kind == 'TOPK': formula += '; axis={} K={}'.format(p[0], p[1])
         if kind in ('POOL', 'NEAREST'): files = 'accel_model.c;'+files
+        # Shape/offset fields describe the frozen logical graph. Selected graph
+        # views/fusions rebuild physical offsets without changing logical IDs.
+        if kind=='CONV' and p[4]==1:
+            impl+='；首层UINT8查表；可选M/N32/64/128、整层FP16复用、1x1空间读取及bias-SiLU融合'
+            todo='按实板重复周期和显示一致性自动选择；packed字段展示默认N32'
+        if kind in ('BMM','CONV') and (kind=='BMM' or p[4]!=1):
+            impl+='；可选RVV FMA（需显示一致性验收）'
+            constraint='默认独立乘加；候选允许FMA，原始差异单列且显示结果必须一致'
+        additions={'SOFTMAX':'可选向量最大值/和归约，改变求和次序',
+            'PERMUTE':'可选32x32分块转置', 'EXPAND':'同形状可选视图',
+            'SLICE':'连续区间可选视图', 'NEAREST':'可选直接写后继Concat段',
+            'CONCAT':'可选复用Nearest已写目标段', 'SILU':'可选与前一普通卷积bias遍历融合'}
+        if kind in additions:
+            impl+='；'+additions[kind]; todo='候选已实现，实板选择结果见验收报告'
         rows.append(dict(node=node['id'], module=node['module'], operation=kind,
             purpose=purpose, input='; '.join(tensor_text(t) for t in inputs),
             output='; '.join(tensor_text(t) for t in outputs), params=json.dumps(p),

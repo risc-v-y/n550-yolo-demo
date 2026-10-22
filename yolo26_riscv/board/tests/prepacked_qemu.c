@@ -1,9 +1,9 @@
 /* QEMU regression: unchanged AMU arithmetic, tails and two-frame reuse. */
 #include "../../amu.h"
 #include "../../model_profile.h"
-static float a[64*1152],b[1152*35],legacy[64*35],packed_output[64*35];
-static uint16_t weights[64*1152] __attribute__((aligned(64)));
-static uint16_t inputs[1152*32] __attribute__((aligned(64)));
+static float a[129*1152],b[1152*129],legacy[129*129],packed_output[129*129];
+static uint16_t weights[256*1152] __attribute__((aligned(64)));
+static uint16_t inputs[1152*128] __attribute__((aligned(64)));
 static float columns[1152*32];
 ModelProfilePhase model_profile_phases[PROFILE_PHASE_COUNT];
 extern void test_input_rvv(void);
@@ -30,6 +30,28 @@ static uint64_t fingerprint(const uint16_t *p,size_t n) {
 int main(void) {
     if(amu_init()) platform_exit(1);
     test_input_rvv();
+    /* Tile M/N may change only independent output dimensions. Compare every
+     * candidate with 32x32, including K=33 and rows/columns beyond 128. */
+    for(size_t m=32;m<=128;m*=2) for(size_t n=32;n<=128;n*=2) {
+        for(size_t i=0;i<129*33;++i) a[i]=(float)((int)(i%37)-18)/17.0f;
+        for(size_t i=0;i<33*129;++i) b[i]=(float)((int)(i%41)-20)/19.0f;
+        if(amu_configure(32,32) || amu_matmul_fp16(a,b,legacy,129,129,33,33,129,129)) platform_exit(63);
+        if(amu_configure(m,n)) platform_exit(64);
+        AmuPackedWeights w;
+        if(amu_pack_weights(a,129,33,33,weights,sizeof(weights),&w)) platform_exit(65);
+        Conv2D p={1,33,1,129,129,1,1,1,1,0,0,1};
+        for(size_t first=0;first<129;first+=n) {
+            AmuPackedInput in;
+            size_t count=129-first<n ? 129-first : n;
+            if(amu_pack_conv_input_rvv(&p,b,0,first,count,inputs,sizeof(inputs),&in) ||
+               amu_matmul_packed_fp16(&w,&in,packed_output+first,129)) platform_exit(66);
+        }
+        for(size_t i=0;i<129*129;++i) {
+            union {float f; uint32_t u;} x={.f=legacy[i]},y={.f=packed_output[i]};
+            if(x.u!=y.u) platform_exit(67);
+        }
+    }
+    if(amu_configure(32,32)) platform_exit(68);
     static const size_t shapes[][3]={{1,1,1},{3,5,16},{3,5,17},{16,35,27},
         {32,32,31},{32,32,32},{33,35,33},{33,35,65},{5,7,96},{1,17,1152},{64,2,576}};
     for(unsigned test=0;test<sizeof(shapes)/sizeof(shapes[0]);++test) {

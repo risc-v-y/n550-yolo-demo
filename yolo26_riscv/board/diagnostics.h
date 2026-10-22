@@ -31,7 +31,7 @@ enum { DIAG_BOOT=1, DIAG_UART, DIAG_AMU_INIT, DIAG_SELFTEST, DIAG_READY,
 enum { PHASE_NONE, PHASE_INPUT, PHASE_NODE_BEGIN, PHASE_CACHE, PHASE_COMPUTE,
        PHASE_AMU_PACK, PHASE_AMU_SUBMIT, PHASE_AMU_WAIT, PHASE_AMU_STORE,
        PHASE_CHECK, PHASE_NODE_END };
-enum { DIAG_EVENTS=1, DIAG_TRACE=2, DIAG_FINITE=4 };
+enum { DIAG_EVENTS=1, DIAG_TRACE=2, DIAG_FINITE=4, DIAG_LITE=16 };
 /* All fields are little-endian uint64, including signed error detail (2's complement).
  * Fixed ELF symbol, 64-byte aligned. Legacy RX/RPC counters remain reserved
  * to preserve the snapshot ABI; the physical UART only transmits debug text. */

@@ -9,6 +9,13 @@
 
 /* Private coverage counter, not a new mailbox/profile ABI field. */
 uint64_t rvv_depthwise3x3_calls;
+unsigned rvv_compute_flags;
+int rvv_fuse_bias_silu;
+static vfloat32m2_t activate(vfloat32m2_t x,size_t vl,int silu);
+static inline vfloat32m2_t madd(vfloat32m2_t sum,vfloat32m2_t x,float w,size_t vl) {
+    if(rvv_compute_flags&RVV_FMA) return __riscv_vfmacc_vf_f32m2(sum,w,x,vl);
+    return __riscv_vfadd_vv_f32m2(sum,__riscv_vfmul_vf_f32m2(x,w,vl),vl);
+}
 
 static int ranges_overlap(const void *a, size_t na, const void *b, size_t nb) {
     uintptr_t aa = (uintptr_t)a, bb = (uintptr_t)b;
@@ -73,7 +80,9 @@ int rvv_bias_channels(float *output, const float *bias, size_t channels, size_t 
             size_t vl = __riscv_vsetvl_e32m2(columns-column);
             size_t at = channel*columns+column;
             vfloat32m2_t x = __riscv_vle32_v_f32m2(source+at, vl);
-            __riscv_vse32_v_f32m2(dest+at, __riscv_vfadd_vf_f32m2(x, value, vl), vl);
+            x=__riscv_vfadd_vf_f32m2(x,value,vl);
+            if(rvv_fuse_bias_silu) x=activate(x,vl,1);
+            __riscv_vse32_v_f32m2(dest+at,x,vl);
             column += vl;
         }
     }
@@ -86,6 +95,22 @@ void rvv_transpose(const float *input, float *output,
     size_t count = batches*rows*columns;
     const float *source = rvv_read_buffer(input, count*4);
     float *dest = rvv_write_buffer(output, count*4);
+    if(rvv_compute_flags&RVV_BLOCK_TRANSPOSE) {
+        /* A 32x32 working set; vector reads are strided and writes contiguous. */
+        for(size_t b=0;b<batches;++b) for(size_t r=0;r<rows;r+=32)
+            for(size_t c=0;c<columns;c+=32) {
+                size_t rend=rows-r<32 ? rows : r+32;
+                size_t cend=columns-c<32 ? columns : c+32;
+                for(size_t col=c;col<cend;++col) for(size_t row=r;row<rend;) {
+                    size_t vl=__riscv_vsetvl_e32m2(rend-row);
+                    vfloat32m2_t v=__riscv_vlse32_v_f32m2(source+b*rows*columns+row*columns+col,
+                                                        (ptrdiff_t)(columns*4),vl);
+                    __riscv_vse32_v_f32m2(dest+b*rows*columns+col*rows+row,v,vl);
+                    row+=vl;
+                }
+            }
+        rvv_publish_buffer(output,count*4); return;
+    }
     for (size_t batch = 0; batch < batches; ++batch) {
         for (size_t column = 0; column < columns; ++column) {
             for (size_t row = 0; row < rows;) {
@@ -229,8 +254,7 @@ int rvv_depthwise3x3(const Conv2D *p, const float *input, const float *weight,
                                 value = __riscv_vle32_v_f32m2(plane + iy * ow + ix, vl);
                             /* Do not skip padded zeros: signed-zero and directed
                              * rounding must match the former nine-term path. */
-                            vfloat32m2_t term = __riscv_vfmul_vf_f32m2(value, w[ky * 3 + kx], vl);
-                            sum = __riscv_vfadd_vv_f32m2(sum, term, vl);
+                            sum = madd(sum,value,w[ky*3+kx],vl);
                         }
                     }
                     sum = __riscv_vfadd_vf_f32m2(sum, bias[channel], vl);
@@ -263,10 +287,10 @@ void rvv_matmul_ordered(const float *a, const float *b, float *c,
             vfloat32m2_t s0 = __riscv_vfmv_v_f_f32m2(0.0f, vl), s1 = s0, s2 = s0, s3 = s0;
             for (size_t inner = 0; inner < k; ++inner) {
                 vfloat32m2_t right = __riscv_vle32_v_f32m2(right_source+inner*ldb+col, vl);
-                s0 = __riscv_vfadd_vv_f32m2(s0, __riscv_vfmul_vf_f32m2(right, a[row*lda+inner], vl), vl);
-                if (row+1 < m) s1 = __riscv_vfadd_vv_f32m2(s1, __riscv_vfmul_vf_f32m2(right, a[(row+1)*lda+inner], vl), vl);
-                if (row+2 < m) s2 = __riscv_vfadd_vv_f32m2(s2, __riscv_vfmul_vf_f32m2(right, a[(row+2)*lda+inner], vl), vl);
-                if (row+3 < m) s3 = __riscv_vfadd_vv_f32m2(s3, __riscv_vfmul_vf_f32m2(right, a[(row+3)*lda+inner], vl), vl);
+                s0=madd(s0,right,a[row*lda+inner],vl);
+                if(row+1<m) s1=madd(s1,right,a[(row+1)*lda+inner],vl);
+                if(row+2<m) s2=madd(s2,right,a[(row+2)*lda+inner],vl);
+                if(row+3<m) s3=madd(s3,right,a[(row+3)*lda+inner],vl);
             }
             __riscv_vse32_v_f32m2(dest+row*ldc+col, s0, vl);
             if (row+1 < m) __riscv_vse32_v_f32m2(dest+(row+1)*ldc+col, s1, vl);
@@ -308,19 +332,22 @@ static vfloat32m2_t exp_neg(vfloat32m2_t x, size_t vl) {
     return __riscv_vfmerge_vfm_f32m2(p, 0.0f, tiny, vl);
 }
 
+static vfloat32m2_t activate(vfloat32m2_t x,size_t vl,int silu) {
+    vfloat32m2_t e=exp_neg(__riscv_vfneg_v_f32m2(__riscv_vfabs_v_f32m2(x,vl),vl),vl);
+    vfloat32m2_t denominator=__riscv_vfadd_vf_f32m2(e,1.0f,vl);
+    vbool16_t positive=__riscv_vmfge_vf_f32m2_b16(x,0.0f,vl);
+    vfloat32m2_t numerator=silu ?
+        __riscv_vmerge_vvm_f32m2(__riscv_vfmul_vv_f32m2(x,e,vl),x,positive,vl) :
+        __riscv_vfmerge_vfm_f32m2(e,1.0f,positive,vl);
+    return __riscv_vfdiv_vv_f32m2(numerator,denominator,vl);
+}
 void rvv_nonlinear(const float *input, float *output, size_t count, int silu) {
     const float *source = rvv_read_buffer(input, count*4);
     float *dest = rvv_write_buffer(output, count*4);
     for (size_t i = 0; i < count;) {
         size_t vl = __riscv_vsetvl_e32m2(count - i);
         vfloat32m2_t x = __riscv_vle32_v_f32m2(source + i, vl);
-        vfloat32m2_t e = exp_neg(__riscv_vfneg_v_f32m2(__riscv_vfabs_v_f32m2(x, vl), vl), vl);
-        vfloat32m2_t denominator = __riscv_vfadd_vf_f32m2(e, 1.0f, vl);
-        vbool16_t positive = __riscv_vmfge_vf_f32m2_b16(x, 0.0f, vl);
-        vfloat32m2_t numerator;
-        if (silu) numerator = __riscv_vmerge_vvm_f32m2(__riscv_vfmul_vv_f32m2(x, e, vl), x, positive, vl);
-        else numerator = __riscv_vfmerge_vfm_f32m2(e, 1.0f, positive, vl);
-        __riscv_vse32_v_f32m2(dest + i, __riscv_vfdiv_vv_f32m2(numerator, denominator, vl), vl);
+        __riscv_vse32_v_f32m2(dest+i,activate(x,vl,silu),vl);
         i += vl;
     }
     rvv_publish_buffer(output, count*4);
@@ -332,18 +359,31 @@ void rvv_softmax(const float *input, float *output, size_t rows, size_t width) {
         const float *scalar_source = input+row*width;
         float *scalar_dest = output+row*width;
         float maximum = scalar_source[0], sum = 0.0f;
-        for (size_t i = 1; i < width; ++i) if (scalar_source[i] > maximum) maximum = scalar_source[i];
+        vfloat32m1_t vmax=__riscv_vfmv_v_f_f32m1(maximum,1);
+        if(rvv_compute_flags&RVV_REDUCE) {
+            for(size_t i=0;i<width;) {
+                size_t vl=__riscv_vsetvl_e32m2(width-i);
+                vmax=__riscv_vfredmax_vs_f32m2_f32m1(__riscv_vle32_v_f32m2(source+row*width+i,vl),vmax,vl);
+                i+=vl;
+            }
+            maximum=__riscv_vfmv_f_s_f32m1_f32(vmax);
+        } else for (size_t i = 1; i < width; ++i) if (scalar_source[i] > maximum) maximum = scalar_source[i];
         float *dest = rvv_write_buffer(scalar_dest, width*4);
+        vfloat32m1_t vsum=__riscv_vfmv_v_f_f32m1(0.0f,1);
         for (size_t i = 0; i < width;) {
             size_t vl = __riscv_vsetvl_e32m2(width - i);
             vfloat32m2_t x = __riscv_vfsub_vf_f32m2(__riscv_vle32_v_f32m2(source+row*width+i, vl), maximum, vl);
-            __riscv_vse32_v_f32m2(dest + i, exp_neg(x, vl), vl);
+            vfloat32m2_t e=exp_neg(x,vl);
+            __riscv_vse32_v_f32m2(dest + i,e,vl);
+            if(rvv_compute_flags&RVV_REDUCE) vsum=__riscv_vfredusum_vs_f32m2_f32m1(e,vsum,vl);
             i += vl;
         }
-        rvv_publish_buffer(scalar_dest, width*4);
-        /* Ordered scalar reduction deliberately retains the baseline contract. */
-        for (size_t i = 0; i < width; ++i) sum += scalar_dest[i];
-        dest = rvv_write_buffer(scalar_dest, width*4);
+        if(rvv_compute_flags&RVV_REDUCE) sum=__riscv_vfmv_f_s_f32m1_f32(vsum);
+        else {
+            rvv_publish_buffer(scalar_dest, width*4);
+            for (size_t i = 0; i < width; ++i) sum += scalar_dest[i];
+            dest = rvv_write_buffer(scalar_dest, width*4);
+        }
         for (size_t i = 0; i < width;) {
             size_t vl = __riscv_vsetvl_e32m2(width - i);
             __riscv_vse32_v_f32m2(dest + i, __riscv_vfdiv_vf_f32m2(__riscv_vle32_v_f32m2(dest + i, vl), sum, vl), vl);

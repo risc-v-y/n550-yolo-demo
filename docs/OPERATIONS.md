@@ -20,91 +20,68 @@ bash tools/setup_host_video.sh
 |---|---|
 | 1 | 更新程序和文档 |
 | 2 | 检查host视频处理能力，不访问板子 |
-| 3 | 默认视频三帧验证，保存PNG及MP4 |
+| 3 | 默认三帧流水演示，只保存MP4和汇总 |
 | 4 | 自选视频连续运行，默认30帧，0为全片 |
-| 5 | 已有视频数值报告、错框标记及PNG |
-| 6 | 已有运行的性能三页及完整节点计时 |
+| 5 | 新版简要报告；兼容旧详细数值报告和PNG |
+| 6 | 性能三页；普通模式完整节点计时标记未采集 |
 | 7 | 已有帧的检测效果对照 |
 | 8 | 排障子菜单：1进度、2完整BUS查验、3旧BUS报告、4重载固件、5首块诊断、6原输入普通复跑 |
 | 9 | 清理临时材料 |
+| 10 | 全链路自动验收和实板配置选择，后台运行 |
+| 11 | 最新验收三页报告 |
 | 0 | 退出 |
 
-主菜单连续编号1–9，排障子菜单0返回主菜单。旧独立采集、首差异和SVG转换不再占菜单；原有命名命令仍可使用。除17外的旧两位序号不再接受；17仅作为5的离线别名，兼容未修改的golden校验脚本提示，避免改变其源码哈希而影响旧缓存。不要把查看报告误当作重新运行板子。
+主菜单连续编号1–11，排障子菜单0返回主菜单。旧独立采集、首差异和SVG转换不再占菜单；原有命名命令仍可使用。除10、11和兼容别名17外的旧两位序号不再接受；17仅作为5的离线别名，兼容未修改的golden校验脚本提示，避免改变其源码哈希而影响旧缓存。不要把查看报告误当作重新运行板子。
 
 ## 2. 视频运行与结果
 
-普通模式曾停在首个输入块；host反馈`run-1vn8c4yu`已完成原输入普通复跑、golden和计时，本次可继续优化，不必重复探针或排查UART。**仅有`PACK PROBE: COMPLETED`而尚未普通复跑时，使用下方保存输入入口。** 只有需要重新定位首块时才用 **8排障 → 5首块自动诊断**。GDB若仍连接，先执行`detach`、`quit`，避免加载后核心继续处于调试暂停。探针入口会先尝试读取当前首层RUN请求的原输入并核对CRC，保存成功后才加载诊断固件；空闲板使用冻结BUS。原输入无法核实时明确报错，不复位、不回退覆盖。随后自动采样，结束时截图一页`PACK PROBE`报告。不需要OpenCV、图形窗口或host编译器。
+### 更新后的自动验收
+
+菜单 **1更新 → 10自动验收**，无需先跑排障。后台任务提取更新前正式固件作临时基线，同三帧运行两轮；读取板上容量，比较卷积分块、输入复用、算子和图候选；最后连续处理默认视频前30帧，并与原golden比较显示结果。只有两轮模型周期均下降、显示一致的候选才被接纳，最终30帧通过后保存绑定固件SHA的配置。无收益候选不启用。SSH普通断线后任务继续；核心仍需保持运行。
+
+- **8→1**：查看进度和日志尾部，不重新启动任务。
+- **11**：查看最新三页结果；未结束时明确显示running。
+- 结束标志：`OPTIMIZATION PASSED`或`OPTIMIZATION FAILED`。
+- 通过后回到 **3/4** 演示；失败保留现场和异常材料，不自动复位或重试写入。
+- 结果在`yolo26_pc/outputs/optimization/run-*/`：report.json、terminal.log和video/demo.mp4。latest.json指向本次；selected.json只在通过后更新。成功时删除本次临时旧固件和逐帧证据，候选计时/差异保留在汇总中。
 
 ```bash
-# 自动保留当前首层输入、加载诊断固件、运行一帧并保存定位报告
-bash tools/host.sh pack-probe
+# 从已有统一入口启动后台自动验收
+bash tools/host.sh optimize
+
+# 查看三页结果；不会访问板子
+bash tools/host.sh optimization-report
 ```
 
-结果在`yolo26_pc/outputs/pack-probe/run-*/`，`latest.json`指向最新运行；保留`source-input.bin`、报告、逐次原始快照和工具日志。20秒无已完成打包工作推进时host结束等待，整帧上限120秒；结束后不自动复位，核心可能仍在运行。诊断标记及结论边界见[DIAGNOSTICS](DIAGNOSTICS.md#首个输入块自动诊断)。
+验收默认不要求图形会话，它重绘并比较图像像素、校验MP4帧数。实际远端显示速度需正常演示观察，不能从后台结果推断。前三帧用于选型，30帧是本次验收范围，不代表所有输入。
+
+### 日常视频演示
+
+```bash
+# 检查host并加载固件一次，流水处理默认视频前三帧
+bash tools/host.sh video
+
+# 自选视频，处理完整文件；完成一帧立即显示并加入MP4
+python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames 0
+
+# 无图形会话时处理全片，只保存MP4及汇总
+python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames 0 --no-display
+
+# 仅排障需要时：FP32串行路径，保留PNG、BIN、完整profile并计算golden
+python3 tools/host_video.py --load --detailed --max-frames 3
+```
+
+默认视频为`yolo26_pc/samples/pexels-3796613.mp4`。菜单4可选视频、帧数（0为全片）和显示开关。文件视频按序处理、不丢帧；当前推理与下一帧准备/上传重叠。窗口持续处理事件，收到新结果时更新；Q/Esc停止。
+
+正常输出位于`yolo26_pc/outputs/host-video/run-*/`，仅demo.mp4和report.json，结束标志为`VIDEO COMPLETED`。该标志表示功能完成，**普通模式没有golden比较**，不是数值验收通过。录像按源视频FPS播放，不代表推理FPS。失败/中断保留相关输入、原帧、候选（若已取得）和近期通信事件；host停止不表示已中断板端计算。
+
+菜单5/6读取新版简要报告；完整节点profile标记NOT COLLECTED。逐帧PNG、错框标记、菜单7检测对照需要已有旧详细结果或显式--detailed运行。旧报告仍可查看、续算golden，不强制重跑板子。
 
 <a id="saved-input-replay"></a>
 
-### 保存输入普通复跑
+### 特殊排障入口
 
-统一菜单 **1更新 → 8排障 → 6原输入普通复跑**，或以下命令。默认按`outputs/pack-probe/latest.json`定位，验证保存输入SHA/原RUN CRC及首块快照，并先核对当前板READY/DONE、没有待提交命令；忙于运行或异常时停止。随后加载当前固件一次，使用普通选项0提交一帧，自动在host计算独立334节点golden、逐位比较全部1800个FP32字、检查新版8计时，最后输出一页报告及最慢三个节点。不记录新探针或采集中间节点。
-
-原探针来自旧固件时保留其BIN/ELF哈希和报告SHA，允许在显式加载模式复用同一输入；新图/权重与独立golden先按冻结清单验证，新固件BIN/ELF也先核对发布SHA。输入文件本身必须保持原SHA/CRC，不能因固件变化跳过验证。没有`--load`时仍拒绝固件版本不一致；旧版7结果可离线查看。
-
-```bash
-# 加载新版固件一次，复用最新成功探针的输入，核对golden和周期
-bash tools/host.sh normal-replay
-
-# 明确指定本次已完成的探针，不重新采集原输入
-python3 tools/normal_replay.py --load --probe-run yolo26_pc/outputs/pack-probe/run-j4lg5tpz
-
-# 只有离线golden被中断/失败时：使用上次输出目录续算，不访问板子
-python3 tools/normal_replay.py --report /绝对路径/outputs/normal-replay/run-xxxxxxxx
-```
-
-结束标志为`NORMAL REPLAY: PASSED/FAILED/STOPPED`；`PASSED`要求整帧合法返回、golden逐位一致、全部334节点计时完整、版号8且options=0。初次加载后若`FAILED/STOPPED`，保留现场，不再自动重试整帧、重载或复位；PCIe读取沿用现有有限重试。RUN等待上限120秒，超时最后只读一次诊断。结果在`yolo26_pc/outputs/normal-replay/run-*/`，含原输入副本、候选BIN、`report.json`、`normal-check.txt`、全节点`node-timing.csv`和golden；截图最后一页即可。离线续算写`analysis.json`，原报告保留。
-
-默认已知核心频率40MHz，可用`--core-mhz 0`仅报告周期。PCIe帧墙钟从提交前的`infer_bytes`调用计起，排除OPEN、golden及图形显示；与视频`elapsed_seconds`口径不同。本次只验证一个原输入，不能据此宣称原阻塞根因已确定或长期稳定。该输入不同于旧三帧视频时不自动计算基线提速比例。
-
-### 视频演示
-
-视频仍用主菜单3运行、5查看golden与PNG、6查看性能三页。新版第二页应显示 `rvv_direct_layer_bias`，计时版号8、input_im2col=0、runtime weight conversions=0。首块探针使用trace选项，计时不进入排行；最近一次普通模式实板基线为旧版7的`run-1vn8c4yu`，当前版号8待同一输入实测。保存输入复跑的周期见其`normal-check.txt`，无需用视频菜单重复运行。原理和实测统一见[模型手册](MODEL.md#performance)。
-
-```bash
-# 检查host并加载固件一次，按顺序处理默认视频的前三帧
-bash tools/host.sh video
-
-# 自选视频并处理全片，每处理完一帧就显示该帧结果
-python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames 0
-
-# 没有图形会话时处理全片，仍保存PNG和演示视频
-python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames 0 --no-display
-```
-
-默认视频为 `yolo26_pc/samples/pexels-3796613.mp4`，来源与SHA记录在视频程序中。3默认三帧；4默认30帧，可改视频、帧数（0为全片）及是否显示。每次只提交一帧；等待时窗口保持响应，收到结果才更新对应画面。
-
-窗口内按 **B** 标记当前已显示的错框帧，**Q/Esc** 停止。等待下一帧时标记的是仍在显示的上一帧。标题含运行编号和源帧号；源帧从0开始，板端会话帧号从1开始。
-
-终端打印输出目录 `yolo26_pc/outputs/host-video/run-*/`：
-
-| 文件 | 内容 |
-|---|---|
-| `source-NNNNNN.png` / `detected-NNNNNN.png` | 原帧 / 检测结果，PNG可用eog打开 |
-| `candidates-NNNNNN.bin` / `result-NNNNNN.json` | 原始候选 / 映射、哈希及计时 |
-| `demo.mp4` | 只包含已完成帧的演示录像，播放帧率不代表推理速度 |
-| `report.json` / `diagnostics.jsonl` | 原始运行记录 / PCIe事件、板端快照及异常 |
-| `video-summary.json` / `video-page-1/2/3.txt` | 离线检查与便于截图的三页报告 |
-| `golden-NNNNNN.bin/json` | 独立数值参考及来源哈希 |
-
-视频结束后自动在host CPU计算golden，不访问板子。通过条件、缓存复用和结论边界见[视频数值验收](VALIDATION.md#视频检查的判据)。主动停止及失败保留已完成帧，不将未处理帧计入成功。
-
-**5只分析旧结果**：未完成的golden可续算，不需要先选4；新运行通过指针定位，不按host系统日期猜测。5可填错框帧号和说明，最后用eog查看PNG。
-
-```bash
-# 离线分析指定旧视频结果并标记源帧1；不加载或访问板子
-python3 tools/video_report.py /实际结果目录 --flag 1 --note "错框位置说明"
-```
-
-反馈问题时提供三页报告截图及错框PNG，保留运行编号和源帧号；完整数据留在host。UART文字需另开终端会话日志，JSONL不会自动采集串口。
+仅在复查旧首块现场时使用 **8→5首块诊断**或 **8→6原输入普通复跑**，保留原输入、独立golden和完整profile；当前计时版号9，兼容读取旧7/8版。正常优化与演示不依赖这些入口，现场字段见[DIAGNOSTICS](DIAGNOSTICS.md)。
 
 ## 3. 固件加载与固定图片
 

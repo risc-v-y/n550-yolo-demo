@@ -215,7 +215,13 @@ static void crc_cases(void) {
     }
     require(board_crc32("123456789",9)==0xcbf43926u,16,0,0,0);
 }
+#include "candidate_cases.h"
 int main(void) {
+    candidate_cases();
+#ifdef CANDIDATE_ONLY
+    print("OPTIMIZED PASS candidates\n");
+    return 0;
+#endif
     unsigned shapes=0;
     for (unsigned i=0;i<MODEL_NODE_COUNT;++i) {
         const ModelNode *node=model_nodes+i;

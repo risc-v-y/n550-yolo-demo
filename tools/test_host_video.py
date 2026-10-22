@@ -284,7 +284,7 @@ class VideoTests(unittest.TestCase):
                 ({'status': 'completed', 'functional': 'PASSED', 'verification': 'FAILED'}, False, 1),
                 ({'status': 'completed', 'verification': 'PASSED'}, False, 0),
                 ({'status': 'completed'}, True, 0))):
-            argv = ['host_video.py', '--no-display', '--output', str(self.root / ('cli-' + str(index)))]
+            argv = ['host_video.py', '--detailed', '--no-display', '--output', str(self.root / ('cli-' + str(index)))]
             if check: argv += ['--check']
             with patch.object(app, 'ROOT', self.root), patch.object(app, 'run', return_value=result), \
                  patch.object(sys, 'argv', argv):

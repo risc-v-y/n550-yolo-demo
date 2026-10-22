@@ -1,6 +1,7 @@
 """Compare actual v5/v6 kernels under VLEN 128/512, not hardware timing."""
 from pathlib import Path
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / 'yolo26_riscv'
@@ -21,6 +22,8 @@ renamed = ['rvv_depthwise3x3', 'rvv_depthwise3x3_calls', 'rvv_matmul_ordered', '
            'accel_rvv_nodes', 'accel_amu_nodes', 'accel_scalar_nodes', 'accel_alias_nodes',
            'accel_weight_bytes', 'accel_weight_values', 'accel_weight_cycles', 'accel_weight_layers',
            'amu_pack_conv_input_rvv', 'amu_rvv_input_blocks', 'board_crc32']
+if '--candidates' in sys.argv:
+    flags.append('-DCANDIDATE_ONLY')
 old_objects = []
 for name in ('rvv_model_ops.c', 'basic_rvv.c', 'accel_model.c', 'amu_input_rvv.c', 'board/model_io.c'):
     target = OUT/(Path(name).stem+'-v5.c')
@@ -45,7 +48,7 @@ subprocess.run([TC+'-gcc', *flags, '-nostdlib', '-nostartfiles', '-Wl,--gc-secti
 for name in ('rvv_matmul_ordered', 'rvv_nonlinear', 'rvv_softmax'):
     assembly = subprocess.check_output([TC+'-objdump', '-d', '--disassemble='+name, str(elf)], text=True)
     (OUT/(name+'.disasm')).write_text(assembly)
-    if 'vfmacc' in assembly or 'vfmadd' in assembly:
+    if name!='rvv_matmul_ordered' and ('vfmacc' in assembly or 'vfmadd' in assembly):
         raise RuntimeError('Unexpected FMA: '+name)
 for vlen in (128, 512):
     result = subprocess.run([QEMU, '-machine', 'virt', '-cpu',

@@ -191,6 +191,16 @@ def video_pages():
     """Select/flag/recheck old or new video runs; never launches the board."""
     directory=select_video_run()
     if directory is None: return
+    metadata=json.loads((directory/'report.json').read_text(encoding='utf-8'))
+    if metadata.get('version')==3:
+        from performance_report import analyze,render
+        summary=analyze(directory)
+        for page in (1,2,3):
+            print(render(summary,page),flush=True)
+            if input('Enter: next/return; q: menu: ').strip().lower()=='q': return
+        print('Normal recording:',directory/'demo.mp4')
+        print('Full golden comparison is in Whole-pipeline acceptance; normal frames are not saved.')
+        return
     marked=input('Wrong-box frame IDs, comma separated [Enter: none]: ').strip()
     ids=[]
     if marked:
@@ -232,12 +242,17 @@ def performance_pages():
     for page in (1,2,3):
         print(render(result,page),end='',flush=True)
         if input('Enter: next/return; q: menu: ').strip().lower()=='q': break
-    print('Saved performance pages and node-timing.csv:',directory)
+    if 'pipeline' in result:
+        print('Normal-mode summary:',directory/'report.json','; full node timing was not collected.')
+    else:
+        print('Saved performance pages and node-timing.csv:',directory)
 
 
 def accuracy_pages():
     directory=select_video_run()
     if directory is None: return
+    if json.loads((directory/'report.json').read_text(encoding='utf-8')).get('version')==3:
+        raise ValueError('Normal runs retain MP4 and summary only. Select an older detailed run or use host_video.py --detailed.')
     frames=input('Frame IDs [Enter: first/middle/last; comma separated]: ').strip()
     labels=input('Complete manual labels JSON [Enter: visual comparison only]: ').strip().strip('"')
     import secrets
@@ -322,8 +337,9 @@ def progress():
     job=json.loads(pointer.read_text(encoding='utf-8'))
     print('PID:',job['pid'],'\nResult:',job['result'],'\nLog:',job['log'])
     summary=Path(job['result'])/'summary.json'
+    if not summary.exists(): summary=Path(job['result'])/'report.json'
     if summary.exists():
-        print('Finished status:',json.loads(summary.read_text(encoding='utf-8')).get('status'))
+        print('Job status:',json.loads(summary.read_text(encoding='utf-8')).get('status'))
     else:
         try:
             with guard(workspace()/'control.lock'):
@@ -335,16 +351,48 @@ def progress():
 
 
 # Display and dispatch share these ordered action names; numbers are not copied.
+def launch_optimization():
+    directory=workspace()
+    with guard(directory/'control.lock') as lock:
+        with guard(board_lock()): pass
+        base=ROOT/'yolo26_pc/outputs/optimization'; base.mkdir(parents=True,exist_ok=True)
+        result=Path(tempfile.mkdtemp(prefix='run-',dir=str(base)))
+        log=result/'terminal.log'
+        command=[sys.executable,'-u',str(ROOT/'tools/optimize_video.py'),'--output',str(result)]
+        with log.open('wb') as stream:
+            child=subprocess.Popen(command,cwd=ROOT,stdin=subprocess.DEVNULL,stdout=stream,
+                                   stderr=subprocess.STDOUT,start_new_session=True,pass_fds=(lock.fileno(),))
+        save_json(base/'latest.json',{'directory':str(result)})
+        save_json(directory/'last-launch.json',{'pid':child.pid,'result':str(result),'log':str(log)})
+    print('Optimization acceptance started in background. SSH disconnect will not stop it.')
+    print('Main menu 11: report; Diagnostics > 1: progress. Output:',result)
+    return child
+
+
+def optimization_pages():
+    from optimization_report import report_pages
+    pointer=ROOT/'yolo26_pc/outputs/optimization/latest.json'
+    if not pointer.is_file(): raise ValueError('No optimization acceptance has been started')
+    directory=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
+    path=directory/'report.json'
+    if not path.is_file(): print('Starting; see Diagnostics > 1 for progress'); return
+    for page in report_pages(json.loads(path.read_text(encoding='utf-8'))):
+        print(page,flush=True)
+        if input('Enter: next/return; q: menu: ').strip().lower()=='q': break
+
+
 MAIN_MENU=(
     ('update','Update repository'),
     ('video-check','Check host video processing (no board access)'),
-    ('video','Run 3 video frames (PCIe, display + PNG + MP4)'),
+    ('video','Run 3 video frames (pipeline, display + MP4 + summary)'),
     ('video-continuous','Run selected video (default 30 frames; 0 = entire video)'),
     ('video-report','Saved video report / golden / PNGs (offline)'),
     ('performance','Timing summary / slowest nodes (offline, 3 pages)'),
     ('accuracy','Detection quality comparisons (offline PNGs)'),
     ('diagnostics','Diagnostics submenu'),
     ('cleanup','Clean disposable files (no board access)'),
+    ('optimize','Whole-pipeline acceptance / automatic tuning (background)'),
+    ('optimization-report','Whole-pipeline acceptance report (3 pages)'),
 )
 DIAGNOSTIC_MENU=(
     ('progress','Background diagnostic progress / log'),
@@ -364,6 +412,7 @@ def action_handlers():
             'full-check':launch_full,'full-report':full_pages,'restore':restore,
             'pack-probe':pack_probe,
             'normal-replay':normal_replay,
+            'optimize':launch_optimization,'optimization-report':optimization_pages,
             # Retain named developer commands without duplicating menu entries.
             'capture':launch,'status':lambda:pages('status'),
             'difference':lambda:pages('difference'),'png':export_png}

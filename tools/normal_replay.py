@@ -58,7 +58,7 @@ def source_input(directory, firmware, allow_firmware_change=False):
 
 def normal_profile(timing, session, expected_version=None):
     profile = validate_saved_profile(timing['board_profile'], timing['pcie_frame'])
-    if (profile['session'] != session or profile['version'] not in (7, 8) or profile['options'] != 0 or
+    if (profile['session'] != session or profile['version'] not in (7, 8, 9) or profile['options'] != 0 or
             (expected_version is not None and profile['version'] != expected_version)):
         raise ValueError('Expected verified normal profile with all diagnostic options disabled, version {}'.format(expected_version))
     return profile
@@ -171,7 +171,7 @@ def execute(args, directory, probe_directory):
                       output_sha256=sha(actual), frame_status='completed (7200 bytes; transport/values checked)',
                       last_board_diagnostic=backend.last_diagnostic)
         (directory / 'candidates.bin').write_bytes(actual)
-        profile = normal_profile(report['timing'], backend.session, expected_version=8)
+        profile = normal_profile(report['timing'], backend.session, expected_version=9)
         report['normal_profile_verified'] = True
         report['slowest'] = timing_files(directory, profile)
         backend.close()

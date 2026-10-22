@@ -118,16 +118,18 @@ class PackingTests(unittest.TestCase):
 
     def check_conv(self, p, raw, batch, blocks):
         k = p.in_channels*p.kernel_h*p.kernel_w
-        kt = (k+31)//32; size = kt*2048
+        kt = (k+31)//32; padded = (max(c for _, c in blocks)+31)//32*32; size = kt*padded*64
         owner, address = storage(size+128); address += 64
         C.memset(address-64, 0xa5, size+128)
         source = C.create_string_buffer(raw)
         for first, columns in blocks:
+            active_padded = (columns+31)//32*32
+            active_size = kt*active_padded*64
             descriptor = PackedInput()
             self.assertEqual(self.lib.amu_pack_conv_input(C.byref(p), source, batch, first, columns,
                              address, size, C.byref(descriptor)), 0)
-            self.assertEqual((descriptor.data, descriptor.k, descriptor.n, descriptor.bytes), (address, k, columns, size))
-            expected = bytearray(size)
+            self.assertEqual((descriptor.data, descriptor.k, descriptor.n, descriptor.bytes), (address, k, columns, active_size))
+            expected = bytearray(active_size)
             ow = (p.in_w+2*p.pad_w-p.kernel_w)//p.stride_w+1
             for col in range(columns):
                 pos = first+col
@@ -137,13 +139,13 @@ class PackingTests(unittest.TestCase):
                         for kx in range(p.kernel_w):
                             x = pos%ow*p.stride_w+kx-p.pad_w
                             inner = (ic*p.kernel_h+ky)*p.kernel_w+kx
-                            at = (inner//32*1024+col*32+inner%32)*2
+                            at = (inner//32*active_padded*32+col*32+inner%32)*2
                             value = 0.
                             if 0 <= y < p.in_h and 0 <= x < p.in_w:
                                 index = ((batch*p.in_channels+ic)*p.in_h+y)*p.in_w+x
                                 value = struct.unpack_from('<f', raw, index*4)[0]
                             struct.pack_into('<e', expected, at, value)
-            self.assertEqual(C.string_at(address, size), expected)
+            self.assertEqual(C.string_at(address, active_size), expected)
             self.assertEqual(C.string_at(address-64, 64), b'\xa5'*64)
             self.assertEqual(C.string_at(address+size, 64), b'\xa5'*64)
         self.assertEqual(source.raw[:-1], raw)
@@ -171,13 +173,16 @@ class PackingTests(unittest.TestCase):
         print('PASS direct input packing: all 94 shapes, border/row crossing/tails/reuse', flush=True)
 
     def test_input_multibatch_stride_and_invalid_descriptors(self):
+        wide = Conv(1, 3, 17, 19, 16, 3, 3, 1, 1, 1, 1, 1)
+        self.check_conv(wide, struct.pack('<969f', *[i/1024 for i in range(969)]), 0,
+                        [(0, 128), (17, 65), (200, 64), (322, 1)])
         p = Conv(2, 3, 5, 7, 33, 3, 1, 2, 2, 1, 0, 1)
         raw = b''.join(struct.pack('<f', (i%71-35)/11.) for i in range(2*3*5*7))
         self.check_conv(p, raw, 1, [(0, 12), (11, 1)])
         p = Conv(1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1)
         owner, address = storage(2048); source = C.c_float(1)
         for batch, first, columns, ptr, capacity in ((1, 0, 1, address, 2048), (0, 1, 1, address, 2048),
-                (0, 0, 0, address, 2048), (0, 0, 33, address, 2048),
+                (0, 0, 0, address, 2048), (0, 0, 129, address, 2048),
                 (0, 0, 1, address+1, 2048), (0, 0, 1, address, 2047)):
             descriptor = PackedInput(123, 1, 1, 2048)
             self.assertNotEqual(self.lib.amu_pack_conv_input(C.byref(p), C.byref(source), batch, first,

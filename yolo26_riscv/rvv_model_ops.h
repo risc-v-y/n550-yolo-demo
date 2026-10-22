@@ -2,6 +2,9 @@
 #define YOLO26_RVV_MODEL_OPS_H_
 #include <stddef.h>
 #include "conv2d.h"
+enum { RVV_FMA=1, RVV_REDUCE=2, RVV_BLOCK_TRANSPOSE=4 };
+extern unsigned rvv_compute_flags;
+extern int rvv_fuse_bias_silu;
 /* Depth multiplier=1, 3x3/stride1/pad1, finite FP32 operands. Global
  * nonoverlapping buffers; the caller owns complete output cache lines.
  * Ky/kx multiply/add order and final separate bias match ordered im2col.

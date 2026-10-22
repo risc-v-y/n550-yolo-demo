@@ -22,12 +22,21 @@ enum {
 typedef struct { uint64_t ticks, calls; } ModelProfilePhase;
 extern ModelProfilePhase model_profile_phases[PROFILE_PHASE_COUNT];
 #if MODEL_PROFILE
+#ifdef YOLO_N550_BOARD
+extern int model_profile_enabled;
+#endif
 static inline uint64_t model_ticks(void) {
+#ifdef YOLO_N550_BOARD
+    if(!model_profile_enabled) return 0;
+#endif
     uint64_t ticks;
     __asm__ volatile ("rdcycle %0" : "=r"(ticks) : : "memory");
     return ticks;
 }
 static inline void model_profile_end(unsigned phase, uint64_t start) {
+#ifdef YOLO_N550_BOARD
+    if(!model_profile_enabled) return;
+#endif
     model_profile_phases[phase].ticks += model_ticks() - start;
     ++model_profile_phases[phase].calls;
 }

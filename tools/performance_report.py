@@ -45,6 +45,8 @@ def analyze(directory, core_mhz=0):
         raise ValueError('Core MHz must be zero (unknown) or positive')
     report = json.loads((directory/'report.json').read_text(encoding='utf-8'))
     records = report['results']
+    if report.get('version')==3:
+        return {'pipeline':report,'core_mhz':core_mhz,'run':directory.name}
     timings = {}
     for key in ('prepare_seconds', 'postprocess_seconds', 'elapsed_seconds',
                 'upload_seconds', 'run_roundtrip_seconds', 'download_seconds', 'profile_read_seconds'):
@@ -122,6 +124,37 @@ def analyze(directory, core_mhz=0):
 
 def render(report, page):
     lines = ['PERFORMANCE {} PAGE={}/3'.format(report['run'][-35:], page)]
+    if 'pipeline' in report:
+        data=report['pipeline']; rows=data['results']
+        if page==1:
+            lines+=['Status: {} | completed={} recorded={}'.format(data['status'],len(rows),data['recorded_frames']),
+                    'Cold startup seconds: {}'.format(data.get('cold_start_seconds','not recorded')),
+                    'Seconds: mean / max / count']
+            for key in ('decode_seconds','prepare_seconds','upload_seconds','run_roundtrip_seconds',
+                        'download_seconds','postprocess_seconds','display_submit_seconds','record_seconds',
+                        'completed_interval_seconds','capture_to_submit_seconds'):
+                values=[r[key] for r in rows if isinstance(r.get(key),(int,float))]
+                lines.append('{}: {}'.format(key,'{:.4f} / {:.4f} / {}'.format(
+                    statistics.mean(values),max(values),len(values)) if values else 'not collected'))
+        elif page==2:
+            for key in ('model_cycles','service_cycles','input_crc_cycles','output_cycles'):
+                values=[r['cycles'][key] for r in rows if key in r.get('cycles',{})]
+                if values:
+                    mean=statistics.mean(values)
+                    lines.append('{}: {:.0f}{}'.format(key,mean,
+                        ' = {:.6f}s'.format(mean/(report['core_mhz']*1e6)) if report['core_mhz'] else ''))
+            lines+=['Full node profile: NOT COLLECTED in normal mode.',
+                    'Use whole-pipeline acceptance for operator timing.',
+                    'Selected: '+str(data.get('selected',{}))]
+        else:
+            lines+=['Pipeline overlap: stage durations must not be added.',
+                    'Display timing ends at OpenCV event return.',
+                    'Remote X11 screen presentation is not measured.',
+                    'Normal artifacts: demo.mp4 and report.json.',
+                    'Golden comparison: NOT RUN in normal mode.',
+                    'Acceptance compares count/class/box/2-decimal score.',
+                    'Error: '+str(data.get('error','none'))]
+        return '\n'.join(line[:80] for line in lines[:22])+'\n'
     if page == 1:
         lines += ['Completed frames={} | CPU-profiled={}'.format(report['frames'], report['profiled']),
                   'Host timing, seconds: mean / max / count']
@@ -189,7 +222,7 @@ def main():
     args = parser.parse_args()
     result = analyze(args.directory.resolve(), args.core_mhz)
     for page in (1, 2, 3): print(render(result, page), end='')
-    return 1 if result['errors'] else 0
+    return 1 if result.get('errors') else 0
 
 
 if __name__ == '__main__': sys.exit(main())

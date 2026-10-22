@@ -5,9 +5,11 @@
 #include "model_generated.h"
 extern void platform_exit(uintptr_t code) __attribute__((noreturn));
 static float source[MODEL_ARENA_BYTES/4];
-static uint16_t reference[AMU_INPUT_MAX_K*32] __attribute__((aligned(64)));
+static uint16_t reference[AMU_INPUT_MAX_K*128] __attribute__((aligned(64)));
+static uint16_t feature[MODEL_ARENA_BYTES/4] __attribute__((aligned(64)));
+static uint8_t pixels[3*416*416] __attribute__((aligned(64)));
 static struct {
-    uint16_t before[32],data[AMU_INPUT_MAX_K*32],after[32];
+    uint16_t before[32],data[AMU_INPUT_MAX_K*128],after[32];
 } actual __attribute__((aligned(64)));
 
 static void check_words(const uint32_t *words,size_t n) {
@@ -94,14 +96,35 @@ void test_input_rvv(void) {
         Conv2D p={a->shape[0],a->shape[1],a->shape[2],a->shape[3],w->shape[0],
             w->shape[2],w->shape[3],node->p[0],node->p[1],node->p[2],node->p[3],1};
         size_t area=out->shape[2]*out->shape[3];
-        size_t starts[]={0,out->shape[3]-1,area>32 ? area-32 : 0,area-1};
-        for(unsigned j=0;j<4;++j) {
-            size_t count=area-starts[j]<32 ? area-starts[j] : 32;
-            compare_block(&p,0,starts[j],count);
+        size_t starts[]={0,out->shape[3]-1,area>128 ? area-128 : 0,area-1};
+        for(unsigned flags=0;flags<4;++flags) {
+            amu_input_flags=flags;
+            if(amu_input_prepare(&p,source,feature,sizeof(feature)/2)) platform_exit(60);
+            for(unsigned j=0;j<4;++j) {
+                size_t count=area-starts[j]<128 ? area-starts[j] : 128;
+                compare_block(&p,0,starts[j],count);
+            }
         }
         ++layers;
     }
     if(layers!=94) platform_exit(45);
+    amu_input_flags=0;
+    Conv2D first={1,3,416,416,16,3,3,2,2,1,1,1};
+    for(size_t i=0;i<sizeof(pixels);++i) {
+        pixels[i]=(uint8_t)(i*71);
+        source[i]=(float)pixels[i]/255.0f;
+    }
+    amu_input_bind_u8(source,pixels);
+    if(amu_input_prepare(&first,source,feature,sizeof(feature)/2)) platform_exit(61);
+    compare_block(&first,0,0,128);
+    compare_block(&first,0,207,65);
+    compare_block(&first,0,208*208-128,128);
+    /* Reused arena address must no longer select the original UINT8 frame. */
+    for(size_t i=0;i<sizeof(pixels);++i) source[i]=-2.0f;
+    if(amu_input_prepare(&first,source,feature,sizeof(feature)/2)) platform_exit(69);
+    compare_block(&first,0,0,128);
+    amu_input_bind_u8(0,0);
+    if(amu_input_prepare(&first,source,feature,sizeof(feature)/2)) platform_exit(62);
     direct_edges();
     Conv2D p={2,3,5,7,33,3,1,2,2,1,0,1};
     compare_block(&p,1,0,12); compare_block(&p,1,11,1);

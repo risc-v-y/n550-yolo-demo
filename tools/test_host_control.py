@@ -26,7 +26,8 @@ class MenuRoutingTests(unittest.TestCase):
         cases=[('1','update',{}),('2','video',{'check':True}),('3','video',{}),
                ('4','video',{'continuous':True}),('5','video_pages',{}),
                ('6','performance_pages',{}),('7','accuracy_pages',{}),
-               ('8','diagnostics',{}),('9','cleanup',{})]
+               ('8','diagnostics',{}),('9','cleanup',{}),
+               ('10','launch_optimization',{}),('11','optimization_pages',{})]
         names={name for _,name,_ in cases}
         for number,target,kwargs in cases:
             with self.subTest(number=number),ExitStack() as stack:
@@ -41,7 +42,7 @@ class MenuRoutingTests(unittest.TestCase):
     def test_main_is_contiguous_and_omits_duplicate_capture_entries(self):
         result,text,_=self.invoke(['0'])
         numbers=[line.split()[0] for line in text.splitlines() if line[:1].isdigit()]
-        self.assertEqual(numbers,[str(i) for i in range(1,10)]+['0'])
+        self.assertEqual(numbers,[str(i) for i in range(1,12)]+['0'])
         self.assertIn('3 Run 3 video frames',text)
         self.assertIn('5 Saved video report',text)
         self.assertNotIn('Saved first difference',text)
@@ -334,6 +335,8 @@ while not (root/'release').exists(): time.sleep(.02)
 
     def test_accuracy_menu_reuses_candidates_without_board_or_golden(self):
         directory=self.root/'saved-video'
+        directory.mkdir()
+        (directory/'report.json').write_text('{}')
         with patch.object(host,'select_video_run',return_value=directory), \
              patch('accuracy_review.analyze',return_value={'frames':[]}) as analyze, \
              patch('builtins.input',side_effect=['','','n']), \

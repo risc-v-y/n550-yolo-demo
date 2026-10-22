@@ -8,18 +8,19 @@
 
 uint32_t accel_rvv_nodes, accel_amu_nodes, accel_scalar_nodes, accel_alias_nodes;
 enum { CONV_COLUMNS = 32, MAX_CONV_K = 4096 };
-/* Preserve the 512KiB CLP reservation and all following addresses. */
+/* Independent packing and converted-feature storage: neither aliases arena. */
 typedef union {
     float fp32[MAX_CONV_K * CONV_COLUMNS];
-    uint16_t fp16[MAX_CONV_K * CONV_COLUMNS];
+    uint16_t fp16[MAX_CONV_K * AMU_MAX_ROWS];
 } ConvScratch;
 #ifdef YOLO_N550_BOARD
 #include "board/memory.h"
 #include "model_generated.h"
 static ConvScratch conv_scratch BOARD_CLP_DATA;
+static uint16_t converted_feature[16*208*208] BOARD_CLP_DATA;
 /* Keep CLP activation layout stable. The AMU reads this immutable DDR copy
  * after amu_pack_weights has cleaned every populated cache line. */
-static uint16_t prepared_weights[5*1024*1024/2] __attribute__((aligned(64)));
+static uint16_t prepared_weights[8*1024*1024/2] __attribute__((aligned(64)));
 static AmuPackedWeights prepared[MODEL_TENSOR_COUNT];
 static const unsigned char *prepared_constants;
 uint64_t accel_weight_bytes, accel_weight_values, accel_weight_cycles, accel_weight_layers;
@@ -58,6 +59,7 @@ int accel_model_prepare(const ModelNode *nodes,size_t node_count,
 }
 #else
 static ConvScratch conv_scratch __attribute__((aligned(64)));
+static uint16_t converted_feature[16*208*208] __attribute__((aligned(64)));
 #endif
 
 static size_t product(const ModelTensor *t, size_t begin, size_t end) {
@@ -155,14 +157,20 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
     size_t icg = p->in_channels / p->groups, ocg = p->out_channels / p->groups;
     size_t k = icg * p->kernel_h * p->kernel_w, area = oh * ow;
     if (k > MAX_CONV_K) return -1;
+    if(amu && packed) {
+        uint64_t start=model_ticks();
+        int status=amu_input_prepare(p,input,converted_feature,sizeof(converted_feature)/2);
+        model_profile_end(PROFILE_INPUT_PACK,start);
+        if(status) return status;
+    }
     for (size_t batch = 0; batch < p->batch; ++batch) {
         for (size_t group = 0; group < p->groups; ++group) {
             const float *weights = weight + group * ocg * k;
             const float *biases = bias + group * ocg;
             float *dest = output + (batch * p->out_channels + group * ocg) * area;
             if(amu && packed) {
-                for(size_t first=0;first<area;first+=CONV_COLUMNS) {
-                    size_t count=area-first<CONV_COLUMNS ? area-first : CONV_COLUMNS;
+                for(size_t first=0;first<area;first+=amu_tile_n) {
+                    size_t count=area-first<amu_tile_n ? area-first : amu_tile_n;
                     AmuPackedInput input_block;
                     uint64_t start=model_ticks();
                     int status=amu_pack_conv_input_rvv(p,input,batch,first,count,conv_scratch.fp16,

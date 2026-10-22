@@ -24,7 +24,7 @@ def decode_profile(raw, frame, session):
         raise ValueError('Board timing CRC mismatch')
     report = dict(zip(FIELDS, struct.unpack_from('<16Q', raw)))
     version = report['version']
-    if (version not in (1, 2, 3, 4, 5, 6, 7, 8) or report['magic'] != PROFILE_MAGIC or
+    if (version not in (1, 2, 3, 4, 5, 6, 7, 8, 9) or report['magic'] != PROFILE_MAGIC or
             report['bytes'] != (PROFILE_BYTES if version == 1 else PROFILE_V2_BYTES) or
             report['bytes'] != len(raw)):
         raise ValueError('Unsupported board timing layout')
@@ -52,14 +52,18 @@ def decode_profile(raw, frame, session):
         if any(phases[name]['ticks'] != sum(n['phases'][name] for n in nodes) for name in PHASES):
             raise ValueError('Global/node phase cycle mismatch')
         weights = dict(zip(WEIGHT_FIELDS, struct.unpack_from('<5Q', raw, offset+96)))
-        if (weights['weight_pack_bytes'], weights['weight_pack_values'], weights['prepared_layers'],
-                weights['runtime_weight_conversions'], phases['weight_prepare']['calls']) != (5033984, 2391664, 94, 0, 0):
+        if (weights['weight_pack_values'], weights['prepared_layers'],
+                weights['runtime_weight_conversions'], phases['weight_prepare']['calls']) != (2391664, 94, 0, 0):
             raise ValueError('Prepared weight invariant failed')
+        if ((version<9 and weights['weight_pack_bytes']!=5033984) or
+                not 0<weights['weight_pack_bytes']<=8*1024*1024):
+            raise ValueError('Prepared weight storage invariant failed')
         report.update(phases=phases, weights=weights,
                       input_path={2:'fp32_im2col_repack',3:'fused_window_fp16_reuse',
                                   4:'rvv_window_fp16_reuse',
                                   5:'rvv_window_fp16_reuse_dw3x3',6:'rvv_bulk_v6',
-                                  7:'rvv_rowcache_layer_bias',8:'rvv_direct_layer_bias'}[version])
+                                  7:'rvv_rowcache_layer_bias',8:'rvv_direct_layer_bias',
+                                  9:'whole_pipeline_v9'}[version])
     total = sum(node['total'] for node in nodes)
     if (total != report['node_cycles'] or total > report['graph_cycles'] or
             report['graph_cycles']+report['input_check_cycles'] > report['model_cycles'] or

@@ -56,7 +56,7 @@ class NormalTests(unittest.TestCase):
             def __init__(self, **kwargs):
                 owner.flags['options'] = {k: kwargs[k] for k in ('trace', 'check_finite', 'capture')}
                 self.link = kwargs['transport']
-                self.last_timing = dict(pcie_frame=1, board_profile=decode_profile(profile_payload(1, 7, version=8), 1, 7),
+                self.last_timing = dict(pcie_frame=1, board_profile=decode_profile(profile_payload(1, 7, version=9), 1, 7),
                                         upload_seconds=1, run_roundtrip_seconds=2, download_seconds=1, profile_read_seconds=1)
             def infer_bytes(self, data):
                 owner.flags['writes'].append(data)
@@ -140,7 +140,7 @@ class NormalTests(unittest.TestCase):
         self.assertEqual(Path(load.call_args.args[0][1]).name, 'load_board.sh')
         self.assertEqual(self.flags['writes'], [self.data])
         self.assertTrue(self.report()['source']['firmware_changed'])
-        self.assertEqual(self.report()['timing']['board_profile']['version'], 8)
+        self.assertEqual(self.report()['timing']['board_profile']['version'], 9)
         self.assertEqual(self.flags['closed'], 2)
 
     def test_load_failure_never_submits_a_frame_or_retries(self):

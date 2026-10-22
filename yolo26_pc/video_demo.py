@@ -252,8 +252,13 @@ def postprocess(candidates: np.ndarray, transform: dict, confidence: float) -> n
     return boxes
 
 
-def annotate(image: np.ndarray, boxes: np.ndarray) -> np.ndarray:
-    output = image.copy()
+def annotate(image: np.ndarray, boxes: np.ndarray, output=None) -> np.ndarray:
+    if output is None:
+        output = image.copy()
+    else:
+        if output.shape != image.shape or output.dtype != image.dtype:
+            raise ValueError('Drawing buffer shape/type changed')
+        np.copyto(output, image)
     for box in boxes:
         class_id = int(box[5])
         x1, y1, x2, y2 = (int(round(float(value))) for value in box[:4])

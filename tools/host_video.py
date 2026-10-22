@@ -385,6 +385,8 @@ def main():
     parser.add_argument('--check', action='store_true', help='Host video check only; no board access')
     parser.add_argument('--load', action='store_true', help='After host checks, reset/load normal model firmware once')
     parser.add_argument('--detailed', action='store_true', help='Explicit diagnostic capture: PNG/raw/profile/golden')
+    parser.add_argument('--upload-mode',choices=('serial','overlap'),
+                        help='Override saved upload scheduling; default serial until accepted')
     parser.add_argument('--reset-dir', default='/rv/fpga/bin')
     parser.add_argument('--no-display', action='store_true', help='Save MP4 and summary without opening a window')
     parser.add_argument('--max-frames', type=int, default=3, help='Default 3-frame smoke run; 0 = entire video')

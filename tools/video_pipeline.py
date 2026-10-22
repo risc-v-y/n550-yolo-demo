@@ -44,17 +44,24 @@ class Preprocessor:
         return self.chw.tobytes(),mapping
 
 
-def configuration(root=ROOT):
+def saved_configuration(root=ROOT):
     path=root/'yolo26_pc/outputs/optimization/selected.json'
-    if not path.is_file(): return {}
+    default={'selected':{},'upload_mode':'serial'}
+    if not path.is_file(): return default
     record=json.loads(path.read_text(encoding='utf-8'))
     digest=hashlib.sha256((root/'firmware/demo-pcie.bin').read_bytes()).hexdigest()
     if record.get('status')!='passed' or record.get('firmware_sha256')!=digest:
-        return {}
-    return record['selected']
+        return default
+    if record.get('upload_mode','serial') not in ('serial','overlap'):
+        raise ValueError('Invalid saved upload mode')
+    return dict(record,upload_mode=record.get('upload_mode','serial'))
 
 
-def run(args,output,backend_factory=None,selected=None,retain=False):
+def configuration(root=ROOT):
+    return saved_configuration(root)['selected']
+
+
+def run(args,output,backend_factory=None,selected=None,retain=False,upload_mode=None):
     from pcie_stream import StreamBackend
     backend_factory=backend_factory or StreamBackend
     stop=threading.Event()
@@ -66,7 +73,8 @@ def run(args,output,backend_factory=None,selected=None,retain=False):
     report={'version':3,'id':output.name,'status':'starting','source':str(args.source),
             'transport':'PCIe v2 UINT8 double buffer','results':[],
             'verification':'NOT_RUN','full_profile':'NOT_COLLECTED',
-            'requested_frames':args.max_frames,'recorded_frames':0}
+            'requested_frames':args.max_frames,'recorded_frames':0,'submitted_frames':[],
+            'inference_completed_frames':0}
     start=time.monotonic()
     v=None; visible=None; window=False; last_display=None; failed_item=[None]
 
@@ -113,24 +121,46 @@ def run(args,output,backend_factory=None,selected=None,retain=False):
             opened=time.monotonic()
             board=backend_factory(args.pbcopy,args.pbload,stop,args.infer_timeout,
                                   diagnostic=events.append,tool_timeout=args.tool_timeout)
-            chosen=configuration() if selected is None else selected
+            saved=saved_configuration()
+            chosen=saved['selected'] if selected is None else selected
+            mode=upload_mode or getattr(args,'upload_mode',None) or saved['upload_mode']
+            if mode not in ('serial','overlap'): raise ValueError('Invalid upload mode')
+            report['upload_mode']=mode
             board.configure(chosen)
             report['selected']=chosen; report['capabilities']=board.stream
             report['open_configure_seconds']=time.monotonic()-opened
             current=get(prepared)
             if current is None: raise ValueError('No video input')
-            failed_item[0]=current
-            board.upload(current['input'],current['frame_id']+1); board.begin()
+            def upload(item,active_frame_id):
+                failed_item[0]=item
+                report['transfer']={'stage':'input_upload_readback','frame_id':item['frame_id'],
+                                    'active_frame_id':active_frame_id,'slot':item['frame_id']%2+1}
+                board.upload(item['input'],item['frame_id']+1)
+            def begin(item):
+                failed_item[0]=item
+                report['transfer']={'stage':'commit','frame_id':item['frame_id'],'active_frame_id':None}
+                board.begin()
+                report['submitted_frames'].append(item['frame_id'])
+            upload(current,None); begin(current)
             while not stop.is_set():
                 following=get(prepared)
-                if following is not None: board.upload(following['input'],following['frame_id']+1)
+                if mode=='overlap' and following is not None:
+                    upload(following,current['frame_id'])
+                failed_item[0]=current
+                report['transfer']={'stage':'wait_result','frame_id':current['frame_id'],
+                                    'active_frame_id':current['frame_id']}
                 current['raw']=board.finish()
+                report['inference_completed_frames']+=1
                 current['timing']=dict(board.last_timing)
                 if not put(completed,current): break
                 if following is None: break
+                if mode=='serial': upload(following,None)
                 current=following; failed_item[0]=current
-                board.begin()
+                begin(current)
             put(completed,None)
+        except BaseException as exc:
+            report['failure']=dict(report.get('transfer',{}),**getattr(exc,'details',{}))
+            raise
         finally:
             if board is not None: board.close()
 
@@ -235,10 +265,13 @@ def run(args,output,backend_factory=None,selected=None,retain=False):
             item=failed_item[0] or visible
             if item is not None:
                 (output/'failure-input.bin').write_bytes(item['input'])
-                save_json(output/'failure-frame.json',{'frame_id':item['frame_id'],'transform':item['transform']})
+                save_json(output/'failure-frame.json',dict(report.get('failure',{}),
+                          frame_id=item['frame_id'],transform=item['transform']))
                 save_png(v,output/'failure-source.png',item['image'])
                 if 'raw' in item: (output/'failure-output.bin').write_bytes(item['raw'])
             (output/'diagnostics.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events),encoding='utf-8')
+            if report.get('failure',{}).get('expected_hex'):
+                save_json(output/'request-readback.json',report['failure'])
         report['wall_seconds']=time.monotonic()-start
         report['timing_note']='Pipeline stages overlap. Display submission ends after OpenCV events; remote X11 presentation is not measured.'
         save_json(output/'report.json',report)

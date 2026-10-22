@@ -136,6 +136,28 @@ class MenuTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError): host.update()
                 run.assert_not_called()
 
+    def test_optimization_continuation_reuses_previous_selection_and_default_serial(self):
+        base=self.root/'yolo26_pc/outputs/optimization'; previous=base/'previous'
+        previous.mkdir(parents=True)
+        (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
+        (previous/'report.json').write_text(json.dumps({'status':'failed','baseline':[1],
+            'selected_measurements':[1],'selected':{'m':128}}))
+        for answer,mode in (('', 'serial'),('2','auto')):
+            (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
+            with patch('builtins.input',return_value=answer), \
+                 patch('host_control.subprocess.Popen') as popen:
+                popen.return_value.pid=123
+                host.launch_optimization()
+            command=popen.call_args.args[0]
+            self.assertEqual(command[command.index('--resume')+1],str(previous))
+            self.assertEqual(command[command.index('--upload-mode')+1],mode)
+            self.assertNotEqual(command[command.index('--output')+1],str(previous))
+            self.assertTrue(popen.call_args.kwargs['start_new_session'])
+        with patch('builtins.input',return_value='0'),patch('host_control.subprocess.Popen') as popen:
+            (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
+            host.launch_optimization()
+            popen.assert_not_called()
+
     def test_update_failure_propagates(self):
         with patch('host_control.subprocess.run',side_effect=subprocess.CalledProcessError(1,['git'])):
             with self.assertRaises(subprocess.CalledProcessError): host.update()

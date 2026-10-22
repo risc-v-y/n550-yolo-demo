@@ -52,6 +52,19 @@ class AcceptanceTests(unittest.TestCase):
         self.assertIn('input_pack:',pages[1])
         self.assertIn('Slow node',pages[1])
 
+    def test_failed_video_reports_actual_counts_and_full_readback_evidence(self):
+        pages=report_pages({'status':'failed','stage':'video','upload_mode':'overlap',
+            'completed_frames':2,'frames':[],'recorded_frames':1,
+            'error':'Input request readback mismatch; request was not committed',
+            'failure':{'stage':'input_header_readback','frame_id':3,'active_frame_id':2,'slot':2,
+                       'different_offsets':[0,16,60],'expected_hex':'11'*64,'actual_hex':'00'*64}})
+        self.assertIn('Completed=2 | golden-checked=0',pages[0])
+        self.assertIn('NOT CHECKED',pages[0])
+        self.assertIn('Pending frame_id=3 active_frame_id=2 slot=2',pages[2])
+        self.assertIn('EXP[32:64]: '+'11'*32,pages[2])
+        self.assertIn('GOT[32:64]: '+'00'*32,pages[2])
+        self.assertTrue(all(len(p.splitlines())<=22 and all(len(s)<=80 for s in p.splitlines()) for p in pages))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -13,10 +13,11 @@ video=host_video.dependencies()
 
 class FakeBoard:
     def __init__(self,*args,**kwargs):
-        self.stream={'test':True}; self.active=None; self.pending=None; self.frame=0
+        self.stream={'test':True}; self.active=None; self.pending=None; self.frame=0; self.uploads=[]
     def configure(self,config): pass
     def upload(self,raw,frame):
         assert len(raw)==519168 and frame==self.frame+1 and self.pending is None
+        self.uploads.append((frame,self.active))
         self.pending=frame
     def begin(self):
         assert self.active is None and self.pending is not None
@@ -73,6 +74,42 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(result['status'],'failed')
             self.assertTrue((output/'failure-input.bin').is_file())
             self.assertTrue((output/'failure-source.png').is_file())
+
+    def test_serial_and_overlap_have_the_same_order_but_distinct_upload_windows(self):
+        for mode in ('serial','overlap'):
+            boards=[]
+            def factory(*args,**kwargs):
+                board=FakeBoard(); boards.append(board); return board
+            with tempfile.TemporaryDirectory() as tmp:
+                args,output=self.fixture(Path(tmp))
+                with patch.object(app,'check_host',return_value={'source_fps':5}):
+                    result=app.run(args,output,backend_factory=factory,selected={},upload_mode=mode)
+                self.assertEqual(result['status'],'completed',result.get('error'))
+                self.assertEqual(result['upload_mode'],mode)
+                self.assertEqual(result['submitted_frames'],list(range(5)))
+                self.assertEqual(result['inference_completed_frames'],5)
+                expected=[(i+1,i if mode=='overlap' and i else None) for i in range(5)]
+                self.assertEqual(boards[0].uploads,expected)
+
+    def test_pending_input_failure_is_not_misattributed_to_active_frame(self):
+        from pcie_stream import RequestReadbackError
+        class Broken(FakeBoard):
+            def upload(self,raw,frame):
+                if self.active:
+                    raise RequestReadbackError({'frame_id':frame-1,'active_frame_id':self.active-1,
+                        'slot':2,'expected_hex':'11'*64,'actual_hex':'00'*64,'different_offsets':list(range(64))})
+                super().upload(raw,frame)
+        with tempfile.TemporaryDirectory() as tmp:
+            args,output=self.fixture(Path(tmp))
+            with patch.object(app,'check_host',return_value={'source_fps':5}):
+                result=app.run(args,output,backend_factory=Broken,selected={},upload_mode='overlap')
+            self.assertEqual(result['status'],'failed')
+            self.assertEqual(result['submitted_frames'],[0])
+            self.assertEqual((result['failure']['frame_id'],result['failure']['active_frame_id']),(1,0))
+            self.assertEqual(result['inference_completed_frames'],0)
+            self.assertTrue((output/'request-readback.json').is_file())
+            import json
+            self.assertEqual(json.loads((output/'failure-frame.json').read_text())['frame_id'],1)
 
 
 if __name__=='__main__': unittest.main()

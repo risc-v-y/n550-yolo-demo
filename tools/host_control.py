@@ -356,15 +356,34 @@ def launch_optimization():
     with guard(directory/'control.lock') as lock:
         with guard(board_lock()): pass
         base=ROOT/'yolo26_pc/outputs/optimization'; base.mkdir(parents=True,exist_ok=True)
+        resume=None; mode='auto'
+        pointer=base/'latest.json'
+        if pointer.is_file():
+            previous=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
+            if (previous/'report.json').is_file():
+                saved=json.loads((previous/'report.json').read_text(encoding='utf-8'))
+                if saved.get('baseline') and saved.get('selected_measurements') and saved.get('selected'):
+                    print('Saved selection:',previous)
+                    print('1 Resume 30 frames, serial upload (default; no overlapping writes)')
+                    print('2 Resume serial/overlap comparison, then 30 frames')
+                    print('3 Start fresh tuning and comparison; 0 Cancel')
+                    choice=input('Acceptance action [Enter: 1]: ').strip() or '1'
+                    if choice=='0': return
+                    if choice not in ('1','2','3'): raise ValueError('Choose 0, 1, 2 or 3')
+                    if choice!='3': resume=previous
+                    if choice=='1': mode='serial'
         result=Path(tempfile.mkdtemp(prefix='run-',dir=str(base)))
         log=result/'terminal.log'
         command=[sys.executable,'-u',str(ROOT/'tools/optimize_video.py'),'--output',str(result)]
+        command+=['--upload-mode',mode]
+        if resume is not None: command+=['--resume',str(resume)]
         with log.open('wb') as stream:
             child=subprocess.Popen(command,cwd=ROOT,stdin=subprocess.DEVNULL,stdout=stream,
                                    stderr=subprocess.STDOUT,start_new_session=True,pass_fds=(lock.fileno(),))
         save_json(base/'latest.json',{'directory':str(result)})
         save_json(directory/'last-launch.json',{'pid':child.pid,'result':str(result),'log':str(log)})
     print('Optimization acceptance started in background. SSH disconnect will not stop it.')
+    if resume is not None: print('Video-only continuation; firmware/input/profile checks run before loading.')
     print('Main menu 11: report; Diagnostics > 1: progress. Output:',result)
     return child
 

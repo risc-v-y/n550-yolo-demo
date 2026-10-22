@@ -6,6 +6,7 @@ No numerical tolerance is used to turn a changed detection into a pass.
 """
 import math
 import struct
+import textwrap
 
 
 def f32(value):
@@ -81,6 +82,18 @@ def repeatable_improvement(baseline, candidate, metric='model_cycles'):
 def report_pages(report):
     stages = report.get('stages', {})
     frames = report.get('frames', [])
+    failure=report.get('failure',{})
+    error_lines=textwrap.wrap('Error: '+str(report.get('error','none')),width=80)[:3]
+    failure_lines=[]
+    if failure:
+        failure_lines=['Failure stage: '+str(failure.get('stage','unknown')),
+            'Pending frame_id={} active_frame_id={} slot={}'.format(failure.get('frame_id'),
+                failure.get('active_frame_id'),failure.get('slot'))]
+        if 'different_offsets' in failure:
+            failure_lines.append('Different header offsets: '+str(failure['different_offsets']))
+        for label,key in (('EXP','expected_hex'),('GOT','actual_hex')):
+            raw=failure.get(key,'')
+            failure_lines+=['{}[{}:{}]: {}'.format(label,i//2,(i+64)//2,raw[i:i+64]) for i in range(0,len(raw),64)]
     old=[r for group in report.get('baseline',[]) for r in group]
     new=[r for group in report.get('selected_measurements',[]) for r in group]
     ratio=(sum(r['model_cycles'] for r in old)/len(old))/(sum(r['model_cycles'] for r in new)/len(new)) if old and new else None
@@ -99,9 +112,10 @@ def report_pages(report):
         phase_lines+=['Slow node {}: {:.0f} cycles'.format(n,t) for t,n in sorted(nodes,reverse=True)[:5]]
     pages = [
         ['OPTIMIZATION PAGE=1/3', 'Status: ' + report.get('status', 'unknown'),
-         'Frames: {}'.format(len(frames)),
-         'Display agreement: {}/{}'.format(sum(bool(x.get('display_equal')) for x in frames), len(frames)),
-         'Numerically exact: {}/{}'.format(sum(x.get('different_words') == 0 for x in frames), len(frames)),
+         'Stage: {} | upload={}'.format(report.get('stage','unknown'),report.get('upload_mode','unknown')),
+         'Completed={} | golden-checked={}'.format(report.get('completed_frames',len(frames)),len(frames)),
+         'Display agreement: '+('{}/{}'.format(sum(bool(x.get('display_equal')) for x in frames),len(frames)) if frames else 'NOT CHECKED'),
+         'Numerically exact: '+('{}/{}'.format(sum(x.get('different_words')==0 for x in frames),len(frames)) if frames else 'NOT CHECKED'),
          'Firmware: ' + report.get('firmware_sha256', 'unknown')[:16],
          'Selected: ' + str(report.get('selected', {}))[:65],
          'Model baseline/current: '+('{:.3f}x'.format(ratio) if ratio else 'pending board measurements'),
@@ -118,11 +132,10 @@ def report_pages(report):
          'Fusion retains logical node IDs; skipped work has near-zero cycles.'],
         ['OPTIMIZATION PAGE=3/3', 'Original golden retained; no numerical tolerance.',
          'Compared: count, class, integer box, 2-decimal score, draw order.',
-         'Model cycles are measured only on the physical board.',
-         'Host display submission does not measure remote screen presentation.',
-         'Overlapping pipeline stages must not be added together.',
-         'Final changed FP32 words: '+str(sum(r.get('different_words',0) for r in frames)),
-         'MP4 frames: '+str(report.get('recorded_frames','pending')),
-         'Errors: ' + str(report.get('error', 'none'))[:65],
+         'Final changed FP32 words: '+(str(sum(r.get('different_words',0) for r in frames)) if frames else 'NOT CHECKED'),
+         'MP4 frames: '+str(report.get('recorded_frames','pending'))]+error_lines+failure_lines+
+        ['Full errors/headers in report.json and video/request-readback.json.',
+         'Intervals include scheduling; overlapping stages must not be added.',
+         'Display submission does not measure remote screen presentation.',
          'This validates the sampled video, not all possible inputs.']]
     return ['\n'.join(line[:80] for line in page[:22]) for page in pages]

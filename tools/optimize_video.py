@@ -16,6 +16,7 @@ import time
 from host_video import ROOT, dependencies, save_json, run as baseline_video, verify_movie, even_frame
 from video_pipeline import Preprocessor, run as pipeline
 from optimization_report import compare_display, repeatable_improvement, report_pages
+from video_acceptance import checked_selection, video_summary, check_frames, interval_records, clean_frame_evidence
 
 BASELINE='2b32358c13e31456e1505f534768f8aaf662bba9'
 
@@ -102,75 +103,108 @@ def run(args,output):
         for i,sample in enumerate(frames):
             print('Original golden frame={}'.format(i),flush=True)
             refs.append(golden.predict(sample['logical'])[0])
-        temporary=Path(tempfile.mkdtemp(prefix='baseline-',dir=str(output)))
-        image,digest=baseline_image(temporary); report['baseline_sha256']=digest
-        load(args,image,digest)
-        baselines=[]
-        for repeat in range(2):
-            directory=temporary/str(repeat); directory.mkdir()
-            old=copy.copy(args); old.load=False; old.check=False; old.max_frames=3
-            result=baseline_video(old,directory)
-            if result['status']!='completed' or len(result['results'])!=3:
-                raise RuntimeError('Original release baseline did not complete')
-            records=[]
-            for i,record in enumerate(result['results']):
-                if record.get('frame_id')!=i or record.get('input_sha256')!=frames[i]['input_sha256']:
-                    raise ValueError('Baseline frame/input differs from candidate input')
-                check=compare_display((directory/'candidates-{:06d}.bin'.format(i)).read_bytes(),refs[i],frames[i]['transform'])
-                profile=record['pcie_timing']['board_profile']
-                records.append(dict(check,input_sha256=frames[i]['input_sha256'],model_cycles=profile['model_cycles'],
-                                    elapsed_seconds=record['elapsed_seconds'],profile=profile))
-            if not all(r['display_equal'] for r in records):
-                raise RuntimeError('Original baseline already differs visibly from golden')
-            baselines.append(records)
-        report['baseline']=baselines
-        load(args)
-        board=StreamBackend(args.pbcopy,args.pbload,infer_timeout=args.infer_timeout,
-                            tool_timeout=args.tool_timeout,profile=True)
-        report['capabilities']=board.stream
-        selected={'m':32,'n':32,'pack':0,'compute':0,'graph':0}
-        best=benchmark(board,selected,frames,refs,output,'current')
-        if not all(r['display_equal'] for repeat in best for r in repeat):
-            raise RuntimeError('Current conservative implementation failed display gate')
-        def consider(config):
-            nonlocal best,selected
-            if config==selected: return
-            name='candidate-{}'.format(len(report['candidates']))
-            measured=benchmark(board,config,frames,refs,output,name)
-            win=repeatable_improvement(best,measured)
-            report['candidates'].append({'config':config,'selected':win,'rounds':measured})
-            if win: selected=config; best=measured
-            report['selected']=selected
+        resume=getattr(args,'resume',None)
+        if resume:
+            prior,identity=checked_selection(resume,report['firmware_sha256'],frames,refs)
+            for key in ('baseline','baseline_sha256','selected','selected_measurements','candidates','capabilities'):
+                if key in prior: report[key]=prior[key]
+            report['resumed_from']=identity
+            selected=report['selected']
+            print('RESUME VIDEO ONLY: checked firmware/input/profile evidence; no baseline or candidate rerun.',flush=True)
             save_json(output/'report.json',report)
-        for config in list(alternatives(selected,board.stream)): consider(config)
-        for pack in (1,2,3): consider(dict(selected,pack=pack))
-        for flag in (1,2,4): consider(dict(selected,compute=selected['compute']|flag))
-        for flag in (1,2,4,8): consider(dict(selected,graph=selected['graph']|flag))
-        report['selected']=selected; report['selected_measurements']=best
-        board.close(); board=None
-        final_args=copy.copy(args); final_args.load=False; final_args.max_frames=30
-        final=output/'video'; final.mkdir()
-        result=pipeline(final_args,final,selected=selected,retain=True)
-        if result['status']!='completed' or len(result['results'])!=30:
-            raise RuntimeError('Thirty-frame continuous run did not complete')
-        for entry in result['results']:
-            i=entry['frame_id']; prefix='frame-{:06d}'.format(i)
-            raw=(final/(prefix+'-input.bin')).read_bytes()
-            logical=(video.np.frombuffer(raw,dtype=video.np.uint8).astype('<f4')/video.np.float32(255)).tobytes()
-            if hashlib.sha256(raw).hexdigest()!=entry['input_sha256']: raise ValueError('Saved input hash mismatch')
-            actual=(final/(prefix+'-output.bin')).read_bytes()
-            if hashlib.sha256(actual).hexdigest()!=entry['output_sha256']: raise ValueError('Saved result hash mismatch')
-            expected=golden.predict(logical)[0]
-            check=compare_display(actual,expected,entry['transform'])
-            original=video.read_image(final/(prefix+'-source.png'))
-            a=video.annotate(original,video.postprocess(video.np.frombuffer(actual,dtype='<f4').reshape(300,6),entry['transform'],.25))
-            b=video.annotate(original,video.postprocess(video.np.frombuffer(expected,dtype='<f4').reshape(300,6),entry['transform'],.25))
-            check['drawing_pixels_equal']=bool(video.np.array_equal(a,b))
-            check['display_equal']=check['display_equal'] and check['drawing_pixels_equal']
-            report['frames'].append(dict(check,frame_id=i,input_sha256=hashlib.sha256(logical).hexdigest()))
-            print('FINAL frame={} display={} words_changed={}'.format(i,check['display_equal'],check['different_words']),flush=True)
-            if not check['display_equal']: (final/(prefix+'-golden.bin')).write_bytes(expected)
-        report['recorded_frames']=verify_movie(video,final/'demo.mp4',30,even_frame(video,original).shape)
+            load(args)
+        else:
+            temporary=Path(tempfile.mkdtemp(prefix='baseline-',dir=str(output)))
+            image,digest=baseline_image(temporary); report['baseline_sha256']=digest
+            load(args,image,digest)
+            baselines=[]
+            for repeat in range(2):
+                directory=temporary/str(repeat); directory.mkdir()
+                old=copy.copy(args); old.load=False; old.check=False; old.max_frames=3
+                result=baseline_video(old,directory)
+                if result['status']!='completed' or len(result['results'])!=3:
+                    raise RuntimeError('Original release baseline did not complete')
+                records=[]
+                for i,record in enumerate(result['results']):
+                    if record.get('frame_id')!=i or record.get('input_sha256')!=frames[i]['input_sha256']:
+                        raise ValueError('Baseline frame/input differs from candidate input')
+                    check=compare_display((directory/'candidates-{:06d}.bin'.format(i)).read_bytes(),refs[i],frames[i]['transform'])
+                    profile=record['pcie_timing']['board_profile']
+                    records.append(dict(check,input_sha256=frames[i]['input_sha256'],model_cycles=profile['model_cycles'],
+                                        elapsed_seconds=record['elapsed_seconds'],profile=profile))
+                if not all(r['display_equal'] for r in records):
+                    raise RuntimeError('Original baseline already differs visibly from golden')
+                baselines.append(records)
+            report['baseline']=baselines
+            load(args)
+            board=StreamBackend(args.pbcopy,args.pbload,infer_timeout=args.infer_timeout,
+                                tool_timeout=args.tool_timeout,profile=True)
+            report['capabilities']=board.stream
+            selected={'m':32,'n':32,'pack':0,'compute':0,'graph':0}
+            best=benchmark(board,selected,frames,refs,output,'current')
+            if not all(r['display_equal'] for repeat in best for r in repeat):
+                raise RuntimeError('Current conservative implementation failed display gate')
+            def consider(config):
+                nonlocal best,selected
+                if config==selected: return
+                name='candidate-{}'.format(len(report['candidates']))
+                measured=benchmark(board,config,frames,refs,output,name)
+                win=repeatable_improvement(best,measured)
+                report['candidates'].append({'config':config,'selected':win,'rounds':measured})
+                if win: selected=config; best=measured
+                report['selected']=selected
+                save_json(output/'report.json',report)
+            for config in list(alternatives(selected,board.stream)): consider(config)
+            for pack in (1,2,3): consider(dict(selected,pack=pack))
+            for flag in (1,2,4): consider(dict(selected,compute=selected['compute']|flag))
+            for flag in (1,2,4,8): consider(dict(selected,graph=selected['graph']|flag))
+            report['selected']=selected; report['selected_measurements']=best
+            board.close(); board=None
+        report['full_profile']='collected in two matched three-frame passes per candidate'
+        report['video_runs']={}
+        def stage(name,count,mode):
+            report['stage']=name
+            save_json(output/'report.json',report)
+            directory=output/name; directory.mkdir()
+            options=copy.copy(args); options.load=False; options.max_frames=count
+            result=pipeline(options,directory,selected=selected,retain=True,upload_mode=mode)
+            summary=video_summary(result,directory)
+            report['video_runs'][name]=summary
+            report['completed_frames']=summary['completed_frames']
+            report['recorded_frames']=summary['recorded_frames']
+            report['failure']=summary['failure']
+            report['upload_mode']=mode
+            save_json(output/'report.json',report)
+            if result['status']!='completed' or summary['completed_frames']!=count or summary['recorded_frames']!=count:
+                raise RuntimeError('{}: {} (completed={}, recorded={}); details: {}'.format(
+                    name,summary['error'] or summary['status'],summary['completed_frames'],
+                    summary['recorded_frames'],directory/'report.json'))
+            expected=(lambda i,data: refs[i]) if count==3 else (lambda i,data:golden.predict(data)[0])
+            checks=check_frames(video,directory,result,expected,frames if count==3 else None)
+            summary['checks']=checks
+            if count==30: report['frames']=checks
+            if not all(r['display_equal'] for r in checks):
+                raise ValueError(name+': display/golden gate failed; evidence retained')
+            shape=even_frame(video,video.read_image(directory/('frame-{:06d}-source.png'.format(count-1)))).shape
+            summary['decoded_mp4_frames']=verify_movie(video,directory/'demo.mp4',count,shape)
+            save_json(output/'report.json',report)
+            return result,checks
+        mode=getattr(args,'upload_mode','auto')
+        if mode=='auto':
+            timings={}
+            for candidate_mode in ('serial','overlap'):
+                timings[candidate_mode]=[]
+                for repeat in range(2):
+                    result,checks=stage('transport-{}-{}'.format(candidate_mode,repeat+1),3,candidate_mode)
+                    timings[candidate_mode].append(interval_records(result,checks))
+            report['transport_measurements']=timings
+            mode='overlap' if repeatable_improvement(timings['serial'],timings['overlap'],'frame_seconds') else 'serial'
+            report['transport_selection']='Two same-input passes; overlap selected only for repeated interval gain.'
+        elif mode not in ('serial','overlap'):
+            raise ValueError('Unknown upload mode')
+        else:
+            report['transport_selection']='Explicit {} upload; other scheduling mode was not accepted.'.format(mode)
+        result,checks=stage('video',30,mode)
         report['cold_start_seconds']=result.get('cold_start_seconds')
         report['open_configure_seconds']=result.get('open_configure_seconds')
         report['wall_seconds']=result.get('wall_seconds')
@@ -179,22 +213,16 @@ def run(args,output):
         keys=('decode_seconds','prepare_seconds','upload_seconds','run_roundtrip_seconds','download_seconds',
               'postprocess_seconds','display_submit_seconds','record_seconds','completed_interval_seconds')
         report['stages']={k:[r[k] for r in result['results'] if isinstance(r.get(k),(int,float))] for k in keys}
-        report['status']='passed' if all(r['display_equal'] for r in report['frames']) else 'failed'
-        report['full_profile']='collected in two matched three-frame passes per candidate'
-        if report['status']=='passed':
-            config_path=ROOT/'yolo26_pc/outputs/optimization/selected.json'
-            config_path.parent.mkdir(parents=True,exist_ok=True)
-            save_json(config_path,{k:report[k] for k in ('status','selected','firmware_sha256')})
-            # Delete only files made by this successful acceptance, under its
-            # own resolved run directory. Failure material remains untouched.
-            for path in final.glob('frame-*'):
-                if path.resolve().parent!=final.resolve(): raise ValueError('Evidence path escaped acceptance')
-                path.unlink()
+        report['status']='passed'
+        report['stage']='completed'
+        config_path=ROOT/'yolo26_pc/outputs/optimization/selected.json'
+        config_path.parent.mkdir(parents=True,exist_ok=True)
+        for name in report['video_runs']: clean_frame_evidence(output/name)
+        if temporary is not None:
             if temporary.resolve().parent!=output.resolve() or not temporary.name.startswith('baseline-'):
                 raise ValueError('Temporary baseline path escaped acceptance')
             shutil.rmtree(temporary); temporary=None
-        else:
-            report['error']='Display gate failed on final video; candidate was NOT installed'
+        save_json(config_path,{k:report[k] for k in ('status','selected','firmware_sha256','upload_mode')})
     except BaseException as exc:
         report.update(status='failed',error='{}: {}'.format(type(exc).__name__,exc))
     finally:
@@ -216,7 +244,11 @@ def main():
     parser.add_argument('--infer-timeout',type=float,default=900)
     parser.add_argument('--tool-timeout',type=float,default=30)
     parser.add_argument('--display',action='store_true')
+    parser.add_argument('--resume',type=Path,help='Reuse checked selection; rerun video only')
+    parser.add_argument('--upload-mode',choices=('auto','serial','overlap'),default='auto',
+                        help='auto compares serial/overlap twice before the 30-frame gate')
     args=parser.parse_args(); args.no_display=not args.display; args.playback_fps=0
+    if (args.output/'report.json').exists(): parser.error('Output already contains a report; choose a new directory')
     args.output.mkdir(parents=True,exist_ok=True)
     return 0 if run(args,args.output)['status']=='passed' else 1
 

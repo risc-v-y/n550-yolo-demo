@@ -10,6 +10,14 @@ import zlib
 from pcie_backend import PCIeBackend, PBTools, MAILBOX, READY, DONE, checked, STATUS, STATUS_KEYS
 
 
+class RequestReadbackError(ValueError):
+    def __init__(self,details):
+        self.details=details
+        super().__init__('Input request readback mismatch: frame_id={} slot={} active_frame_id={}; '
+                         'request was not committed'.format(details['frame_id'],details['slot'],
+                                                           details['active_frame_id']))
+
+
 class StreamBackend(PCIeBackend):
     required_version=2
 
@@ -68,8 +76,21 @@ class StreamBackend(PCIeBackend):
         address=self.stream['slots']+slot*self.stream['slot_bytes']
         try:
             self.link.write(address,body+data,deadline)
-            if self.link.read(address,64,deadline)!=body:
-                raise ValueError('Input request readback mismatch; frame not committed')
+            actual=self.link.read(address,64,deadline)
+            if actual!=body:
+                active=self.active['frame'] if self.active else None
+                details={'type':'request_readback_mismatch','stage':'input_header_readback',
+                         'frame_id':frame-1,'transport_frame':frame,'slot':slot+1,
+                         'active_frame_id':active-1 if active is not None else None,
+                         'sequence':sequence,'cpu_address':address,'pcie_address':address-0x80000000,
+                         'expected_hex':body.hex(),'actual_hex':actual.hex(),
+                         'actual_bytes':len(actual),
+                         'different_offsets':[i for i in range(max(len(body),len(actual)))
+                             if i>=len(body) or i>=len(actual) or body[i]!=actual[i]],
+                         'actual_crc_valid':len(actual)==64 and
+                             struct.unpack_from('<I',actual,60)[0]==zlib.crc32(actual[:60])}
+                self.diagnostic(details)
+                raise RequestReadbackError(details)
             self.pending={'frame':frame,'sequence':sequence,'slot':slot,
                           'upload_seconds':time.monotonic()-started}
         except BaseException:

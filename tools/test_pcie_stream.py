@@ -5,7 +5,7 @@ import unittest
 import zlib
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'yolo26_pc'))
 from pcie_backend import INFO, STATUS, STATUS_KEYS, MAGIC, MAILBOX, INPUT_BYTES
-from pcie_stream import StreamBackend
+from pcie_stream import StreamBackend, RequestReadbackError
 
 
 class Memory:
@@ -81,6 +81,24 @@ class StreamTests(unittest.TestCase):
         board.upload(bytes(519168),1); board.begin(); memory.corrupt_output=True
         with self.assertRaises(ValueError): board.finish()
         self.assertTrue(board.failed)
+
+    def test_pending_frame_mismatch_preserves_both_headers_and_active_frame(self):
+        memory=Memory(); events=[]; board=StreamBackend(transport=memory,diagnostic=events.append)
+        board.upload(bytes(519168),1); board.begin()
+        count=len(memory.writes); memory.corrupt_request=True
+        with self.assertRaises(RequestReadbackError) as caught:
+            board.upload(bytes([1])*519168,2)
+        detail=caught.exception.details
+        self.assertEqual((detail['frame_id'],detail['active_frame_id'],detail['slot']),(1,0,2))
+        self.assertEqual(detail['cpu_address'],0xf0600000+519232)
+        self.assertEqual(len(bytes.fromhex(detail['expected_hex'])),64)
+        self.assertEqual(detail['actual_hex'],'00'*64)
+        self.assertFalse(detail['actual_crc_valid'])
+        self.assertEqual(detail['different_offsets'],[i for i,b in enumerate(bytes.fromhex(detail['expected_hex'])) if b])
+        self.assertIn(detail,events)
+        self.assertTrue(board.failed)
+        self.assertEqual(len(memory.writes),count+1)  # Exactly one upload, no commit/rewrite.
+        with self.assertRaises(RuntimeError): board.begin()
 
 
 if __name__=='__main__': unittest.main()

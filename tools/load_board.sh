@@ -63,7 +63,21 @@ log="$out/load.log"
 exec 9>"${TMPDIR:-/tmp}/yolo26-pcie.lock"
 if ! flock -n 9; then echo 'Another host process owns the YOLO PCIe link.' >&2; exit 1; fi
 held=0
+upload_path=''
+cleanup_upload() {
+    local rc=$?
+    if [[ -n "$upload_path" ]]; then rm -f -- "$upload_path" || true; fi
+    return "$rc"
+}
+trap cleanup_upload EXIT
 trap 'echo "Deployment interrupted; reset may be held (held=$held). Log: $log" >&2; exit 130' INT TERM
+# Vendor tools use bounded filename buffers. Keep their original working
+# directory (license lookup), but pass only a short basename, as PBTools does.
+# Verify the copied bytes before either reset script can touch the board.
+upload_path="$(mktemp ./pXXXXXXXX.bin)"
+cp -- "$bin" "$upload_path"
+printf '%s  %s\n' "${entry%% *}" "$upload_path" | sha256sum -c -
+upload_name="${upload_path#./}"
 run_step() {
     local name="$1" rc
     shift
@@ -83,6 +97,7 @@ run_step() {
 }
 reset_script() { (cd -- "$reset_dir" && bash "./$1"); }
 printf 'Firmware: %s\nCPU address: 0x80000000; PCIe offset: 0x0\n' "$bin" | tee -a "$log"
+printf 'PCIe upload filename: %s (verified temporary copy)\n' "$upload_name" | tee -a "$log"
 if [[ "$firmware" == clp-selftest.bin ]]; then
     echo 'CLP data: DDR 0xf0000000..0xf0000fff; RVV alias 0x10000000; PCIe offset 0x70000000' | tee -a "$log"
 fi
@@ -90,7 +105,7 @@ if ! run_step 'HOLD RESET: reset1.sh' reset_script reset1.sh; then
     echo 'Reset assertion failed; firmware was not uploaded or released.' >&2; exit 1
 fi
 held=1
-if ! run_step 'LOAD DDR: pbcopy' "$pbcopy" -d "$bin:0x0"; then
+if ! run_step 'LOAD DDR: pbcopy' "$pbcopy" -d "$upload_name:0x0"; then
     echo 'Upload failed; reset.sh was NOT called. Keep S2C in reset and inspect the log.' >&2; exit 1
 fi
 if ! run_step 'RELEASE RESET: reset.sh' reset_script reset.sh; then

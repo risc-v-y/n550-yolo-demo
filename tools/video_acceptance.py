@@ -19,7 +19,7 @@ def checked_selection(path,firmware_sha,frames,refs):
     if (set(selected)!={'m','n','pack','compute','graph'} or
         selected['m'] not in (32,64,128) or selected['n'] not in (32,64,128) or
         any(not isinstance(selected[k],int) or selected[k]<0 or selected[k]&~mask
-            for k,mask in (('pack',3),('compute',7),('graph',15)))):
+            for k,mask in (('pack',31),('compute',7),('graph',15)))):
         raise ValueError('Saved selection is missing or invalid')
     for field in ('baseline','selected_measurements'):
         rounds=report.get(field,[])
@@ -36,6 +36,19 @@ def checked_selection(path,firmware_sha,frames,refs):
                 if validated['options'] or row.get('model_cycles')!=validated['model_cycles']:
                     raise ValueError('Saved timing is diagnostic or differs from its checked profile')
     return report,{'path':str(path.resolve()),'sha256':hashlib.sha256(raw).hexdigest()}
+
+
+def checked_baseline(path,firmware_sha,config,frames,refs):
+    report,identity=checked_selection(path,firmware_sha,frames,refs)
+    final=report.get('frames',[])
+    if (report.get('status')!='passed' or report.get('selected')!=config or
+        report.get('recorded_frames')!=30 or len(final)!=30 or
+        [r.get('frame_id') for r in final]!=list(range(30)) or
+        any(r.get('different_words')!=0 or r.get('display_equal') is not True for r in final)):
+        raise ValueError('Baseline lacks the accepted configuration and 30 exact frames')
+    if any(row.get('different_words')!=0 for group in report['selected_measurements'] for row in group):
+        raise ValueError('Baseline candidate measurements are not bit-identical')
+    return report,identity
 
 
 def video_summary(result,directory):

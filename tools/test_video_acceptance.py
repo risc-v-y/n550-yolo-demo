@@ -8,7 +8,7 @@ import video_acceptance  # Installs the packaged model-module search path.
 from board_profile import decode_profile
 from test_performance_report import payload
 from optimization_report import compare_display
-from video_acceptance import checked_selection, interval_records
+from video_acceptance import checked_selection, checked_baseline, interval_records
 
 
 class EvidenceTests(unittest.TestCase):
@@ -54,6 +54,27 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual([r['frame_seconds'] for r in rows],[2.,1.])
         result['results'][2]['completed_interval_seconds']=float('nan')
         with self.assertRaises(ValueError): interval_records(result,checks)
+
+    def test_baseline_requires_accepted_30_exact_frames_and_matching_configuration(self):
+        record,frames,refs=self.fixture()
+        record.update(status='passed',recorded_frames=30,
+                      frames=[{'frame_id':i,'display_equal':True,'different_words':0} for i in range(30)])
+        config=dict(record['selected'])
+        for variant in ('valid','incomplete','repeated','numeric','candidate','config','failed'):
+            bad=copy.deepcopy(record)
+            if variant=='incomplete': bad['frames'].pop()
+            elif variant=='repeated': bad['frames'][29]['frame_id']=0
+            elif variant=='numeric': bad['frames'][0]['different_words']=1
+            elif variant=='candidate': bad['selected_measurements'][0][0]['different_words']=1
+            elif variant=='config': bad['selected']['n']=64
+            elif variant=='failed': bad['status']='failed'
+            with self.subTest(variant=variant),tempfile.TemporaryDirectory() as tmp:
+                path=Path(tmp)/'report.json'; path.write_text(json.dumps(bad))
+                if variant=='valid':
+                    result,_=checked_baseline(path,'firmware',config,frames,refs)
+                    self.assertEqual(result['recorded_frames'],30)
+                else:
+                    with self.assertRaises(ValueError): checked_baseline(path,'firmware',config,frames,refs)
 
 
 if __name__=='__main__': unittest.main()

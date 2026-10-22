@@ -119,16 +119,19 @@ def report_pages(report):
          'Firmware: ' + report.get('firmware_sha256', 'unknown')[:16],
          'Selected: ' + str(report.get('selected', {}))[:65],
          'Model baseline/current: '+('{:.3f}x'.format(ratio) if ratio else 'pending board measurements'),
-         'Original serial frame seconds: '+('{:.4f}'.format(sum(r['elapsed_seconds'] for r in old)/len(old)) if old else 'pending'),
-         'Stage seconds below: mean / max / count; startup excluded.',
-         'Full node timing: '+report.get('full_profile','pending')] +
+         'Accepted serial interval seconds: '+('{:.4f}'.format(report['baseline_interval_seconds'])
+                                               if report.get('baseline_interval_seconds') else 'not recorded'),
+         'Stage seconds below: mean / max / count; startup excluded.'] +
         ['{}: {:.4f} / {:.4f} / {}'.format(name, sum(values)/len(values), max(values), len(values))
-         for name, values in stages.items() if values][:10],
+         for name, values in stages.items() if values][:11],
         ['OPTIMIZATION PAGE=2/3','Operator/data-movement timing from matched full-profile passes.',
-         'Cold start / OPEN-config seconds: {} / {}'.format(report.get('cold_start_seconds','pending'),report.get('open_configure_seconds','pending'))]+
+         'Load / host preflight / OPEN seconds: {} / {} / {}'.format(
+             *['{:.3f}'.format(report[k]) if isinstance(report.get(k),(int,float)) else 'not recorded'
+               for k in ('firmware_load_seconds','cold_start_seconds','open_configure_seconds')])]+
         (phase_lines or ['Not collected yet.'])+
         ['Pipeline {}: {:.0f} cycles/frame'.format(k,sum(v)/len(v)) for k,v in report.get('cycles',{}).items() if v]+
         ['Candidate measurements: '+str(len(report.get('candidates',[]))),
+         'Full node timing: '+report.get('full_profile','pending'),
          'Fusion retains logical node IDs; skipped work has near-zero cycles.'],
         ['OPTIMIZATION PAGE=3/3', 'Original golden retained; no numerical tolerance.',
          'Compared: count, class, integer box, 2-decimal score, draw order.',

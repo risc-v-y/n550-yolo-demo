@@ -37,6 +37,8 @@
 
 能力描述为16个小端uint64：magic、version、bytes、slots、result、profile、snapshot、input_bytes、slot_bytes、result_bytes、max_rows、accumulator_bytes、vector_bytes、option_mask、reserved、crc。前120字节CRC32存最后uint64低32位。当前两输入槽各519232字节，结果包7336字节，完整profile24320字节；实际地址由固件发布，禁止写死。
 
+第14项`reserved`现声明`pack_mask`，当前为31：1整层FP16复用、2旧1×1空间读取、4分段小块转置、8首层查表复用、16专用CLP工作区所有权。旧固件该项为0，host仅按支持1/2处理；配置前拒绝未声明位，不向旧固件试写新策略。协议仍为2，槽位和外部输入输出格式不变。
+
 - 每槽是64字节请求头+519168字节CHW UINT8，独立于模型arena，两槽分别占完整缓存行。RUN_U8命令号5，头内input_bytes只计像素数据，input_crc只覆盖像素。输入包一次写入后读回64字节头，确认后独立提交。
 - doorbell首uint32仍是sequence，第二个uint32为槽号1/2；0表示传统邮箱请求。当前槽在DONE前归板所有；host可以上传另一槽，但必须下载上一结果后才能提交下一帧。序号、会话、帧号和CRC规则不变。
 - 结果包依次为状态64字节、8个uint64简要计时、7200字节候选、uint64 CRC。计时字段为model、service、input_crc、output、pack、bias、profiled、configuration；CRC覆盖前7328字节。板端先发布完整结果包，再发布邮箱DONE；host核对二者状态完全相同。未采完整profile时pack/bias不作测量值使用。

@@ -137,10 +137,16 @@ class MenuTests(unittest.TestCase):
                 run.assert_not_called()
 
     def test_optimization_continuation_reuses_previous_selection_and_default_serial(self):
+        import hashlib
+        from optimize_video import REVISION
+        (self.root/'firmware').mkdir()
+        (self.root/'firmware/demo-pcie.bin').write_bytes(b'firmware')
         base=self.root/'yolo26_pc/outputs/optimization'; previous=base/'previous'
         previous.mkdir(parents=True)
         (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
         (previous/'report.json').write_text(json.dumps({'status':'failed','baseline':[1],
+            'revision':REVISION,'selection_complete':True,
+            'firmware_sha256':hashlib.sha256(b'firmware').hexdigest(),
             'selected_measurements':[1],'selected':{'m':128}}))
         for answer,mode in (('', 'serial'),('2','auto')):
             (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
@@ -157,6 +163,20 @@ class MenuTests(unittest.TestCase):
             (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
             host.launch_optimization()
             popen.assert_not_called()
+
+    def test_old_passed_run_starts_incremental_acceptance_without_video_only_resume(self):
+        (self.root/'firmware').mkdir()
+        (self.root/'firmware/demo-pcie.bin').write_bytes(b'new firmware')
+        base=self.root/'yolo26_pc/outputs/optimization'; previous=base/'run-ou_be0js'
+        previous.mkdir(parents=True)
+        (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
+        (previous/'report.json').write_text(json.dumps({'status':'passed','baseline':[1],
+            'selected_measurements':[1],'selected':{'m':128},'firmware_sha256':'old'}))
+        with patch('builtins.input',side_effect=AssertionError('No stale resume menu')), \
+             patch('host_control.subprocess.Popen') as popen:
+            popen.return_value.pid=123
+            host.launch_optimization()
+        self.assertNotIn('--resume',popen.call_args.args[0])
 
     def test_update_failure_propagates(self):
         with patch('host_control.subprocess.run',side_effect=subprocess.CalledProcessError(1,['git'])):

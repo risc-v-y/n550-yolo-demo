@@ -17,6 +17,43 @@ static const void *prepared_source;
 static unsigned prepared_bits=32;
 static uint16_t normalized[256] __attribute__((aligned(64)));
 static int normalized_ready;
+static uint16_t *owned_scratch,*owned_half;
+static size_t owned_scratch_bytes,owned_half_bytes;
+
+#ifdef YOLO_N550_BOARD
+static int owned(const void *p,size_t bytes) {
+    return (p==owned_scratch && bytes<=owned_scratch_bytes) ||
+           (p==owned_half && bytes<=owned_half_bytes);
+}
+#endif
+void amu_input_release(void) {
+#ifdef YOLO_N550_BOARD
+    if(owned_scratch) board_finish_write(owned_scratch,owned_scratch_bytes);
+    if(owned_half) board_finish_write(owned_half,owned_half_bytes);
+#endif
+    owned_scratch=owned_half=0; owned_scratch_bytes=owned_half_bytes=0;
+    prepared_input=0; prepared_source=0; prepared_bits=32;
+}
+int amu_input_acquire(uint16_t *scratch,size_t scratch_bytes,uint16_t *half,size_t half_bytes) {
+    if(owned_scratch || owned_half) return -1;
+    if(!(amu_input_flags&AMU_INPUT_OWNED)) return 0;
+    uintptr_t a=(uintptr_t)scratch,b=(uintptr_t)half;
+    if(!a || a%64 || !scratch_bytes || scratch_bytes%64 || a>UINTPTR_MAX-scratch_bytes ||
+       (half_bytes && (!b || b%64 || half_bytes%64 || b>UINTPTR_MAX-half_bytes ||
+        (a<b+half_bytes && b<a+scratch_bytes)))) return -1;
+#ifdef YOLO_N550_BOARD
+    if((board_diag.options&DIAG_TRACE) || !board_is_clp(scratch) ||
+       !board_is_clp((char *)scratch+scratch_bytes-1) ||
+       (half_bytes && (!board_is_clp(half) || !board_is_clp((char *)half+half_bytes-1)))) return 0;
+    board_prepare_write(scratch,scratch_bytes);
+    if(half_bytes) board_prepare_write(half,half_bytes);
+#endif
+    owned_scratch=scratch; owned_scratch_bytes=scratch_bytes;
+    if(half_bytes) {owned_half=half; owned_half_bytes=half_bytes;}
+    return 0;
+}
+
+#include "amu_input_tiles.h"
 
 void amu_input_bind_u8(const float *logical,const uint8_t *physical) {
     u8_logical=logical; u8_physical=physical;
@@ -36,21 +73,28 @@ int amu_input_prepare(const Conv2D *p,const float *input,uint16_t *half,size_t c
         /* Consume the frame binding exactly once. The arena may reuse this
          * logical address for an unrelated later convolution's FP32 tensor. */
         u8_physical=0;
-        return 0;
+        if(!(amu_input_flags&AMU_INPUT_U8_REUSE)) return 0;
     }
-    if(!(amu_input_flags&AMU_INPUT_PRECONVERT) || p->kernel_h*p->kernel_w==1) return 0;
+    if(prepared_bits==32 && (!(amu_input_flags&AMU_INPUT_PRECONVERT) || p->kernel_h*p->kernel_w==1)) return 0;
     size_t count=(size_t)p->batch*p->in_channels*p->in_h*p->in_w;
     if(!half || count>capacity) return -1;
     const uint32_t *src=(const uint32_t *)input;
+    const uint8_t *pixels=(const uint8_t *)prepared_source;
     uint16_t *dst=half;
 #ifdef YOLO_N550_BOARD
-    board_clean(input,count*4);
-    board_prepare_write(half,count*2);
-    src=board_rvv_address(input); dst=board_rvv_address(half);
+    board_clean(prepared_source,count*(prepared_bits/8));
+    if(!owned(half,count*2)) board_prepare_write(half,count*2);
+    src=board_rvv_address(input); pixels=board_rvv_address(prepared_source); dst=board_rvv_address(half);
 #endif
     int status=0;
     for(size_t i=0;i<count;) {
         size_t vl=__riscv_vsetvl_e32m2(count-i);
+        if(prepared_bits==8) {
+            vuint16m1_t values=__riscv_vzext_vf2_u16m1(__riscv_vle8_v_u8mf2(pixels+i,vl),vl);
+            __riscv_vse16_v_u16m1(dst+i,__riscv_vluxei16_v_u16m1(normalized,
+                __riscv_vsll_vx_u16m1(values,1,vl),vl),vl);
+            i+=vl; continue;
+        }
         vuint32m2_t bits=__riscv_vle32_v_u32m2(src+i,vl);
         vuint32m2_t absolute=__riscv_vand_vx_u32m2(bits,0x7fffffffu,vl);
         if(__riscv_vfirst_m_b16(__riscv_vmsgeu_vx_u32m2_b16(absolute,0x477ff000u,vl),vl)>=0) {
@@ -60,7 +104,7 @@ int amu_input_prepare(const Conv2D *p,const float *input,uint16_t *half,size_t c
         i+=vl;
     }
 #ifdef YOLO_N550_BOARD
-    board_finish_write(half,count*2);
+    if(owned(half,count*2)) board_fence(); else board_finish_write(half,count*2);
 #endif
     if(status) return status;
     prepared_source=half; prepared_bits=16;
@@ -115,7 +159,7 @@ static inline __attribute__((always_inline)) int pack_input(
     const unsigned char *source=(const unsigned char *)physical+batch*p->in_channels*plane*(source_bits/8);
     uint16_t *destination=storage;
 #ifdef YOLO_N550_BOARD
-    board_prepare_write(storage,bytes);
+    if(!owned(storage,bytes)) board_prepare_write(storage,bytes);
     source=board_rvv_address(source);
     destination=(uint16_t *)board_rvv_address(storage);
 #endif
@@ -125,6 +169,10 @@ static inline __attribute__((always_inline)) int pack_input(
     if(k%32) for(size_t col=0;col<columns;++col)
         zero_half(destination+(kt-1)*tile+col*32+k%32,32-k%32);
     PACK_MARK(PACK_PREPARE_DONE,0,0,0);
+    if((amu_input_flags&AMU_INPUT_TILED) && !probe) {
+        if(pack_spatial_tiles(p,source,source_bits,destination,first,columns,k,ow,tile)) goto invalid;
+        goto published;
+    }
     if(pointwise && (amu_input_flags&AMU_INPUT_SPATIAL) && !probe) {
         /* Read adjacent spatial values of one channel; transpose directly
          * into [position,K] with a 64-byte strided half store. */
@@ -229,7 +277,7 @@ store_half:
     }
 published:
 #ifdef YOLO_N550_BOARD
-    board_finish_write(storage,bytes);
+    if(owned(storage,bytes)) board_fence(); else board_finish_write(storage,bytes);
 #endif
     PACK_MARK(PACK_BLOCK_DONE,columns,k,0);
     *packed=(AmuPackedInput){storage,k,columns,bytes};
@@ -238,7 +286,7 @@ published:
     return 0;
 invalid:
 #ifdef YOLO_N550_BOARD
-    board_finish_write(storage,bytes);
+    if(owned(storage,bytes)) board_fence(); else board_finish_write(storage,bytes);
 #endif
     return -1;
 }
@@ -260,8 +308,14 @@ int amu_pack_conv_input_rvv(const Conv2D *p,const float *input,size_t batch,
     uint64_t largest=(uint64_t)(p->in_channels-1)*plane+
                      (uint64_t)(p->kernel_h-1)*p->in_w+p->kernel_w-1;
     if((uint64_t)p->in_h+2ull*p->pad_h>INT32_MAX ||
-       (uint64_t)p->in_w+2ull*p->pad_w>INT32_MAX || largest>UINT32_MAX/4)
+       (uint64_t)p->in_w+2ull*p->pad_w>INT32_MAX || largest>UINT32_MAX/4) {
+        /* Scalar fallback may touch cached aliases: return workspace ownership
+         * first. Its FP32 input contract cannot consume a bound UINT8 frame. */
+        int bound_u8=input==prepared_input && prepared_bits!=32;
+        amu_input_release();
+        if(bound_u8) return -1;
         return amu_pack_conv_input(p,input,batch,first,columns,storage,capacity,packed);
+    }
 #ifdef YOLO_N550_BOARD
     board_diag_phase(PHASE_AMU_PACK);
     if((board_diag.options&DIAG_TRACE) && !board_diag.node && !first &&

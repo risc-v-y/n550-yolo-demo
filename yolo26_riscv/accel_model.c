@@ -159,9 +159,14 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
     if (k > MAX_CONV_K) return -1;
     if(amu && packed) {
         uint64_t start=model_ticks();
+        size_t count=area<amu_tile_n ? area : amu_tile_n;
+        size_t half_bytes=((size_t)p->batch*p->in_channels*p->in_h*p->in_w*2+63u)&~(size_t)63;
+        if(half_bytes>sizeof(converted_feature)) return -1;
+        if(amu_input_acquire(conv_scratch.fp16,amu_packed_input_bytes(count,k),
+                             converted_feature,half_bytes)) return -1;
         int status=amu_input_prepare(p,input,converted_feature,sizeof(converted_feature)/2);
         model_profile_end(PROFILE_INPUT_PACK,start);
-        if(status) return status;
+        if(status) {amu_input_release(); return status;}
     }
     for (size_t batch = 0; batch < p->batch; ++batch) {
         for (size_t group = 0; group < p->groups; ++group) {
@@ -176,11 +181,12 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
                     int status=amu_pack_conv_input_rvv(p,input,batch,first,count,conv_scratch.fp16,
                                                        sizeof(conv_scratch.fp16),&input_block);
                     model_profile_end(PROFILE_INPUT_PACK,start);
-                    if(status || amu_matmul_packed_fp16(packed,&input_block,dest+first,area))
-                        return -1;
+                    if(status || amu_matmul_packed_fp16(packed,&input_block,dest+first,area)) {
+                        amu_input_release(); return -1;
+                    }
                     /* All M blocks have completed: next pack may reuse scratch. */
                 }
-                if(add_bias(dest,biases,ocg,area)) return -1;
+                if(add_bias(dest,biases,ocg,area)) {amu_input_release(); return -1;}
                 continue;
             }
             if (p->kernel_h == 1 && p->kernel_w == 1 && p->stride_h == 1 && p->stride_w == 1 && !p->pad_h && !p->pad_w) {
@@ -213,6 +219,11 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
             }
             if(add_bias(dest, biases, ocg, area)) return -1;
         }
+    }
+    if(amu && packed) {
+        uint64_t start=model_ticks();
+        amu_input_release();
+        model_profile_end(PROFILE_INPUT_PACK,start);
     }
     return 0;
 }

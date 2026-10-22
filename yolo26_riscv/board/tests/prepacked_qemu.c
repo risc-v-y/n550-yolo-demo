@@ -14,6 +14,11 @@ static uintptr_t host_call(uintptr_t op,uintptr_t arg) {
                      "ebreak\nsrai zero,zero,7\n.option pop" : "+r"(a0),"+r"(a1) :: "memory");
     return a0;
 }
+void input_progress(unsigned layer) {
+    char line[]="Input packing layers=00/94\n";
+    line[21]=(char)('0'+layer/10); line[22]=(char)('0'+layer%10);
+    host_call(4,(uintptr_t)line);
+}
 __attribute__((noreturn)) void platform_exit(uintptr_t code) {
     if(code) host_call(4,(uintptr_t)"PREPACKED AMU FAILED\n");
     uintptr_t args[2]={0x20026,code}; host_call(0x20,(uintptr_t)args);

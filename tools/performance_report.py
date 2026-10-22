@@ -130,7 +130,7 @@ def render(report, page):
             lines+=['Status: {} | completed={} recorded={}'.format(data['status'],len(rows),data['recorded_frames']),
                     'Cold startup seconds: {}'.format(data.get('cold_start_seconds','not recorded')),
                     'Seconds: mean / max / count']
-            for key in ('decode_seconds','prepare_seconds','upload_seconds','run_roundtrip_seconds',
+            for key in ('decode_seconds','prepare_seconds','upload_seconds','commit_seconds','run_roundtrip_seconds',
                         'download_seconds','postprocess_seconds','display_submit_seconds','record_seconds',
                         'completed_interval_seconds','capture_to_submit_seconds'):
                 values=[r[key] for r in rows if isinstance(r.get(key),(int,float))]

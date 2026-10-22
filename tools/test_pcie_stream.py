@@ -67,6 +67,16 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(memory.writes,[])
         self.assertTrue(memory.closed)
 
+    def test_pack_capability_is_checked_before_config_write_and_commit_is_timed(self):
+        memory=Memory(); board=StreamBackend(transport=memory)
+        before=len(memory.writes)
+        with self.assertRaises(ValueError): board.configure({'pack':29})
+        self.assertEqual(len(memory.writes),before)
+        board.stream['pack_mask']=31
+        board.configure({'m':128,'n':32,'pack':29,'compute':0,'graph':11})
+        board.upload(bytes(519168),1); board.begin(); board.finish()
+        self.assertGreaterEqual(board.last_timing['commit_seconds'],0)
+
     def test_readback_failure_never_commits_and_cannot_retry(self):
         memory=Memory(); board=StreamBackend(transport=memory)
         count=len(memory.writes); memory.corrupt_request=True

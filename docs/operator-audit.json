@@ -32,11 +32,12 @@
     "scalar C": 5
   },
   "source_sha256_lf": {
-    "accel_model.c": "f39037751c5070bb1c42adc4b9d9e16dbb1ae8fe23bd0b4dad6d079a0318053f",
+    "accel_model.c": "3dc0a6346cc401608c364f89077611ce3ff29693ff58781950ccc4fedd9233fd",
     "amu.c": "4bbfd402c3c1e9c96e49f583e25c9c7166956fab38b1f2a6dfd29b616c0a8828",
-    "amu.h": "2f3b9ea4fb1c56e5f116c714d11b31e9252a1ac1975273c2c58000dc57c03c60",
-    "amu_input_rvv.c": "f1646fa398229a909b64029c12fcf0a6ae743333f38688304cd9886c47be67d5",
+    "amu.h": "8637b262081aa1302cbd1f17a25769a6e036fe0f8cc82b0c869c004ef7fa5983",
+    "amu_input_rvv.c": "97401fdfd409f0443b23c1a9c7e00c50f21870d327708fa7074858a049b84fe8",
     "amu_half_rvv.h": "3518f43039c36d7382e54d41523526a951132645ff28b2eaa1c3d293a0915d78",
+    "amu_input_tiles.h": "654b00cb26de0a2afca3871710e44d37d8c92b2843aefb2aac398c4917862e39",
     "rvv_model_ops.c": "928c8bb834a1634d9412b87d73457cba86cce0cc2fa20fe5f2eadb40bbfc61b6",
     "rvv_model_ops.h": "68b2bcc9bf630b46f18dc2b20f3423ab97335f2230aca0b362886fcc12032702",
     "rvv_access.h": "3b33ff0ab3d86eb835de82d81df2d969dcd2bb4314350f7642cbedb64e5804b3",
@@ -44,12 +45,12 @@
     "scalar_model.c": "6b6077a4e4ec7740c6ed5910dfc000d9e3a5edd97513f60d1a80afb24799dba6",
     "board/coherent_rvv.h": "d4186182f64e10b2e7c8ade451c27f5df2e2263a4adf9e6fef03973d8d7afe20",
     "board/cache.h": "393a06047c94222be2e505685679ef17fc1f98e5d1ab82186cbb9672334db016",
-    "board/main.c": "e914b09a32239e59a68bc1890f7b059a920824114cf89c978fae9039ef2955de",
+    "board/main.c": "3fa34b2aefa00a7220e79743943c3727aa64e4c6bccad3eb24d903c82d18d622",
     "board/diagnostics.c": "7aaeb98ab7bb8f78be6ed97508a066bccbb2bd21eae2d908f4d939c0c58c3ece",
     "board/diagnostics.h": "49d751a505358d614d974257abbb9b410e8696a2dfb801ec86b625a3f21ed108",
     "board/model_io.c": "8ae0ec329223372856b09da2dd265cba728fbfd6f65492f42172d38fd9d74201",
     "board/graph_plan.h": "bdaca779f8be9c42584743b1a9c9484eaf8fd67d1745d090c068c5f0094d9bd7",
-    "board/pcie.c": "0fcb1bf341779194e70b269f9823e47d840d5e027db82f283c3ccdf982c0c670",
+    "board/pcie.c": "551ee7bf2dbb509be6ca310462761a63e96aab2e3135d9f6081b31a2c3dddf34",
     "board/stream.h": "6cb63992a4996e9ba1b4199d9fb84662943205fa330193c626f39beb56d5892a",
     "build_board.sh": "6e75747e2d0fdee207af131c76d4ecbe3ef1a50627bdcf4d6c7b4d0fa13f14aa"
   },
@@ -58,6 +59,6 @@
     "model_generated.c": "5ba73d90411632bf4ad8e254d1ddfe27eebf34bd5858bafd65e1ac7be213d47c",
     "model_generated.h": "6784eedef90341f3a2b22d2c8abaa97723c49c399d8e0aa07e906c3e20fe9cc6"
   },
-  "csv_sha256": "2a0e6e46e122300ea22c563d77770f4817a7f60c6f0ecfe19b51f4276ccd3ca5",
+  "csv_sha256": "233b44be7c1e03ce7599488b2643dc2ee2657f702a6c0a94a8671418209754c6",
   "scope": "Static current-source review; candidates are not speed or correctness proofs."
 }

@@ -43,6 +43,18 @@ class AcceptanceTests(unittest.TestCase):
             self.assertLessEqual(len(page.splitlines()), 22)
             self.assertTrue(all(len(x) <= 80 for x in page.splitlines()))
 
+    def test_all_stage_timings_fit_without_dropping_interval(self):
+        names=('decode','prepare','upload','commit','run_roundtrip','download',
+               'postprocess','display_submit','record','completed_interval')
+        pages=report_pages({'baseline_interval_seconds':13.3243,
+            'stages':{n+'_seconds':[1.,2.] for n in names},'firmware_load_seconds':5.,
+            'cold_start_seconds':.1,'open_configure_seconds':3.})
+        self.assertIn('commit_seconds:',pages[0])
+        self.assertIn('completed_interval_seconds:',pages[0])
+        self.assertIn('13.3243',pages[0])
+        self.assertIn('5.000 / 0.100 / 3.000',pages[1])
+        self.assertTrue(all(len(p.splitlines())<=22 for p in pages))
+
     def test_report_accepts_real_profile_schema(self):
         from test_performance_report import payload as profile_payload
         from board_profile import decode_profile

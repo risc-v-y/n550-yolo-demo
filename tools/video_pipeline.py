@@ -194,6 +194,8 @@ def run(args,output,backend_factory=None,selected=None,retain=False,upload_mode=
                             '--pbcopy',args.pbcopy],cwd=ROOT,check=True)
             report['load_seconds']=time.monotonic()-tick
         report['cold_start_seconds']=time.monotonic()-start
+        report['preflight_seconds']=report['cold_start_seconds']-report.get('load_seconds',0.)
+        report['firmware_load_seconds']=report.get('load_seconds')
         report['playback_fps']=args.playback_fps or check['source_fps'] or 25
         report['firmware_sha256']=hashlib.sha256((ROOT/'firmware/demo-pcie.bin').read_bytes()).hexdigest()
         report['status']='running'; save_json(output/'report.json',report)
@@ -274,6 +276,7 @@ def run(args,output,backend_factory=None,selected=None,retain=False,upload_mode=
                 save_json(output/'request-readback.json',report['failure'])
         report['wall_seconds']=time.monotonic()-start
         report['timing_note']='Pipeline stages overlap. Display submission ends after OpenCV events; remote X11 presentation is not measured.'
+        report['startup_note']='cold_start is host preflight plus optional firmware load; OPEN/configure is separate. Acceptance may load before this pipeline.'
         save_json(output/'report.json',report)
         print('VIDEO {}: {} frames, recorded={}'.format(report['status'].upper(),len(report['results']),report['recorded_frames']),flush=True)
         if report.get('error'): print(report['error'],flush=True)

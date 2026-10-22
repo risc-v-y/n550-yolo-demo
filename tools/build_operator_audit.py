@@ -33,7 +33,7 @@ RULES = {
     'FLOORDIV': ('从扁平索引提取候选位置', 'floor(X/常数)', '标量INT64', 'scalar_model.c', '保持整数与负数规则'),
     'CAST': ('将类别索引转换为输出类型', '逐元素类型转换', '标量C', 'scalar_model.c', '保持类型、范围及元素顺序'),
 }
-SOURCES = ('accel_model.c', 'amu.c', 'amu.h', 'amu_input_rvv.c', 'amu_half_rvv.h',
+SOURCES = ('accel_model.c', 'amu.c', 'amu.h', 'amu_input_rvv.c', 'amu_half_rvv.h', 'amu_input_tiles.h',
            'rvv_model_ops.c', 'rvv_model_ops.h', 'rvv_access.h', 'basic_rvv.c', 'scalar_model.c',
            'board/coherent_rvv.h', 'board/cache.h', 'board/main.c',
            'board/diagnostics.c', 'board/diagnostics.h', 'board/model_io.c',
@@ -101,8 +101,9 @@ def rows_for(manifest):
         # Shape/offset fields describe the frozen logical graph. Selected graph
         # views/fusions rebuild physical offsets without changing logical IDs.
         if kind=='CONV' and p[4]==1:
-            impl+='；首层UINT8查表；可选M/N32/64/128、整层FP16复用、1x1空间读取及bias-SiLU融合'
-            todo='按实板重复周期和显示一致性自动选择；packed字段展示默认N32'
+            impl+='；首层UINT8查表；可选M/N32/64/128、整层FP16复用、8x8分段转置打包、首层查表复用、专用CLP工作区整层交接及bias-SiLU融合'
+            files+=';amu_input_tiles.h'
+            todo='本轮固定m128/compute0/graph11，按逐位一致及两轮周期选择pack和N；packed字段展示N32'
         if kind in ('BMM','CONV') and (kind=='BMM' or p[4]!=1):
             impl+='；可选RVV FMA（需显示一致性验收）'
             constraint='默认独立乘加；候选允许FMA，原始差异单列且显示结果必须一致'

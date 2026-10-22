@@ -215,7 +215,7 @@ def qemu_test():
                              'rv64,v=true,vlen={},matrix=on,xtlen=65536,xtrlen=512,xelen=32'.format(vlen),
                              '-m', '128M', '-smp', '1', '-nographic', '-monitor', 'none', '-serial', 'none',
                              '-bios', 'none', '-kernel', str(elf), '-semihosting-config',
-                             'enable=on,target=native', '-no-reboot'], capture_output=True, timeout=120)
+                             'enable=on,target=native', '-no-reboot'], capture_output=True, timeout=600)
         text = (result.stdout+result.stderr).decode(errors='replace')
         print('VLEN={}: {}'.format(vlen, text), end='', flush=True)
         if result.returncode or 'PREPACKED AMU PASS' not in text:

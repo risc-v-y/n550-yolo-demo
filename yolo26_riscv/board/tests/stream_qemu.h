@@ -21,7 +21,7 @@ static void stream_commit(const PcieRequest *request,unsigned slot) {
 static void stream_test(void) {
     const PcieStreamInfo *info=(const void *)(uintptr_t)board_pcie_mailbox.info.reserved2;
     if(info->version!=2 || info->crc!=board_crc32(info,120) || info->max_rows<128 ||
-       info->accumulator_bytes<128*128*4) clp_qemu_exit(40);
+       info->accumulator_bytes<128*128*4 || (info->reserved&31)!=31) clp_qemu_exit(40);
     PcieInputSlot *slots=(void *)(uintptr_t)info->slots;
     const PcieStreamResult *result=(const void *)(uintptr_t)info->result;
     file("frame-0-input.bin",board_model_input(),board_model_input_size(),0);
@@ -34,7 +34,7 @@ static void stream_test(void) {
     /* Prepare both independent slots before consuming either one. */
     board_clean(slots,2*sizeof(*slots));
     PcieRequest configure={.session=0x12345678,.command=PCIE_CONFIGURE,.sequence=2,
-                           .reserved={128,128,3,4,15}};
+                           .reserved={128,128,29,0,11}};
     configure.crc=board_crc32(&configure,60);
     stream_commit(&configure,0);
     if(board_pcie_mailbox.status.state!=PCIE_READY) clp_qemu_exit(42);
@@ -58,6 +58,6 @@ static void stream_test(void) {
         } else for(unsigned i=0;i<7200;++i) if(first[i]!=result->candidates[i]) clp_qemu_exit(44);
         board_uart_text("QEMU STREAM FRAME PASS\n");
     }
-    board_uart_text("QEMU MODEL BUS PASS; UINT8/two slots/MN128/pack3/graph15/full+lite\n");
+    board_uart_text("QEMU MODEL BUS PASS; UINT8/two slots/MN128/pack29/compute0/graph11/full+lite\n");
     clp_qemu_exit(0);
 }

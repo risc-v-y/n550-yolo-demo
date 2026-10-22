@@ -20,7 +20,7 @@ static void stream_capabilities(void) {
         .slots=(uintptr_t)input_slots,.result=(uintptr_t)&stream_result,.profile=(uintptr_t)&board_profile,
         .snapshot=(uintptr_t)&board_node_snapshot,.input_bytes=STREAM_INPUT_BYTES,
         .slot_bytes=sizeof(PcieInputSlot),.result_bytes=sizeof(stream_result),.max_rows=amu_capacity_rows,
-        .accumulator_bytes=acc,.vector_bytes=vector,.option_mask=30};
+        .accumulator_bytes=acc,.vector_bytes=vector,.option_mask=30,.reserved=AMU_INPUT_MASK};
     stream_info.crc=board_crc32(&stream_info,offsetof(PcieStreamInfo,crc));
     board_clean(&stream_info,sizeof(stream_info));
 }

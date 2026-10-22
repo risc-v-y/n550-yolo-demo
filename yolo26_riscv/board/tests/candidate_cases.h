@@ -1,10 +1,45 @@
 /* Candidate arithmetic has its own reference; it need not equal unfused math. */
+#include "../../amu.h"
+static void packing_ownership_cases(void) {
+    Conv2D p={.batch=1,.in_channels=3,.in_h=5,.in_w=37,.out_channels=16,
+        .kernel_h=3,.kernel_w=3,.stride_h=1,.stride_w=1,.pad_h=1,.pad_w=1,.groups=1};
+    float *input=(float *)clp.data;
+    uint16_t *scratch=(uint16_t *)(clp.data+4096),*half=(uint16_t *)(clp.data+16384);
+    uint16_t *expected=(uint16_t *)old.data;
+    const unsigned modes[]={0,1,5,17,21,29};
+    for(size_t i=0;i<555;++i) input[i]=value(i,0);
+    for(unsigned mode=0;mode<sizeof(modes)/sizeof(modes[0]);++mode) {
+        amu_input_flags=modes[mode];
+        require(!amu_input_acquire(scratch,8192,half,1152),38,mode,0,0);
+        if(modes[mode]&AMU_INPUT_OWNED)
+            require(amu_input_acquire(scratch,8192,half,1152)!=0,39,mode,0,0);
+        require(!amu_input_prepare(&p,input,half,576),40,mode,0,0);
+        for(size_t first=0;first<185;first+=37) {
+            size_t count=185-first<64?185-first:64;
+            AmuPackedInput a,b;
+            require(!amu_pack_conv_input(&p,input,0,first,count,expected,8192,&a),41,first,0,0);
+            require(!amu_pack_conv_input_rvv(&p,input,0,first,count,scratch,8192,&b),42,first,0,0);
+            for(size_t i=0;i<a.bytes/2;++i) require(expected[i]==scratch[i],43,i,scratch[i],expected[i]);
+        }
+        amu_input_release();
+    }
+    amu_input_flags=AMU_INPUT_OWNED;
+    require(amu_input_acquire(scratch+1,8192,half,1152)!=0,44,0,0,0);
+    require(amu_input_acquire(scratch,8192,scratch+32,1152)!=0,45,0,0,0);
+    /* Diagnostic access must retain full publication on every block. */
+    board_diag.options=DIAG_TRACE;
+    require(!amu_input_acquire(scratch,8192,half,1152),46,0,0,0);
+    require(!amu_input_acquire(scratch,8192,half,1152),47,0,0,0);
+    amu_input_release(); board_diag.options=0; amu_input_flags=0;
+    print("PACK OWNERSHIP PASS: CLP reuse/borders/tails/alignment/diagnostic fallback\n");
+}
 static float scalar_fma(float a,float b,float c) {
     float out;
     __asm__ volatile("fmadd.s %0,%1,%2,%3" : "=f"(out) : "f"(a),"f"(b),"f"(c));
     return out;
 }
 static void candidate_cases(void) {
+    packing_ownership_cases();
     float *a=(float *)ram.data,*b=a+4096,*out=b+16384,*expected=(float *)old.data;
     static const size_t inner[]={1,16,31,32,33,169};
     __asm__ volatile("csrw fcsr,zero" ::: "memory");

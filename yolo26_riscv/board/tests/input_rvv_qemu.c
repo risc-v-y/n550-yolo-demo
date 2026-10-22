@@ -4,6 +4,7 @@
 #include "../../scalar_model.h"
 #include "model_generated.h"
 extern void platform_exit(uintptr_t code) __attribute__((noreturn));
+extern void input_progress(unsigned layer);
 static float source[MODEL_ARENA_BYTES/4];
 static uint16_t reference[AMU_INPUT_MAX_K*128] __attribute__((aligned(64)));
 static uint16_t feature[MODEL_ARENA_BYTES/4] __attribute__((aligned(64)));
@@ -97,15 +98,20 @@ void test_input_rvv(void) {
             w->shape[2],w->shape[3],node->p[0],node->p[1],node->p[2],node->p[3],1};
         size_t area=out->shape[2]*out->shape[3];
         size_t starts[]={0,out->shape[3]-1,area>128 ? area-128 : 0,area-1};
-        for(unsigned flags=0;flags<4;++flags) {
-            amu_input_flags=flags;
+        static const unsigned strategies[]={0,1,2,3,4,5,9,13,17,21,25,29};
+        for(unsigned mode=0;mode<sizeof(strategies)/sizeof(strategies[0]);++mode) {
+            amu_input_flags=strategies[mode];
+            size_t half_bytes=(a->bytes/2+63u)&~(size_t)63;
+            if(amu_input_acquire(actual.data,sizeof(actual.data),feature,half_bytes)) platform_exit(70);
             if(amu_input_prepare(&p,source,feature,sizeof(feature)/2)) platform_exit(60);
             for(unsigned j=0;j<4;++j) {
                 size_t count=area-starts[j]<128 ? area-starts[j] : 128;
                 compare_block(&p,0,starts[j],count);
             }
+            amu_input_release();
         }
         ++layers;
+        if(layers%16==0 || layers==94) input_progress(layers);
     }
     if(layers!=94) platform_exit(45);
     amu_input_flags=0;
@@ -114,17 +120,26 @@ void test_input_rvv(void) {
         pixels[i]=(uint8_t)(i*71);
         source[i]=(float)pixels[i]/255.0f;
     }
-    amu_input_bind_u8(source,pixels);
-    if(amu_input_prepare(&first,source,feature,sizeof(feature)/2)) platform_exit(61);
-    compare_block(&first,0,0,128);
-    compare_block(&first,0,207,65);
-    compare_block(&first,0,208*208-128,128);
+    static const unsigned first_modes[]={0,4,8,12,24,28};
+    for(unsigned mode=0;mode<sizeof(first_modes)/sizeof(first_modes[0]);++mode) {
+        amu_input_flags=first_modes[mode];
+        amu_input_bind_u8(source,pixels);
+        if(amu_input_acquire(actual.data,sizeof(actual.data),feature,sizeof(pixels)*2)) platform_exit(71);
+        if(amu_input_prepare(&first,source,feature,sizeof(feature)/2)) platform_exit(61);
+        compare_block(&first,0,0,128);
+        compare_block(&first,0,207,65);
+        compare_block(&first,0,208*208-128,128);
+        amu_input_release();
+    }
+    amu_input_flags=0;
     /* Reused arena address must no longer select the original UINT8 frame. */
     for(size_t i=0;i<sizeof(pixels);++i) source[i]=-2.0f;
     if(amu_input_prepare(&first,source,feature,sizeof(feature)/2)) platform_exit(69);
     compare_block(&first,0,0,128);
     amu_input_bind_u8(0,0);
     if(amu_input_prepare(&first,source,feature,sizeof(feature)/2)) platform_exit(62);
+    direct_edges();
+    amu_input_flags=AMU_INPUT_TILED;
     direct_edges();
     Conv2D p={2,3,5,7,33,3,1,2,2,1,0,1};
     compare_block(&p,1,0,12); compare_block(&p,1,11,1);

@@ -39,9 +39,15 @@ int amu_conv_input_shape(const Conv2D *p, size_t *k, size_t *oh, size_t *ow);
 /* Alternate physical input; logical graph tensors retain FP32 metadata.
  * The UINT8 binding is frame-scoped; prepare is called once per convolution. */
 extern unsigned amu_input_flags;
-enum { AMU_INPUT_PRECONVERT=1, AMU_INPUT_SPATIAL=2 };
+enum { AMU_INPUT_PRECONVERT=1, AMU_INPUT_SPATIAL=2, AMU_INPUT_TILED=4,
+       AMU_INPUT_U8_REUSE=8, AMU_INPUT_OWNED=16, AMU_INPUT_MASK=31 };
 void amu_input_bind_u8(const float *logical, const uint8_t *physical);
 int amu_input_prepare(const Conv2D *p,const float *input,uint16_t *half,size_t count);
+/* Dedicated, disjoint CLP workspaces only; synchronous AMU consumes each block
+ * before its next write. Acquire/release surround one complete convolution.
+ * Other pointers, diagnostic probes and scalar fallbacks keep per-call CBO. */
+int amu_input_acquire(uint16_t *scratch,size_t scratch_bytes,uint16_t *half,size_t half_bytes);
+void amu_input_release(void);
 /* Same bits/layout as scalar packing. On the board the caller must publish
  * the input before CLP reads (the graph boundary already does so). Output
  * cache ownership is transferred once per block; no FP16 ISA is required. */

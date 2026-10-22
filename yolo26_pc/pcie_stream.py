@@ -30,6 +30,9 @@ class StreamBackend(PCIeBackend):
         self.last_profile=None
         try:
             s=self.stream
+            # Protocol-2 reserved capability word declares supported pack bits.
+            # Zero is the original firmware's PRECONVERT|SPATIAL capability.
+            s['pack_mask']=int(s.get('reserved',0)) or 3
             if (s['input_bytes'],s['slot_bytes'],s['result_bytes'])!=(519168,519232,7336):
                 raise ValueError('Unsupported stream sizes; update host and firmware together')
             for address,size in ((s['slots'],2*s['slot_bytes']), (s['result'],s['result_bytes']),
@@ -47,7 +50,8 @@ class StreamBackend(PCIeBackend):
                                (('m',32),('n',32),('pack',0),('compute',0),('graph',0))]
         if (m not in (32,64,128) or n not in (32,64,128) or
                 max(m,n)>self.stream['max_rows'] or m*n*4>self.stream['accumulator_bytes'] or
-                pack&~3 or compute&~7 or graph&~15):
+                min(pack,compute,graph)<0 or pack&~self.stream['pack_mask'] or
+                pack&~31 or compute&~7 or graph&~15):
             raise ValueError('Configuration exceeds reported hardware capacity')
         deadline=time.monotonic()+self.infer_timeout
         self.sequence=(self.sequence+1)&0xffffffff or 1
@@ -101,6 +105,7 @@ class StreamBackend(PCIeBackend):
         if self.failed or self.active or not self.pending: raise RuntimeError('Frame cannot be committed')
         item=self.pending
         deadline=time.monotonic()+self.infer_timeout
+        commit_started=time.monotonic()
         try:
             self.link.write(MAILBOX+128,struct.pack('<16I',item['sequence'],item['slot']+1,*([0]*14)),deadline)
         except BaseException:
@@ -108,6 +113,7 @@ class StreamBackend(PCIeBackend):
             raise
         self.frame=item['frame']; self.sequence=item['sequence']
         self.active=item; self.pending=None
+        item['commit_seconds']=time.monotonic()-commit_started
         item['started']=time.monotonic(); item['deadline']=deadline
 
     def finish(self):
@@ -134,6 +140,7 @@ class StreamBackend(PCIeBackend):
                 blob=self.link.read(self.stream['profile'],24320,item['deadline'])
                 self.last_profile=decode_profile(blob,self.frame,self.session)
             self.last_timing={'upload_seconds':item['upload_seconds'],
+                'commit_seconds':item['commit_seconds'],
                 'run_roundtrip_seconds':download-item['started'],
                 'download_seconds':profile_start-download,
                 'profile_read_seconds':time.monotonic()-profile_start if self.profile else None,

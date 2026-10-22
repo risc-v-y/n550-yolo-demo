@@ -20,7 +20,7 @@ static int startup_failure;
 static int input_is_u8;
 static unsigned char root_dirty[MODEL_TENSOR_COUNT];
 int board_model_configure(unsigned m,unsigned n,unsigned pack,unsigned compute,unsigned graph) {
-    if(pack&~3u || compute&~7u || graph&~15u) return -1;
+    if(pack&~AMU_INPUT_MASK || compute&~7u || graph&~15u) return -1;
     if(amu_configure(m,n) || graph_plan(graph)) return -1;
     amu_input_flags=pack; rvv_compute_flags=compute;
     model_profile_enabled=1;

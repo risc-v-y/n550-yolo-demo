@@ -352,6 +352,8 @@ def progress():
 
 # Display and dispatch share these ordered action names; numbers are not copied.
 def launch_optimization():
+    import hashlib
+    from optimize_video import REVISION
     directory=workspace()
     with guard(directory/'control.lock') as lock:
         with guard(board_lock()): pass
@@ -362,16 +364,21 @@ def launch_optimization():
             previous=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
             if (previous/'report.json').is_file():
                 saved=json.loads((previous/'report.json').read_text(encoding='utf-8'))
-                if saved.get('baseline') and saved.get('selected_measurements') and saved.get('selected'):
+                digest=hashlib.sha256((ROOT/'firmware/demo-pcie.bin').read_bytes()).hexdigest()
+                if (saved.get('revision')==REVISION and saved.get('selection_complete') and
+                    saved.get('firmware_sha256')==digest and saved.get('baseline') and
+                    saved.get('selected_measurements') and saved.get('selected')):
                     print('Saved selection:',previous)
                     print('1 Resume 30 frames, serial upload (default; no overlapping writes)')
                     print('2 Resume serial/overlap comparison, then 30 frames')
-                    print('3 Start fresh tuning and comparison; 0 Cancel')
+                    print('3 Repeat incremental packing selection; 0 Cancel')
                     choice=input('Acceptance action [Enter: 1]: ').strip() or '1'
                     if choice=='0': return
                     if choice not in ('1','2','3'): raise ValueError('Choose 0, 1, 2 or 3')
                     if choice!='3': resume=previous
                     if choice=='1': mode='serial'
+                else:
+                    print('New packing acceptance: reuse checked accepted baseline; no old 18-candidate sweep.')
         result=Path(tempfile.mkdtemp(prefix='run-',dir=str(base)))
         log=result/'terminal.log'
         command=[sys.executable,'-u',str(ROOT/'tools/optimize_video.py'),'--output',str(result)]

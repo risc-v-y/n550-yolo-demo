@@ -8,20 +8,21 @@ firmware='demo-pcie.bin'
 explicit_image=''
 explicit_sha=''
 usage() {
-    echo 'Usage: bash tools/load_board.sh --reset-dir /path/to/s2c [--pbcopy /path/to/pbcopy] [--clp-selftest]'
+    echo 'Usage: bash tools/load_board.sh --reset-dir /path/to/s2c [--pbcopy PATH] [--mode performance|diagnostic] [--clp-selftest]'
     echo 'Acceptance only: --image FILE --sha256 DIGEST verifies a temporary baseline before reset.'
     echo 'reset1.sh holds reset; reset.sh releases reset. Upload failure keeps reset asserted.'
     echo 'CLP probe uses exclusive DDR 0xf0000000..0xf0000fff (RVV 0x10000000..0x10000fff).'
 }
 while (( $# )); do
     case "$1" in
-        --reset-dir|--pbcopy|--image|--sha256)
+        --reset-dir|--pbcopy|--image|--sha256|--mode)
             if (( $# < 2 )); then usage >&2; exit 2; fi
             case "$1" in
                 --reset-dir) reset_dir="$2";;
                 --pbcopy) pbcopy="$2";;
                 --image) explicit_image="$2";;
                 --sha256) explicit_sha="$2";;
+                --mode) case "$2" in performance) firmware='demo-fast.bin';; diagnostic) firmware='demo-pcie.bin';; *) usage >&2; exit 2;; esac;;
             esac
             shift 2 ;;
         --clp-selftest)
@@ -115,6 +116,8 @@ held=0
 echo "Deployment completed. Log: $log" | tee -a "$log"
 if [[ "$firmware" == clp-selftest.bin ]]; then
     echo 'Check CLP PASS/FAIL on UART; collect with tools/collect_board_diag.py --firmware clp-selftest --samples 1.'
+elif [[ "$firmware" == demo-fast.bin ]]; then
+    echo 'Performance firmware: UART is silent on success. Use host video --mode performance.'
 else
     echo 'Check UART startup/selftest text, then use the PCIe client to verify READY and inference.'
 fi

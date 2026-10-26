@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include "../scalar_model.h"
 #include "../model_profile.h"
+#ifndef YOLO_FAST
+#define YOLO_FAST 0
+#endif
 
 #define BOARD_PROFILE_NODES 334u
 #define BOARD_PROFILE_MAGIC UINT64_C(0x3152465036325955)
@@ -51,7 +54,13 @@ extern volatile BoardDiagnostics board_diag;
 void board_diag_init(void);
 void board_diag_commit(void);
 void board_diag_stage(unsigned stage);
+#if YOLO_FAST
+/* The performance image keeps only the current logical node, not inner-loop
+ * checkpoints. Error/trap paths still publish their final snapshot. */
+static inline void board_diag_phase(unsigned phase) { (void)phase; }
+#else
 void board_diag_phase(unsigned phase);
+#endif
 void board_diag_error(unsigned code, int detail);
 void board_diag_node(uint32_t id, const ModelNode *node, const ModelTensor *tensors);
 void board_diag_trap(uintptr_t cause, uintptr_t pc, uintptr_t value, const uintptr_t *registers);

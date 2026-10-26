@@ -4,12 +4,14 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 src="$root/yolo26_riscv"
 out="$src/build/n550-board"
 tc="${TOOLCHAIN_PREFIX:-$root/toolchain/riscv-elf-toolchain/bin/riscv64-unknown-elf}"
-image=demo-pcie
+mode=all
 if [[ "${1:-}" == --help ]]; then
-    echo 'Build N550 PCIe model ELF. Does not run hardware.'
+    echo 'Build both N550 images, or --mode performance|diagnostic. Does not run hardware.'
     exit 0
 fi
+if [[ $# == 2 && "$1" == --mode ]]; then mode="$2"; shift 2; fi
 if [[ $# != 0 ]]; then exit 2; fi
+case "$mode" in all) modes=(diagnostic performance);; diagnostic|performance) modes=("$mode");; *) exit 2;; esac
 python3 "$root/tools/check_assets.py"
 mkdir -p "$out"
 cd "$src"
@@ -19,7 +21,7 @@ flags=(-march=rv64gcv_zicbom_zifencei_xewmatrix1p0 -mabi=lp64d -mcmodel=medany -
        -O2 -g -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-strict-aliasing
        -fno-tree-vectorize -mstringop-strategy=scalar -ffp-contract=off -fno-stack-protector -fno-pic -fno-pie
        -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables
-       -DYOLO_N550_BOARD=1 -DMODEL_PRECISION=1 -DMODEL_PROFILE=1
+       -DYOLO_N550_BOARD=1 -DMODEL_PRECISION=1
        -I "$src" -I "$root/model")
 "$tc-gcc" "${flags[@]}" -c board/start.S -o "$out/start.o"
 cat > "$out/weights.S" <<EOF
@@ -35,7 +37,10 @@ EOF
 sources=(matmul.c conv2d.c activation.c basic.c basic_rvv.c scalar_model.c
          rvv_model_ops.c amu.c amu_input_rvv.c accel_model.c board/uart.c board/model_io.c board/main.c board/clp_selftest.c board/diagnostics.c
          "$root/model/model_generated.c")
-"$tc-gcc" "${flags[@]}" -DCLP_PROBE_EMBEDDED=1 -include board/coherent_rvv.h -nostdlib -nostartfiles \
+for selected_mode in "${modes[@]}"; do
+image=demo-pcie; fast=0; profile=1
+if [[ "$selected_mode" == performance ]]; then image=demo-fast; fast=1; profile=0; fi
+"$tc-gcc" "${flags[@]}" -DYOLO_FAST="$fast" -DMODEL_PROFILE="$profile" -DCLP_PROBE_EMBEDDED=1 -include board/coherent_rvv.h -nostdlib -nostartfiles \
     -Wl,--gc-sections -Wl,-Map="$out/$image.map" -T board/ddr.ld \
     "$out/start.o" "$out/weights.o" "${sources[@]}" board/pcie.c -o "$out/$image.elf"
 "$tc-objdump" -d "$out/$image.elf" > "$out/$image.disasm"
@@ -51,7 +56,7 @@ if [[ "$image" == demo-pcie ]]; then symbols=pcie-symbols.txt; fi
 "$tc-nm" -n "$out/$image.elf" > "$out/$symbols"
 "$tc-objcopy" -O binary "$out/$image.elf" "$out/$image.bin"
 sha256sum "$out/$image.elf" "$out/$image.bin" "$root/model/constants.bin" "$root/model/model_generated.c" \
-    "$root/model/model_generated.h" > "$out/sha256.txt"
+    "$root/model/model_generated.h" > "$out/$image-sha256.txt"
 "$tc-gcc" --version > "$out/compiler.txt"
 # The model contains the CLP startup test. Do not regenerate the historical
 # cached-RVV selftest; independent CLP builds use build_clp_selftest.sh.
@@ -59,3 +64,4 @@ if (( $(wc -c < "$out/$image.bin") > 12582912 )); then
     echo 'Unexpected model BIN size; check CLP NOLOAD layout' >&2; exit 1
 fi
 printf 'CLP model firmware compiled; physical board inference still requires validation.\n'
+done

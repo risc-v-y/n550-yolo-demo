@@ -38,6 +38,13 @@ def clp_final_blob():
 
 
 class FirmwareTests(unittest.TestCase):
+    def test_performance_firmware_retains_error_symbols_without_selftest(self):
+        info,symbols,prefix=diag.firmware_info(diag.ROOT,'demo-fast')
+        self.assertEqual(set(symbols),set(diag.SYMBOLS)-{'board_test_stage'})
+        self.assertEqual(symbols['board_diag']%64,0)
+        self.assertEqual(len(prefix),256)
+        self.assertEqual(info['name'],'demo-fast')
+
     def test_clp_elf_stays_in_normal_ddr_and_bin_is_small(self):
         info, symbols, prefix = diag.firmware_info(diag.ROOT, 'clp-selftest')
         self.assertEqual(set(symbols), set(diag.SYMBOLS))

@@ -9,10 +9,10 @@ from pcie_stream import StreamBackend, RequestReadbackError
 
 
 class Memory:
-    def __init__(self,version=2):
+    def __init__(self,version=2,capabilities=3):
         self.memory={}; self.writes=[]; self.corrupt_request=False; self.corrupt_output=False
-        self.closed=False; self.version=version; self.generation=0
-        info=[MAGIC,version,256,3,0xf0200000,0xf0500000,0x80020000,INPUT_BYTES,7200,832,334,0x80010000,0]
+        self.closed=False; self.version=version; self.generation=0; self.reads=[]; self.capabilities=capabilities
+        info=[MAGIC,version,256,capabilities,0xf0200000,0xf0500000,0x80020000,INPUT_BYTES,7200,832,334,0x80010000,0]
         raw=INFO.pack(*info); self.memory[MAILBOX]=raw[:60]+struct.pack('<I',zlib.crc32(raw[:60]))
         caps=[MAGIC,2,128,0xf0600000,0x80040000,0x80050000,0x80030000,519168,519232,7336,128,65536,64,30,0,0]
         raw=struct.pack('<16Q',*caps); self.memory[0x80010000]=raw[:120]+struct.pack('<Q',zlib.crc32(raw[:120]))
@@ -23,12 +23,11 @@ class Memory:
         self.generation+=1
         raw_output=bytes(7200)
         values=[MAGIC,self.version,state,0,session,frame,sequence,7200 if state==3 else 0,
-                zlib.crc32(raw_output) if state==3 else 0,0,self.generation,0,0,0]
+                zlib.crc32(raw_output) if state==3 and not self.capabilities&4 else 0,0,self.generation,0,0,0]
         raw=STATUS.pack(*values); raw=raw[:60]+struct.pack('<I',zlib.crc32(raw[:60]))
         self.memory[MAILBOX+192]=raw
-        if state==3:
-            packet=raw+struct.pack('<8Q',100,200,10,20,0,0,0,0)+raw_output
-            self.memory[0x80040000]=packet+struct.pack('<Q',zlib.crc32(packet))
+        packet=raw+struct.pack('<8Q',100,200,10,20,0,0,0,0)+raw_output
+        self.memory[0x80040000]=packet+struct.pack('<Q',0 if self.capabilities&4 else zlib.crc32(packet))
 
     def write(self,address,data,deadline):
         self.writes.append((address,len(data))); self.memory[address]=data
@@ -39,6 +38,7 @@ class Memory:
             self.status(3 if command==5 else 1,session,frame,seq)
 
     def read(self,address,size,deadline):
+        self.reads.append((address,size))
         if self.corrupt_request and address>=0xf0600000 and size==64: return bytes(64)
         raw=self.memory[address][:size]
         if self.corrupt_output and address==0x80040000: return raw[:-1]+bytes([raw[-1]^1])
@@ -48,6 +48,62 @@ class Memory:
 
 
 class StreamTests(unittest.TestCase):
+    def test_mode_mismatch_rejects_before_open_or_input_write(self):
+        for caps,mode in ((11,'performance'),(14,'diagnostic')):
+            memory=Memory(capabilities=caps)
+            with self.assertRaisesRegex(ValueError,'mode mismatch'):
+                StreamBackend(transport=memory,mode=mode)
+            self.assertEqual(memory.writes,[])
+            self.assertTrue(memory.closed)
+
+    def test_performance_skips_data_crc_readback_and_separate_status_read(self):
+        memory=Memory(capabilities=14)
+        board=StreamBackend(transport=memory,mode='performance')
+        memory.reads.clear()
+        board.upload(bytes([8])*519168,1)
+        self.assertEqual(memory.reads,[])
+        request=memory.memory[board.stream['slots']][:64]
+        self.assertEqual(struct.unpack_from('<I',request,28)[0],0)
+        self.assertEqual(struct.unpack_from('<I',request,60)[0],zlib.crc32(request[:60]))
+        board.begin()
+        # A payload bit flip is deliberately not a transport error in this mode.
+        packet=bytearray(memory.memory[0x80040000]); packet[128]=1
+        memory.memory[0x80040000]=bytes(packet)
+        self.assertEqual(board.finish()[0],1)
+        self.assertEqual(memory.reads,[(0x80040000,7336)])
+        self.assertIsNone(board.last_timing['cycles'])
+        self.assertGreaterEqual(board.last_timing['frame_seconds'],0)
+
+    def test_combined_poll_rejects_corrupt_control_and_diagnostic_payload(self):
+        for caps,mode,offset,pattern in ((14,'performance',0,'header'),(11,'diagnostic',128,'CRC')):
+            memory=Memory(capabilities=caps); board=StreamBackend(transport=memory,mode=mode)
+            board.upload(bytes(519168),1); board.begin()
+            packet=bytearray(memory.memory[0x80040000]); packet[offset]^=1
+            memory.memory[0x80040000]=bytes(packet); memory.reads.clear()
+            with self.assertRaisesRegex(ValueError,pattern): board.finish()
+            self.assertTrue(board.failed)
+            self.assertEqual(len(memory.reads),3)
+
+    def test_old_result_waits_and_board_error_stops_without_rewrite(self):
+        memory=Memory(capabilities=14); board=StreamBackend(transport=memory,mode='performance')
+        old=memory.memory[0x80040000]
+        board.upload(bytes(519168),1); board.begin()
+        done=memory.memory[0x80040000]; memory.memory[0x80040000]=old
+        read=memory.read
+        def advance(address,size,deadline):
+            data=read(address,size,deadline)
+            if address==0x80040000: memory.memory[address]=done
+            return data
+        memory.read=advance; memory.reads.clear()
+        self.assertEqual(len(board.finish()),7200)
+        self.assertEqual(len(memory.reads),2)
+        board.upload(bytes(519168),2); board.begin()
+        memory.read=read; memory.status(4,board.session,board.frame,board.sequence)
+        writes=len(memory.writes)
+        with self.assertRaisesRegex(RuntimeError,'Board PCIe error'): board.finish()
+        self.assertEqual(len(memory.writes),writes)
+        with self.assertRaises(RuntimeError): board.upload(bytes(519168),3)
+
     def test_pipeline_slot_order_and_single_packet(self):
         memory=Memory(); board=StreamBackend(transport=memory)
         board.configure({'m':128,'n':64})

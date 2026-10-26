@@ -80,6 +80,7 @@ def repeatable_improvement(baseline, candidate, metric='model_cycles'):
 
 
 def report_pages(report):
+    if report.get('revision')=='dual-image-v1': return mode_pages(report)
     stages = report.get('stages', {})
     frames = report.get('frames', [])
     failure=report.get('failure',{})
@@ -141,4 +142,50 @@ def report_pages(report):
          'Intervals include scheduling; overlapping stages must not be added.',
          'Display submission does not measure remote screen presentation.',
          'This validates the sampled video, not all possible inputs.']]
+    return ['\n'.join(line[:80] for line in page[:22]) for page in pages]
+
+
+def mode_pages(report):
+    runs=report.get('runs',{}); fast=runs.get('performance',{}); diag=runs.get('diagnostic',{})
+    rows=fast.get('results',[]); checks=report.get('frames',[])
+    def timing(key):
+        values=[r[key] for r in rows if isinstance(r.get(key),(int,float))]
+        return ('{:.4f} / {:.4f} / {}'.format(sum(values)/len(values),max(values),len(values))
+                if values else 'NOT COLLECTED')
+    profiles=[r['board_profile'] for r in diag.get('results',[]) if r.get('board_profile')]
+    phases=[]
+    if profiles:
+        phases=['{}: {:.0f} cycles'.format(k,sum(p['phases'][k]['ticks'] for p in profiles)/len(profiles))
+                for k in profiles[0].get('phases',{})]
+    pages=[['MODE ACCEPTANCE PAGE=1/3','Status: '+report.get('status','unknown'),
+            'Stage: '+report.get('stage','unknown'),'Fixed config: '+str(report.get('selected',{})),
+            'Performance image: '+report.get('firmware_sha256','unknown')[:16],
+            'Performance completed={} recorded={}'.format(fast.get('completed_frames',0),fast.get('recorded_frames',0)),
+            'Golden/display exact: {}/{}'.format(sum(c.get('different_words')==0 and c.get('display_equal') for c in checks),len(checks)),
+            'Seconds: mean / max / count; actual demo path.',
+            'Frame upload -> result: '+timing('frame_seconds'),
+            'Completed interval: '+timing('completed_interval_seconds'),
+            'Display submission: '+timing('display_submit_seconds'),
+            'Cold start / OPEN seconds: {} / {}'.format(fast.get('cold_start_seconds','pending'),fast.get('open_configure_seconds','pending')),
+            'No payload CRC, node timing or normal UART in performance image.',
+            'Control CRC, session/frame/length/errors/timeouts remain.',
+            'Golden and evidence export run after timing ends.'],
+           ['MODE ACCEPTANCE PAGE=2/3','Diagnostic image: '+report.get('diagnostic_sha256','unknown')[:16],
+            'Diagnostic completed={} recorded={} full profiles={}'.format(diag.get('completed_frames',0),diag.get('recorded_frames',0),len(profiles)),
+            'Diagnostic timing below is NOT the performance image timing.']+phases+
+           ['Performance CPU cycles: NOT COLLECTED (compiled out).',
+            'Diagnostic mode retains payload CRC/readback/UART/node profiles.',
+            'Same weights, model arithmetic and accepted config in both images.'],
+           ['MODE ACCEPTANCE PAGE=3/3','Upload: serial; no overlap or parameter sweep.',
+            'Diagnostic: 3 frames. Performance: 30 frames.',
+            'All 1800 FP32 words and drawing pixels checked, no tolerance.',
+            'Changed FP32 words: '+(str(sum(c['different_words'] for c in checks)) if checks else 'NOT CHECKED'),
+            'MP4 decoded frames: diagnostic={} performance={}'.format(diag.get('decoded_mp4_frames','pending'),fast.get('decoded_mp4_frames','pending'))]+
+           textwrap.wrap('Error: '+str(report.get('error','none')),80)[:7]+
+           ['Error details: report.json and diagnostic/performance directories.',
+            'Successful evidence is removed; MP4 and summaries remain.',
+            'Errors stop the run; no input rewrite or automatic frame retry.',
+            'A diagnostic rerun cannot reconstruct past transient failures.',
+            'Display submission does not measure remote X11 presentation.',
+            'Passing validates these sampled inputs only.']]
     return ['\n'.join(line[:80] for line in page[:22]) for page in pages]

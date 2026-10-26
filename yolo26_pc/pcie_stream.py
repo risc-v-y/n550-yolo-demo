@@ -7,7 +7,7 @@ frame is retried here. Status/result CRCs reject partial publication.
 import struct
 import time
 import zlib
-from pcie_backend import PCIeBackend, PBTools, MAILBOX, READY, DONE, checked, STATUS, STATUS_KEYS
+from pcie_backend import PCIeBackend, PBTools, MAILBOX, MAGIC, READY, DONE, ERROR, checked, STATUS, STATUS_KEYS
 
 
 class RequestReadbackError(ValueError):
@@ -21,7 +21,9 @@ class RequestReadbackError(ValueError):
 class StreamBackend(PCIeBackend):
     required_version=2
 
-    def __init__(self,*args,profile=False,**kwargs):
+    def __init__(self,*args,profile=False,mode='diagnostic',**kwargs):
+        if mode=='performance' and profile: raise ValueError('Performance firmware has no node profile')
+        kwargs['mode']=mode
         super().__init__(*args,**kwargs)
         self.profile=profile
         self.options=0 if profile else 16
@@ -75,12 +77,12 @@ class StreamBackend(PCIeBackend):
         started=time.monotonic()
         deadline=started+self.infer_timeout
         sequence=(self.sequence+1)&0xffffffff or 1
-        body=struct.pack('<QQ11I',self.session,frame,5,sequence,len(data),zlib.crc32(data),self.options,*([0]*6))
+        body=struct.pack('<QQ11I',self.session,frame,5,sequence,len(data),0 if self.fast else zlib.crc32(data),self.options,*([0]*6))
         body+=struct.pack('<I',zlib.crc32(body))
         address=self.stream['slots']+slot*self.stream['slot_bytes']
         try:
             self.link.write(address,body+data,deadline)
-            actual=self.link.read(address,64,deadline)
+            actual=body if self.fast else self.link.read(address,64,deadline)
             if actual!=body:
                 active=self.active['frame'] if self.active else None
                 details={'type':'request_readback_mismatch','stage':'input_header_readback',
@@ -95,7 +97,7 @@ class StreamBackend(PCIeBackend):
                              struct.unpack_from('<I',actual,60)[0]==zlib.crc32(actual[:60])}
                 self.diagnostic(details)
                 raise RequestReadbackError(details)
-            self.pending={'frame':frame,'sequence':sequence,'slot':slot,
+            self.pending={'frame':frame,'sequence':sequence,'slot':slot,'frame_started':started,
                           'upload_seconds':time.monotonic()-started}
         except BaseException:
             self.failed=True
@@ -116,21 +118,59 @@ class StreamBackend(PCIeBackend):
         item['commit_seconds']=time.monotonic()-commit_started
         item['started']=time.monotonic(); item['deadline']=deadline
 
+    def _result_packet(self,item):
+        """The result status line is published last; one read obtains DONE+data.
+        An old packet is ignored, never accepted for the new committed frame.
+        """
+        bad=0
+        while True:
+            self._check(item['deadline'])
+            tick=time.monotonic()
+            packet=self.link.read(self.stream['result'],7336,item['deadline'])
+            try:
+                if len(packet)!=7336: raise ValueError('Result packet length mismatch')
+                record=dict(zip(STATUS_KEYS,STATUS.unpack(checked(packet[:64]))))
+            except ValueError:
+                bad+=1
+                if bad>=3: raise ValueError('Repeated incomplete result header')
+                continue
+            if record['magic']!=MAGIC or record['version']!=2 or record['state'] not in range(6):
+                raise ValueError('Invalid result status; firmware may have restarted')
+            self.last_status=record
+            if record['state']==ERROR and (record['sequence']==self.sequence or record['error'] not in range(0x40,0x45)):
+                self._snapshot(item['deadline'])
+                raise RuntimeError('Board PCIe error: {}; diagnostic={}'.format(record,self.last_diagnostic))
+            if record['sequence']==self.sequence:
+                if (record['session'],record['frame'])!=(self.session,self.frame):
+                    raise ValueError('PCIe result session/frame mismatch')
+                if record['state']==DONE:
+                    if not self.fast and struct.unpack_from('<Q',packet,7328)[0]!=zlib.crc32(packet[:7328]):
+                        bad+=1
+                        if bad>=3: raise ValueError('Repeated result packet CRC mismatch')
+                        continue
+                    return record,packet,tick
+            bad=0
+            # A slow vendor call already throttles polling; do not add 0.1s.
+            self.stop.wait(max(0,min(self.poll_interval-(time.monotonic()-tick),item['deadline']-time.monotonic())))
+
     def finish(self):
         if self.failed or not self.active: raise RuntimeError('No active frame')
         item=self.active
         try:
-            status=self._wait(DONE,item['deadline'])
-            download=time.monotonic()
-            packet=self.link.read(self.stream['result'],7336,item['deadline'])
-            if struct.unpack_from('<Q',packet,7328)[0]!=zlib.crc32(packet[:7328]):
+            if self.capabilities&8:
+                status,packet,download=self._result_packet(item)
+            else:
+                status=self._wait(DONE,item['deadline'])
+                download=time.monotonic()
+                packet=self.link.read(self.stream['result'],7336,item['deadline'])
+            if not self.fast and struct.unpack_from('<Q',packet,7328)[0]!=zlib.crc32(packet[:7328]):
                 raise ValueError('Result packet CRC mismatch')
             record=dict(zip(STATUS_KEYS,STATUS.unpack(checked(packet[:64]))))
             if record!=status: raise ValueError('Result packet does not match completed frame')
             raw=packet[128:7328]
-            if record['output_bytes']!=7200 or zlib.crc32(raw)!=record['output_crc']:
+            if record['output_bytes']!=7200 or (not self.fast and zlib.crc32(raw)!=record['output_crc']):
                 raise ValueError('Result size/CRC mismatch')
-            self.validate_result(raw)
+            if not self.fast: self.validate_result(raw)
             cycles=dict(zip('model_cycles service_cycles input_crc_cycles output_cycles input_pack bias_dequant profiled configuration'.split(),struct.unpack_from('<8Q',packet,64)))
             if bool(cycles['profiled'])!=self.profile: raise ValueError('Profile option was not honored')
             self.last_profile=None
@@ -145,6 +185,14 @@ class StreamBackend(PCIeBackend):
                 'download_seconds':profile_start-download,
                 'profile_read_seconds':time.monotonic()-profile_start if self.profile else None,
                 'cycles':cycles}
+            if self.fast:
+                self.last_timing={'frame_seconds':time.monotonic()-item['frame_started'],
+                                 'cycles':None,'profile_read_seconds':None}
+            elif self.capabilities&8:
+                self.last_timing['result_wait_seconds']=profile_start-item['started']
+                self.last_timing['completion_read_seconds']=profile_start-download
+                self.last_timing['run_roundtrip_seconds']=None
+                self.last_timing['download_seconds']=None
             self.active=None
             return raw
         except BaseException:

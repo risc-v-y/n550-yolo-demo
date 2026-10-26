@@ -43,7 +43,7 @@ class MenuRoutingTests(unittest.TestCase):
         result,text,_=self.invoke(['0'])
         numbers=[line.split()[0] for line in text.splitlines() if line[:1].isdigit()]
         self.assertEqual(numbers,[str(i) for i in range(1,12)]+['0'])
-        self.assertIn('3 Run 3 video frames',text)
+        self.assertIn('3 Performance demo: 3 frames',text)
         self.assertIn('5 Saved video report',text)
         self.assertNotIn('Saved first difference',text)
         self.assertNotIn('Start BUS capture',text)
@@ -136,33 +136,16 @@ class MenuTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError): host.update()
                 run.assert_not_called()
 
-    def test_optimization_continuation_reuses_previous_selection_and_default_serial(self):
-        import hashlib
-        from optimize_video import REVISION
-        (self.root/'firmware').mkdir()
-        (self.root/'firmware/demo-pcie.bin').write_bytes(b'firmware')
-        base=self.root/'yolo26_pc/outputs/optimization'; previous=base/'previous'
-        previous.mkdir(parents=True)
-        (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
-        (previous/'report.json').write_text(json.dumps({'status':'failed','baseline':[1],
-            'revision':REVISION,'selection_complete':True,
-            'firmware_sha256':hashlib.sha256(b'firmware').hexdigest(),
-            'selected_measurements':[1],'selected':{'m':128}}))
-        for answer,mode in (('', 'serial'),('2','auto')):
-            (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
-            with patch('builtins.input',return_value=answer), \
-                 patch('host_control.subprocess.Popen') as popen:
-                popen.return_value.pid=123
-                host.launch_optimization()
-            command=popen.call_args.args[0]
-            self.assertEqual(command[command.index('--resume')+1],str(previous))
-            self.assertEqual(command[command.index('--upload-mode')+1],mode)
-            self.assertNotEqual(command[command.index('--output')+1],str(previous))
-            self.assertTrue(popen.call_args.kwargs['start_new_session'])
-        with patch('builtins.input',return_value='0'),patch('host_control.subprocess.Popen') as popen:
-            (base/'latest.json').write_text(json.dumps({'directory':str(previous)}))
+    def test_two_image_acceptance_launches_detached_without_parameter_selection(self):
+        with patch('builtins.input',side_effect=AssertionError('No parameter sweep')), \
+             patch('host_control.subprocess.Popen') as popen:
+            popen.return_value.pid=123
             host.launch_optimization()
-            popen.assert_not_called()
+        command=popen.call_args.args[0]
+        self.assertIn(str(self.root/'tools/verify_modes.py'),command)
+        self.assertNotIn('--resume',command)
+        self.assertNotIn('--upload-mode',command)
+        self.assertTrue(popen.call_args.kwargs['start_new_session'])
 
     def test_old_passed_run_starts_incremental_acceptance_without_video_only_resume(self):
         (self.root/'firmware').mkdir()
@@ -287,7 +270,7 @@ class MenuTests(unittest.TestCase):
             host.video(check=True)
             self.assertEqual(run.call_args.args[0][-2:],['--check','--no-display'])
             host.video()
-            self.assertEqual(run.call_args.args[0][-2:],[str(self.root/'tools/host_video.py'),'--load'])
+            self.assertEqual(run.call_args.args[0][-3:],['--load','--mode','performance'])
         with host.guard(host.workspace()/'control.lock'),patch('host_control.subprocess.run') as run:
             with self.assertRaises(RuntimeError): host.video()
             run.assert_not_called()
@@ -295,7 +278,7 @@ class MenuTests(unittest.TestCase):
     def test_continuous_video_defaults_and_custom_headless_options(self):
         with patch('builtins.input',side_effect=['','','']),patch('host_control.subprocess.run') as run:
             host.video(continuous=True)
-        self.assertEqual(run.call_args.args[0][-3:],['--load','--max-frames','30'])
+        self.assertEqual(run.call_args.args[0][-5:],['--load','--mode','performance','--max-frames','30'])
         source=self.root/'my video.mp4'; source.touch()
         with patch('builtins.input',side_effect=[str(source),'0','n']),patch('host_control.subprocess.run') as run:
             host.video(continuous=True)

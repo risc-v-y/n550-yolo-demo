@@ -1,5 +1,8 @@
 #include "amu.h"
 #include "amu_half_rvv.h"
+#ifndef YOLO_FAST
+#define YOLO_FAST 0
+#endif
 #ifdef YOLO_N550_BOARD
 #include "board/cache.h"
 #include "board/memory.h"
@@ -281,7 +284,7 @@ published:
 #endif
     PACK_MARK(PACK_BLOCK_DONE,columns,k,0);
     *packed=(AmuPackedInput){storage,k,columns,bytes};
-    ++amu_rvv_input_blocks;
+    if(!YOLO_FAST) ++amu_rvv_input_blocks;
 #undef PACK_MARK
     return 0;
 invalid:
@@ -318,7 +321,7 @@ int amu_pack_conv_input_rvv(const Conv2D *p,const float *input,size_t batch,
     }
 #ifdef YOLO_N550_BOARD
     board_diag_phase(PHASE_AMU_PACK);
-    if((board_diag.options&DIAG_TRACE) && !board_diag.node && !first &&
+    if(!YOLO_FAST && (board_diag.options&DIAG_TRACE) && !board_diag.node && !first &&
        board_pack_begin(first,columns,k,input,0,storage,0))
         return pack_input(p,input,batch,first,columns,storage,packed,k,ow,1);
 #endif

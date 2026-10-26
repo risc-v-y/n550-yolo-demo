@@ -20,7 +20,7 @@ static void stream_capabilities(void) {
         .slots=(uintptr_t)input_slots,.result=(uintptr_t)&stream_result,.profile=(uintptr_t)&board_profile,
         .snapshot=(uintptr_t)&board_node_snapshot,.input_bytes=STREAM_INPUT_BYTES,
         .slot_bytes=sizeof(PcieInputSlot),.result_bytes=sizeof(stream_result),.max_rows=amu_capacity_rows,
-        .accumulator_bytes=acc,.vector_bytes=vector,.option_mask=30,.reserved=AMU_INPUT_MASK};
+        .accumulator_bytes=acc,.vector_bytes=vector,.option_mask=YOLO_FAST ? DIAG_LITE : 30,.reserved=AMU_INPUT_MASK};
     stream_info.crc=board_crc32(&stream_info,offsetof(PcieStreamInfo,crc));
     board_clean(&stream_info,sizeof(stream_info));
 }
@@ -49,16 +49,22 @@ static void publish(unsigned state,unsigned error,int detail) {
     ++status.generation;
     status.crc=board_crc32(&status,60);
 #ifdef YOLO_N550_BOARD
-    if(stream_active && state==PCIE_DONE) {
+    {
+        /* Payload is visible before the final CRC-protected status line.
+         * Fast firmware omits data CRC, never control/header CRC. */
+        PcieStatus previous=stream_result.status;
         stream_result.status=status;
-        stream_result.crc=board_crc32(&stream_result,offsetof(PcieStreamResult,crc));
-        board_clean(&stream_result,sizeof(stream_result));
+        stream_result.crc=YOLO_FAST ? 0 : board_crc32(&stream_result,offsetof(PcieStreamResult,crc));
+        stream_result.status=previous;
+        board_clean((char *)&stream_result+64,sizeof(stream_result)-64);
+        copy_to(&stream_result.status,&status,64);
+        board_clean(&stream_result.status,64);
     }
 #endif
     copy_to(&board_pcie_mailbox.status,&status,sizeof(status));
     board_clean((const void *)&board_pcie_mailbox.status,sizeof(status));
 #ifdef YOLO_N550_BOARD
-    if(state==PCIE_READY || state==PCIE_DONE || state==PCIE_ERROR) {
+    if(state==PCIE_ERROR || (!YOLO_FAST && (state==PCIE_READY || state==PCIE_DONE))) {
         board_uart_text("[YOLO] PCIE state="); board_uart_u64(state);
         board_uart_text(" session="); board_uart_u64(status.session);
         board_uart_text(" sequence="); board_uart_u64(status.sequence);
@@ -81,7 +87,8 @@ void board_pcie_init(void) {
         .reserved2=(uint32_t)(uintptr_t)&board_node_snapshot};
     info.crc=board_crc32(&info,60);
 #ifdef YOLO_N550_BOARD
-    info.version=2; info.reserved|=PCIE_HAS_STREAM;
+    info.version=2;
+    info.reserved=PCIE_HAS_STREAM|PCIE_RESULT_POLL|(YOLO_FAST ? PCIE_FAST_IMAGE : PCIE_HAS_CAPTURE);
     info.reserved2=(uint32_t)(uintptr_t)&stream_info;
     info.crc=board_crc32(&info,60);
 #endif
@@ -116,7 +123,8 @@ static void read_request(PcieRequest *request) {
 }
 static int valid_request(const PcieRequest *request,uint32_t sequence) {
     return request->sequence==sequence && request->crc==board_crc32(request,60) &&
-           request->session && !(request->options&~(DIAG_TRACE|DIAG_FINITE|PCIE_CAPTURE|DIAG_LITE));
+           request->session && !(request->options&~(DIAG_TRACE|DIAG_FINITE|PCIE_CAPTURE|DIAG_LITE)) &&
+           (!YOLO_FAST || request->options==DIAG_LITE);
 }
 void board_pcie_node_begin(uint32_t id,const ModelNode *node,const ModelTensor *tensors,
                            unsigned char *arena,const unsigned char *constants) {
@@ -241,6 +249,7 @@ void board_pcie_poll(void) {
         publish(PCIE_READY,0,0); return;
     }
     int compact=request.command==PCIE_RUN_U8;
+    if(YOLO_FAST && !compact) {publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;}
     if(compact && (!slot || request.input_bytes!=STREAM_INPUT_BYTES || (request.options&PCIE_CAPTURE))) {
         publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;
     }
@@ -252,9 +261,9 @@ void board_pcie_poll(void) {
         publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;
     }
     status.frame=request.frame;
-    uint64_t service_start=board_diag_ticks();
+    uint64_t service_start=YOLO_FAST ? 0 : board_diag_ticks();
     publish(PCIE_BUSY,0,0);
-    uint64_t crc_start=board_diag_ticks();
+    uint64_t crc_start=YOLO_FAST ? 0 : board_diag_ticks();
     const void *input_data=board_model_input();
     size_t input_bytes=board_model_input_size();
 #ifdef YOLO_N550_BOARD
@@ -262,9 +271,9 @@ void board_pcie_poll(void) {
     board_model_set_u8(compact ? input_data : 0);
 #endif
     board_finish_write(input_data,input_bytes);
-    uint32_t crc=board_crc32(input_data,input_bytes);
-    uint64_t crc_cycles=board_diag_ticks()-crc_start;
-    if(crc!=request.input_crc) {
+    uint32_t crc=YOLO_FAST ? 0 : board_crc32(input_data,input_bytes);
+    uint64_t crc_cycles=YOLO_FAST ? 0 : board_diag_ticks()-crc_start;
+    if(!YOLO_FAST && crc!=request.input_crc) {
         board_diag.frame=request.frame; board_diag.observed=crc; board_diag.expected=request.input_crc;
         board_diag_error(PCIE_BAD_INPUT,0);
         board_prepare_write(board_model_input(),board_model_input_size());
@@ -272,17 +281,17 @@ void board_pcie_poll(void) {
     }
     board_diag.frame=request.frame; board_diag.options=request.options;
     int result=board_model_run();
-    uint64_t output_start=board_diag_ticks();
+    uint64_t output_start=YOLO_FAST ? 0 : board_diag_ticks();
     if(!result) {
         status.output_bytes=board_model_output_size();
-        status.output_crc=board_crc32(board_model_output(),status.output_bytes);
+        status.output_crc=YOLO_FAST ? 0 : board_crc32(board_model_output(),status.output_bytes);
         board_clean(board_model_output(),status.output_bytes);
     }
     /* Model arena aliases its tensors. Relinquish input lines again before
      * DONE; host may reuse them only AFTER it has downloaded the old output. */
     board_prepare_write(board_model_input(),board_model_input_size());
-    board_diag_commit();
-    if(!result && board_profile.magic==BOARD_PROFILE_MAGIC) {
+    if(!YOLO_FAST || result) board_diag_commit();
+    if(!YOLO_FAST && !result && board_profile.magic==BOARD_PROFILE_MAGIC) {
         board_profile.reserved=status.session;
         board_profile.input_crc_cycles=crc_cycles;
         board_profile.output_cycles=board_diag_ticks()-output_start;
@@ -293,6 +302,7 @@ void board_pcie_poll(void) {
 #ifdef YOLO_N550_BOARD
     if(compact && !result) {
         copy_to(stream_result.candidates,board_model_output(),7200);
+        if(!YOLO_FAST) {
         stream_result.model=board_profile.model_cycles;
         stream_result.service=board_diag_ticks()-service_start;
         stream_result.input_crc=crc_cycles;
@@ -300,6 +310,7 @@ void board_pcie_poll(void) {
         stream_result.pack=board_profile.phases[PROFILE_INPUT_PACK].ticks;
         stream_result.bias=board_profile.phases[PROFILE_BIAS_DEQUANT].ticks;
         stream_result.profiled=!(request.options&DIAG_LITE);
+        }
         stream_result.configuration=stream_configuration;
         /* Relinquish only the consumed slot. The other slot may currently be
          * written by host; no cache operation or CPU store touches it. */

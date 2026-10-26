@@ -4,7 +4,8 @@
 
 ## 文字日志
 
-- 默认：启动配置、AMU 初始化、自测、权重准备、READY、每帧 RUN/DONE、每32个节点一次进度、PCIe状态发布和错误。
+- 性能版`demo-fast`正常无UART进度，扩展启动自测和CPU计时关闭；异常/trap才发布最小快照和打印。保留当前节点号，但阶段进度可能未发布，不能用其旧快照判断实时执行位置。需要排障选菜单8→7加载诊断版；两者详细边界见[MODEL 4.6](MODEL.md#next-optimizations)。
+- 诊断版`demo-pcie`：启动配置、AMU初始化、自测、权重准备、READY、每帧RUN/DONE、每32个节点进度、PCIe状态和错误。
 - `--board-trace`：每个节点开始/结束、输入输出编号/类型/形状和 `node_cycles`。参数通过 PCIe 配置，文字从 UART 输出。
 - `--check-intermediates`：额外扫描中间 FP32 输出的 NaN/Inf；默认已检查输入和最终输出。这不等于完整数值精度验证。
 

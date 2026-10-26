@@ -137,7 +137,7 @@ def normal_replay():
     subprocess.run([sys.executable,str(ROOT/'tools/normal_replay.py'),'--load'],cwd=ROOT,check=True)
 
 
-def video(check=False, continuous=False):
+def video(check=False, continuous=False, diagnostic=False):
     options=[]
     if continuous:
         source=input('Video path [Enter: bundled sample]: ').strip().strip('"')
@@ -154,7 +154,7 @@ def video(check=False, continuous=False):
     with guard(workspace()/'control.lock'):
         command=[sys.executable,str(ROOT/'tools/host_video.py')]
         if check: command+=['--check','--no-display']
-        else: command+=['--load']+options
+        else: command+=['--load','--mode','diagnostic' if diagnostic else 'performance']+options
         subprocess.run(command,cwd=ROOT,check=True)
 
 
@@ -352,45 +352,20 @@ def progress():
 
 # Display and dispatch share these ordered action names; numbers are not copied.
 def launch_optimization():
-    import hashlib
-    from optimize_video import REVISION
     directory=workspace()
     with guard(directory/'control.lock') as lock:
         with guard(board_lock()): pass
         base=ROOT/'yolo26_pc/outputs/optimization'; base.mkdir(parents=True,exist_ok=True)
-        resume=None; mode='auto'
-        pointer=base/'latest.json'
-        if pointer.is_file():
-            previous=Path(json.loads(pointer.read_text(encoding='utf-8'))['directory'])
-            if (previous/'report.json').is_file():
-                saved=json.loads((previous/'report.json').read_text(encoding='utf-8'))
-                digest=hashlib.sha256((ROOT/'firmware/demo-pcie.bin').read_bytes()).hexdigest()
-                if (saved.get('revision')==REVISION and saved.get('selection_complete') and
-                    saved.get('firmware_sha256')==digest and saved.get('baseline') and
-                    saved.get('selected_measurements') and saved.get('selected')):
-                    print('Saved selection:',previous)
-                    print('1 Resume 30 frames, serial upload (default; no overlapping writes)')
-                    print('2 Resume serial/overlap comparison, then 30 frames')
-                    print('3 Repeat incremental packing selection; 0 Cancel')
-                    choice=input('Acceptance action [Enter: 1]: ').strip() or '1'
-                    if choice=='0': return
-                    if choice not in ('1','2','3'): raise ValueError('Choose 0, 1, 2 or 3')
-                    if choice!='3': resume=previous
-                    if choice=='1': mode='serial'
-                else:
-                    print('New packing acceptance: reuse checked accepted baseline; no old 18-candidate sweep.')
         result=Path(tempfile.mkdtemp(prefix='run-',dir=str(base)))
         log=result/'terminal.log'
-        command=[sys.executable,'-u',str(ROOT/'tools/optimize_video.py'),'--output',str(result)]
-        command+=['--upload-mode',mode]
-        if resume is not None: command+=['--resume',str(resume)]
+        command=[sys.executable,'-u',str(ROOT/'tools/verify_modes.py'),'--output',str(result)]
         with log.open('wb') as stream:
             child=subprocess.Popen(command,cwd=ROOT,stdin=subprocess.DEVNULL,stdout=stream,
                                    stderr=subprocess.STDOUT,start_new_session=True,pass_fds=(lock.fileno(),))
         save_json(base/'latest.json',{'directory':str(result)})
         save_json(directory/'last-launch.json',{'pid':child.pid,'result':str(result),'log':str(log)})
-    print('Optimization acceptance started in background. SSH disconnect will not stop it.')
-    if resume is not None: print('Video-only continuation; firmware/input/profile checks run before loading.')
+    print('Two-image acceptance started: diagnostic 3 frames, performance 30 frames.')
+    print('Fixed accepted config; serial upload. SSH disconnect will not stop it.')
     print('Main menu 11: report; Diagnostics > 1: progress. Output:',result)
     return child
 
@@ -410,14 +385,14 @@ def optimization_pages():
 MAIN_MENU=(
     ('update','Update repository'),
     ('video-check','Check host video processing (no board access)'),
-    ('video','Run 3 video frames (pipeline, display + MP4 + summary)'),
-    ('video-continuous','Run selected video (default 30 frames; 0 = entire video)'),
+    ('video','Performance demo: 3 frames (display + MP4; errors only)'),
+    ('video-continuous','Performance demo: selected video (default 30 frames)'),
     ('video-report','Saved video report / golden / PNGs (offline)'),
     ('performance','Timing summary / slowest nodes (offline, 3 pages)'),
     ('accuracy','Detection quality comparisons (offline PNGs)'),
     ('diagnostics','Diagnostics submenu'),
     ('cleanup','Clean disposable files (no board access)'),
-    ('optimize','Whole-pipeline acceptance / automatic tuning (background)'),
+    ('optimize','Verify both images: diagnostic 3 + performance 30 frames (background)'),
     ('optimization-report','Whole-pipeline acceptance report (3 pages)'),
 )
 DIAGNOSTIC_MENU=(
@@ -427,6 +402,7 @@ DIAGNOSTIC_MENU=(
     ('restore','Reload normal demo firmware'),
     ('pack-probe','First input-block probe (preserve original input)'),
     ('normal-replay','Load current firmware + preserved-input replay/golden/cycles'),
+    ('video-diagnostic','Diagnostic video: CRC + UART progress + full node timing'),
 )
 
 
@@ -438,6 +414,7 @@ def action_handlers():
             'full-check':launch_full,'full-report':full_pages,'restore':restore,
             'pack-probe':pack_probe,
             'normal-replay':normal_replay,
+            'video-diagnostic':lambda:video(continuous=True,diagnostic=True),
             'optimize':launch_optimization,'optimization-report':optimization_pages,
             # Retain named developer commands without duplicating menu entries.
             'capture':launch,'status':lambda:pages('status'),

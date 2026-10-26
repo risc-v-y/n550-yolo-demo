@@ -47,6 +47,7 @@ class PBTools:
         self.stop=stop or threading.Event()
         self.timeout=timeout
         self.diagnostic=diagnostic or (lambda event: None)
+        self.emit_success=diagnostic is not None
         self.commands=[]
         for command in (pbcopy,pbload):
             resolved=shutil.which(command)
@@ -100,7 +101,7 @@ class PBTools:
             raise
         text=output.decode('utf-8',errors='replace')
         failed=bool(process.returncode or TOOL_FAILURE.search(text))
-        self.diagnostic({'type':'pcie_tool','message':f'{Path(command).name}: exit {process.returncode}',
+        if failed or self.emit_success: self.diagnostic({'type':'pcie_tool','message':f'{Path(command).name}: exit {process.returncode}',
                          'argument':argument,'elapsed_seconds':time.monotonic()-started,
                          'returncode':process.returncode,'output':text if failed else text[-8192:]})
         if failed:
@@ -164,18 +165,21 @@ class PCIeBackend:
 
     def __init__(self, pbcopy='pbcopy', pbload='pbload', stop=None, infer_timeout=900,
                  progress=None, diagnostic=None, transport=None, tool_timeout=30,
-                 poll_interval=.1, check_finite=False, trace=False, capture=False):
+                 poll_interval=.1, check_finite=False, trace=False, capture=False, mode='diagnostic'):
         if infer_timeout<=0 or tool_timeout<=0 or poll_interval<=0:
             raise ValueError('PCIe timeouts and polling interval must be positive')
         self.stop=stop or threading.Event()
         self.infer_timeout=infer_timeout
         self.poll_interval=poll_interval
+        if mode not in ('performance','diagnostic'): raise ValueError('Unknown firmware mode')
+        self.fast=mode=='performance'
+        if self.fast and (check_finite or trace or capture): raise ValueError('Diagnostics require diagnostic firmware')
         self.progress=progress or (lambda text: None)
         self.diagnostic=diagnostic or (lambda event: None)
-        self.link=transport or PBTools(pbcopy,pbload,self.stop,tool_timeout,self.diagnostic)
+        self.link=transport or PBTools(pbcopy,pbload,self.stop,tool_timeout,diagnostic)
         self.session=secrets.randbits(64) or 1
         self.frame=0
-        self.options=(4 if check_finite else 0) | (2 if trace else 0) | (8 if capture else 0)
+        self.options=16 if self.fast else (4 if check_finite else 0) | (2 if trace else 0) | (8 if capture else 0)
         self.failed=False
         self.last_timing={}
         self.last_diagnostic=None
@@ -184,6 +188,9 @@ class PCIeBackend:
         try:
             deadline=time.monotonic()+infer_timeout
             values=INFO.unpack(checked(self.link.read(MAILBOX,64,deadline)))
+            self.capabilities=values[3]
+            if bool(self.capabilities&4)!=self.fast:
+                raise ValueError('Firmware mode mismatch; load '+('demo-fast.bin' if self.fast else 'demo-pcie.bin'))
             if ((values[0],values[2])!=(MAGIC,256) or values[1] not in (1,2) or
                     (getattr(self,'required_version',None) is not None and values[1]!=self.required_version) or
                     (values[7],values[8],values[10])!=(INPUT_BYTES,self.output_bytes,self.node_count)

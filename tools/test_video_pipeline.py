@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import io
 from pathlib import Path
 import sys
 import tempfile
@@ -32,6 +33,42 @@ class FakeBoard:
 
 
 class PipelineTests(unittest.TestCase):
+    def test_performance_uses_quiet_backend_and_defers_evidence_until_finish(self):
+        for retain in (False,True):
+            with tempfile.TemporaryDirectory() as tmp:
+                args,output=self.fixture(Path(tmp)); args.mode='performance'
+                states=[]
+                class Fast(FakeBoard):
+                    def __init__(self,*a,**kw):
+                        self_kwargs=kw.copy(); states.append(self_kwargs)
+                        super().__init__()
+                    def finish(self):
+                        self_outer.assertEqual(list(output.glob('frame-*')),[])
+                        raw=super().finish()
+                        self.last_timing={'cycles':None,'frame_seconds':.02,'profile_read_seconds':None}
+                        return raw
+                self_outer=self
+                with patch.object(app,'ROOT',Path(tmp)),patch.object(app,'saved_configuration',return_value={'selected':{},'upload_mode':'serial'}), \
+                     patch('sys.stdout',new_callable=io.StringIO) as text:
+                    (Path(tmp)/'firmware').mkdir(); (Path(tmp)/'firmware/demo-fast.bin').write_bytes(b'fast')
+                    result=app.run(args,output,backend_factory=Fast,selected={},retain=retain)
+                self.assertEqual(result['status'],'completed',result.get('error'))
+                self.assertEqual((states[0]['mode'],states[0]['profile'],states[0]['diagnostic']),('performance',False,None))
+                self.assertNotIn('VIDEO frame=',text.getvalue())
+                self.assertEqual(len(list(output.glob('frame-*-input.bin'))),5 if retain else 0)
+                for row in result['results']:
+                    self.assertIsNone(row['cycles'])
+                    self.assertEqual('input_sha256' in row,retain)
+
+    def test_gui_failure_stops_before_loading_or_opening_board(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args,output=self.fixture(Path(tmp)); args.mode='performance'; args.load=True; args.no_display=False
+            with patch.object(app,'check_display',side_effect=RuntimeError('broken GUI')), \
+                 patch.object(app.subprocess,'run') as load,patch.object(app,'saved_configuration') as config:
+                result=app.run(args,output,backend_factory=FakeBoard)
+            self.assertEqual(result['status'],'failed')
+            load.assert_not_called(); config.assert_not_called()
+
     def test_preprocessing_reuses_storage_and_matches_old_logical_input(self):
         prep=app.Preprocessor(video)
         for h,w in ((13,17),(481,640),(1080,1920),(416,416),(17,13)):

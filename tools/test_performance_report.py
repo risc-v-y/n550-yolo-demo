@@ -23,6 +23,18 @@ def payload(frame=3, session=7, options=0, version=1):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_performance_null_counters_are_never_reported_as_zero(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory=Path(name)
+            (directory/'report.json').write_text(json.dumps(dict(version=3,mode='performance',
+                data_crc='DISABLED',status='completed',recorded_frames=1,
+                results=[dict(frame_id=0,cycles=None,frame_seconds=10.)])))
+            report=app.analyze(directory,40)
+            pages=[app.render(report,p) for p in (1,2,3)]
+            self.assertIn('NOT COLLECTED',pages[1])
+            self.assertNotIn('model_cycles: 0',pages[1])
+            self.assertIn('frame_seconds: 10.',pages[0])
+
     def test_direct_layer_bias_profile_and_previous_version(self):
         profile=decode_profile(payload(version=8),3,7)
         self.assertEqual(profile['input_path'],'rvv_direct_layer_bias')

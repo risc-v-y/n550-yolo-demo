@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REVISION = '2026-10-22 / PCIe v2 UINT8 pipeline / measured candidate selection / profile v9'
+REVISION = '2026-10-23 / same model: performance and diagnostic images / profile v9 diagnostic only'
 # Maintained source review, not an automatic proof of implementation/speed.
 RULES = {
     'CONV': ('局部特征加权求和及通道组合', '按K顺序乘加，最后加bias', '见分组规则', 'accel_model.c;amu.c;amu_input_rvv.c', '输入准备；深度卷积专用路径'),

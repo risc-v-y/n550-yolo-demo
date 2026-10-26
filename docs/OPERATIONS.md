@@ -20,14 +20,14 @@ bash tools/setup_host_video.sh
 |---|---|
 | 1 | 更新程序和文档 |
 | 2 | 检查host视频处理能力，不访问板子 |
-| 3 | 默认三帧流水演示，只保存MP4和汇总 |
-| 4 | 自选视频连续运行，默认30帧，0为全片 |
+| 3 | 性能版三帧演示，只保存MP4和汇总 |
+| 4 | 性能版自选视频，默认30帧，0为全片 |
 | 5 | 新版简要报告；兼容旧详细数值报告和PNG |
 | 6 | 性能三页；普通模式完整节点计时标记未采集 |
 | 7 | 已有帧的检测效果对照 |
-| 8 | 排障子菜单：1进度、2完整BUS查验、3旧BUS报告、4重载固件、5首块诊断、6原输入普通复跑 |
+| 8 | 排障子菜单：1进度、2完整BUS查验、3旧BUS报告、4重载诊断固件、5首块诊断、6原输入复跑、7诊断版视频 |
 | 9 | 清理临时材料 |
-| 10 | 全链路自动验收和实板配置选择，后台运行 |
+| 10 | 两种固件验收：诊断版3帧＋性能版30帧，后台运行 |
 | 11 | 最新验收三页报告 |
 | 0 | 退出 |
 
@@ -37,18 +37,15 @@ bash tools/setup_host_video.sh
 
 ### 更新后的自动验收
 
-菜单 **1更新 → 10自动验收**，无需先跑排障。本轮首先检查host上的`run-ou_be0js/report.json`（及同一固件的完整通过报告），核对固定配置、固件SHA、同三帧输入、两轮完整计时表和30帧逐位结果。证据有效则复用旧选型测量，不重跑旧18组；无旧报告才自动临时加载固定基线固件、测三帧两轮。不要提前删除该基线报告。
+菜单 **1更新 → 10自动验收**，无需先跑排障。固定已通过的`m128/n32/pack25/compute0/graph11`和串行上传，先加载诊断版验证前三帧及完整节点计时，再加载性能版连续处理前30帧。不再访问旧基线固件，也不重跑旧18组、增量5组或重叠上传。
 
-新固件只比较新打包策略及容量允许的n32/64/128，固定m128、compute0、graph11；每配置同三帧两轮。随后串行、重叠各两轮三帧，只有逐位一致且两轮完成间隔均缩短才选重叠，最后验收30帧。任一通信失败立即停止，不自动切换模式重试。
-
-若本轮同固件选型已完成，菜单10出现续验选择：**回车选1**复用选型，仅串行上传并验收30帧；选2续跑串行/重叠对比及30帧；选3重新做本轮增量选型。开始前核对固件、输入和profile，不匹配拒绝加载。最终通过才保存绑定固件SHA的配置与上传模式。SSH普通断线后后台任务继续，核心仍需保持运行。
+性能版测量路径与菜单3/4相同；验收仅暂存帧材料于内存，全部计算、显示提交和录像结束后才落盘和运行golden，避免把这些分析开销计入帧时间。两份固件前三帧输入哈希必须一致；所有候选1800字、绘框像素及录像帧数核对通过后，才写入绑定两份固件SHA的selected.json。通信、数值或记录异常立即停止，保留已取得材料，不自动重试写入。SSH普通断线后后台任务继续。
 
 - **8→1**：查看进度和日志尾部，不重新启动任务。
 - **11**：查看最新三页结果；未结束时明确显示running。
-- 结束标志：`OPTIMIZATION PASSED`或`OPTIMIZATION FAILED`。
-- 失败报告区分完成帧数、golden已核对帧数和录像帧数；第三页显示真实错误、待上传/正在计算的帧号。请求头不一致时显示完整EXP/GOT十六进制（分别为期望/实读值）；详细材料位于该阶段目录的`request-readback.json`及`diagnostics.jsonl`，最终视频阶段目录为`video/`。
-- 通过后回到 **3/4** 演示；失败保留现场和异常材料，不自动复位或重试写入。
-- 结果在`yolo26_pc/outputs/optimization/run-*/`：report.json、terminal.log和video/demo.mp4。latest.json指向本次；selected.json只在通过后更新。成功时删除本次临时旧固件和逐帧证据，候选计时/差异保留在汇总中。
+- 失败报告区分完成帧数、golden核对帧数及录像帧数，第三页显示错误；完整帧号和头差异保存在diagnostic或performance子目录的report.json。诊断版头读回不一致时另有request-readback.json；性能版不执行该读回。
+- 结束标志为 **MODE ACCEPTANCE PASSED/FAILED**；通过后回到 **3/4** 演示。失败保留现场，不自动复位或重试写入。
+- 结果在`yolo26_pc/outputs/optimization/run-*/`：report.json、terminal.log、diagnostic/demo.mp4、performance/demo.mp4及各自汇总。latest.json指向本次；selected.json只在通过后更新。成功删除本次逐帧临时证据，错误证据保留。
 
 ```bash
 # 从已有统一入口启动后台自动验收
@@ -58,12 +55,12 @@ bash tools/host.sh optimize
 bash tools/host.sh optimization-report
 ```
 
-验收默认不要求图形会话，它重绘并比较图像像素、校验MP4帧数。实际远端显示速度需正常演示观察，不能从后台结果推断。前三帧用于选型，30帧是本次验收范围，不代表所有输入。
+验收默认无窗口，报告中的显示耗时标记未采集；需要包含OpenCV显示提交计时，可从有效图形会话用`python3 tools/verify_modes.py --display --output /绝对路径/新结果目录`运行。两种方式均重绘核对像素、解码检查MP4，不把OpenCV提交时间等同远端屏幕呈现。30帧只是本次覆盖范围。
 
 ### 日常视频演示
 
 ```bash
-# 检查host并加载固件一次，流水处理默认视频前三帧
+# 加载性能版，处理默认视频前三帧并显示、录像
 bash tools/host.sh video
 
 # 自选视频，处理完整文件；完成一帧立即显示并加入MP4
@@ -71,6 +68,9 @@ python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames
 
 # 无图形会话时处理全片，只保存MP4及汇总
 python3 tools/host_video.py --load --source /绝对路径/input.mp4 --max-frames 0 --no-display
+
+# 排障视频：加载诊断版，开启数据CRC、UART进度和完整节点计时
+bash tools/host.sh video-diagnostic
 
 # 仅排障需要时：FP32串行路径，保留PNG、BIN、完整profile并计算golden
 python3 tools/host_video.py --load --detailed --max-frames 3
@@ -80,7 +80,9 @@ python3 tools/host_video.py --load --detailed --max-frames 3
 
 正常输出位于`yolo26_pc/outputs/host-video/run-*/`，仅demo.mp4和report.json，结束标志为`VIDEO COMPLETED`。该标志表示功能完成，**普通模式没有golden比较**，不是数值验收通过。录像按源视频FPS播放，不代表推理FPS。失败/中断保留相关输入、原帧、候选（若已取得）和近期通信事件；host停止不表示已中断板端计算。
 
-菜单5/6读取新版简要报告；完整节点profile标记NOT COLLECTED。逐帧PNG、错框标记、菜单7检测对照需要已有旧详细结果或显式--detailed运行。旧报告仍可查看、续算golden，不强制重跑板子。
+菜单5/6读取新版报告。性能版仅记录整帧传输至结果、连续完成间隔及显示提交；板端周期和细分计时明确为NOT COLLECTED，不填零。诊断版另有全部节点计时。逐帧PNG、错框标记、菜单7检测对照需要旧详细结果或显式--detailed运行。旧报告仍可查看。
+
+性能版正常运行没有UART进度，异常/trap才打印并发布最小错误快照。它不能发现所有静默数据位错；出现异常后切换诊断版重新运行相同视频，增加校验和定位信息，但不能恢复上一次未采集的历史轨迹。
 
 <a id="saved-input-replay"></a>
 
@@ -126,6 +128,9 @@ python3 tools/full_check.py --report "实际结果目录" --page 2
 # 读取诊断和程序前缀；不复位、不提交推理
 python3 tools/collect_board_diag.py --firmware demo-pcie --samples 1 --pbload /rv/fpga/bin/pbload --tool-cwd /rv/fpga/bin
 
+# 若出错时运行的是性能版，用对应ELF读取最小错误快照；不重新加载
+python3 tools/collect_board_diag.py --firmware demo-fast --samples 1 --pbload /rv/fpga/bin/pbload --tool-cwd /rv/fpga/bin
+
 # 校验并导出已有BUS证据；不推理、不要求旧首层专项数据
 python3 tools/export_bus_evidence.py
 
@@ -157,11 +162,11 @@ python3 tools/cleanup_host.py
 以下在配置现有ESWIN工具链的Linux/WSL开发机执行，不访问板子：
 
 ```bash
-# 从当前源码构建正式板端程序
+# 从同一源码构建性能版demo-fast与诊断版demo-pcie
 bash yolo26_riscv/build_board.sh
 
 # 检查已准备的交付固件、冻结模型、节点资料及BIN/ELF一致性
 python3 tools/check_board_release.py
 ```
 
-构建输出位于 `yolo26_riscv/build/n550-board/`，不会自动替换 `firmware/`。交付目录须同步本次BIN、ELF、符号、反汇编和校验清单后再核对；原QEMU及标量实验不是板端固件。
+构建输出位于 `yolo26_riscv/build/n550-board/`，不会自动替换 `firmware/`。可用`--mode performance`或`--mode diagnostic`只构建一种；交付目录须同步两份BIN、ELF、符号、反汇编和校验清单后核对。加载用BIN，GDB用相同模式的ELF，不能混用地址；原QEMU及标量实验不是板端固件。

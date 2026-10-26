@@ -130,24 +130,32 @@ def render(report, page):
             lines+=['Status: {} | completed={} recorded={}'.format(data['status'],len(rows),data['recorded_frames']),
                     'Cold startup seconds: {}'.format(data.get('cold_start_seconds','not recorded')),
                     'Seconds: mean / max / count']
-            for key in ('decode_seconds','prepare_seconds','upload_seconds','commit_seconds','run_roundtrip_seconds',
-                        'download_seconds','postprocess_seconds','display_submit_seconds','record_seconds',
+            lines+=['Image: '+data.get('mode','legacy diagnostic')+' | data CRC: '+data.get('data_crc','legacy')]
+            for key in ('frame_seconds','decode_seconds','prepare_seconds','upload_seconds','commit_seconds','run_roundtrip_seconds',
+                        'download_seconds','result_wait_seconds','completion_read_seconds',
+                        'postprocess_seconds','display_submit_seconds','record_seconds',
                         'completed_interval_seconds','capture_to_submit_seconds'):
                 values=[r[key] for r in rows if isinstance(r.get(key),(int,float))]
                 lines.append('{}: {}'.format(key,'{:.4f} / {:.4f} / {}'.format(
                     statistics.mean(values),max(values),len(values)) if values else 'not collected'))
         elif page==2:
             for key in ('model_cycles','service_cycles','input_crc_cycles','output_cycles'):
-                values=[r['cycles'][key] for r in rows if key in r.get('cycles',{})]
+                values=[r['cycles'][key] for r in rows if key in (r.get('cycles') or {})]
                 if values:
                     mean=statistics.mean(values)
                     lines.append('{}: {:.0f}{}'.format(key,mean,
                         ' = {:.6f}s'.format(mean/(report['core_mhz']*1e6)) if report['core_mhz'] else ''))
-            lines+=['Full node profile: NOT COLLECTED in normal mode.',
-                    'Use whole-pipeline acceptance for operator timing.',
+            profiles=[r['board_profile'] for r in rows if r.get('board_profile')]
+            if profiles:
+                slow=sorted(profiles[0]['nodes_detail'],key=lambda n:n['total'],reverse=True)[:5]
+                lines+=['Diagnostic nodes (first frame):']+[
+                    '{}: {} cycles'.format(n['node'],n['total']) for n in slow]
+            lines+=['Full node profile: '+('COLLECTED (diagnostic image)' if profiles else 'NOT COLLECTED'),
+                    'Performance image: CPU counters disabled, never inferred as zero.',
                     'Selected: '+str(data.get('selected',{}))]
         else:
             lines+=['Pipeline overlap: stage durations must not be added.',
+                    'completion_read_seconds is included in result_wait_seconds.',
                     'Display timing ends at OpenCV event return.',
                     'Remote X11 screen presentation is not measured.',
                     'Normal artifacts: demo.mp4 and report.json.',

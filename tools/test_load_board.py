@@ -23,7 +23,7 @@ class LoadTests(unittest.TestCase):
         self.cwd.mkdir()
         shutil.copyfile(Path(__file__).with_name('load_board.sh'), self.root / 'tools/load_board.sh')
         entries = []
-        for name in ('demo-pcie.bin', 'clp-selftest.bin'):
+        for name in ('demo-pcie.bin', 'demo-fast.bin', 'clp-selftest.bin'):
             blob = name.encode()
             (self.root / 'firmware' / name).write_bytes(blob)
             entries.append(f'{hashlib.sha256(blob).hexdigest()}  firmware/{name}\n')
@@ -74,6 +74,13 @@ fi
         logs = list((self.root / 'yolo26_pc/outputs').glob('deploy-*/load.log'))
         self.assertEqual(len(logs), 1)
         self.assertIn('Deployment completed', logs[0].read_text())
+
+    def test_performance_image_is_selected_and_invalid_mode_stops_before_reset(self):
+        self.assertNotEqual(self.run_load('--mode','unknown').returncode,0)
+        self.assertEqual(self.events(),[])
+        result=self.run_load('--mode','performance')
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(Path(self.env['UPLOADED']).read_bytes(),b'demo-fast.bin')
 
 
     def test_clp_selftest_image_and_order(self):

@@ -93,6 +93,22 @@ def verify_movie(video, path, expected, shape):
     return count
 
 
+def check_display():
+    """Isolate Qt aborts and reject a broken GUI before loading the board."""
+    if sys.platform == 'linux' and not os.environ.get('DISPLAY'):
+        raise RuntimeError('DISPLAY is empty. Use a graphical SSH/desktop session or --no-display.')
+    code = ('import cv2,numpy as np; cv2.namedWindow("YOLO display check"); '
+            'cv2.imshow("YOLO display check",np.zeros((100,200,3),np.uint8)); '
+            'cv2.waitKey(100); cv2.destroyAllWindows()')
+    environment = os.environ.copy()
+    if VIDEO_LIBS.is_dir():
+        environment['PYTHONPATH'] = str(VIDEO_LIBS) + os.pathsep + environment.get('PYTHONPATH', '')
+    probe = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
+                           timeout=20, env=environment)
+    if probe.returncode:
+        raise RuntimeError('GUI check failed before board access: ' + probe.stderr[-800:])
+
+
 def check_host(video, source, output, display=False):
     """Exercise real decode, preprocessing, postprocessing and encoders locally."""
     cv, np = video.cv2, video.np
@@ -136,20 +152,7 @@ def check_host(video, source, output, display=False):
     finally:
         movie.release()
     verify_movie(video, output / 'check.mp4', 3, frame.shape)
-    if display:
-        if sys.platform == 'linux' and not os.environ.get('DISPLAY'):
-            raise RuntimeError('DISPLAY is empty. Use a graphical SSH/desktop session or --no-display.')
-        # A broken Qt/X11 setup may abort the process; isolate that GUI probe.
-        code = ('import cv2,numpy as np; cv2.namedWindow("YOLO display check"); '
-                'cv2.imshow("YOLO display check",np.zeros((100,200,3),np.uint8)); '
-                'cv2.waitKey(100); cv2.destroyAllWindows()')
-        environment = os.environ.copy()
-        if VIDEO_LIBS.is_dir():
-            environment['PYTHONPATH'] = str(VIDEO_LIBS) + os.pathsep + environment.get('PYTHONPATH', '')
-        probe = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
-                               timeout=20, env=environment)
-        if probe.returncode:
-            raise RuntimeError('GUI check failed before board access: ' + probe.stderr[-800:])
+    if display: check_display()
     report = {'status': 'passed', 'python': sys.version.split()[0], 'numpy': np.__version__,
               'opencv': cv.__version__, 'source': str(source),
               'source_fps': fps if math.isfinite(fps) and fps > 0 else None,
@@ -385,6 +388,8 @@ def main():
     parser.add_argument('--check', action='store_true', help='Host video check only; no board access')
     parser.add_argument('--load', action='store_true', help='After host checks, reset/load normal model firmware once')
     parser.add_argument('--detailed', action='store_true', help='Explicit diagnostic capture: PNG/raw/profile/golden')
+    parser.add_argument('--mode',choices=('performance','diagnostic'),default='performance',
+                        help='Performance = actual demo image; diagnostic = CRC, logs and node profiles')
     parser.add_argument('--upload-mode',choices=('serial','overlap'),
                         help='Override saved upload scheduling; default serial until accepted')
     parser.add_argument('--reset-dir', default='/rv/fpga/bin')
@@ -410,6 +415,7 @@ def main():
         base.mkdir(parents=True, exist_ok=True)
         save_json(base / 'latest.json', {'directory': str(output)})
     if args.check or args.detailed:
+        args.mode='diagnostic'
         report = run(args, output)
         return 0 if report['status'] == 'completed' and (args.check or report.get('verification') == 'PASSED') else 1
     from video_pipeline import run as run_pipeline

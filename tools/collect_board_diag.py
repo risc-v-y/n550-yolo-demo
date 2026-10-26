@@ -86,9 +86,10 @@ def verify_clp_blob(blob):
                                  for index, actual, want in wrong[:16]]}
 
 
-def elf_symbols(data, extra_symbols=None):
+def elf_symbols(data, extra_symbols=None, performance=False):
     """Parse ELF64 little-endian RISC-V symbols without a cross toolchain."""
     sizes={name:size_of(name) for name in SYMBOLS}
+    if performance: sizes.pop('board_test_stage')  # Extended selftest is compiled out.
     sizes.update(extra_symbols or {})
     def region(start, size):
         if start < 0 or size < 0 or start + size > len(data):
@@ -141,8 +142,8 @@ def elf_symbols(data, extra_symbols=None):
 
 
 def firmware_info(root, name):
-    if name not in ('demo-pcie','clp-selftest'):
-        raise ValueError('Unsupported firmware; use demo-pcie or clp-selftest')
+    if name not in ('demo-pcie','demo-fast','clp-selftest'):
+        raise ValueError('Unsupported firmware; use demo-pcie, demo-fast or clp-selftest')
     sums = {}
     for line in (root / 'firmware/SHA256SUMS').read_text(encoding='utf-8').splitlines():
         digest, path = line.split(maxsplit=1)
@@ -160,7 +161,7 @@ def firmware_info(root, name):
         blobs[suffix], hashes[suffix] = blob, digest
     if len(blobs['bin']) < PREFIX_BYTES:
         raise ValueError('Firmware BIN too short')
-    symbols = elf_symbols(blobs['elf'])
+    symbols = elf_symbols(blobs['elf'],performance=name=='demo-fast')
     return {'name': name, 'sha256': hashes,
             'symbols': {key: f'0x{value:x}' for key, value in symbols.items()}}, symbols, blobs['bin'][:PREFIX_BYTES]
 
@@ -255,6 +256,7 @@ def collect(reader, symbols, expected_prefix, samples, interval, log):
         item = {'sample': sample + 1, 'started_seconds': time.monotonic() - log.started,
                 'values': {}, 'read_errors': {}}
         for name, fmt in SYMBOLS.items():
+            if name=='board_test_stage' and name not in symbols: continue
             try:
                 blob = reader.read(symbols[name], size_of(name), f's{sample + 1}-{name}')
                 if fmt:
@@ -270,7 +272,8 @@ def collect(reader, symbols, expected_prefix, samples, interval, log):
         uart = item['values'].get('board_uart_status')
         test = item['values'].get('board_test_stage')
         item['uart_status_name'] = UART_STATUS.get(uart, f'unknown:{uart}')
-        item['test_stage_name'] = TEST_STAGES.get(test, f'unknown:{test}')
+        item['test_stage_name'] = ('not_collected (performance image)' if 'board_test_stage' not in symbols
+                                   else TEST_STAGES.get(test, f'unknown:{test}'))
         item['finished_seconds'] = time.monotonic() - log.started
         observations.append(item)
         log.emit({'type': 'snapshot', **item})
@@ -299,7 +302,7 @@ def git_metadata(root):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--firmware', required=True, choices=('demo-pcie', 'clp-selftest'),
+    parser.add_argument('--firmware', required=True, choices=('demo-pcie', 'demo-fast', 'clp-selftest'),
                         help='Must match the BIN currently loaded; never resets or reloads the board')
     parser.add_argument('--pbload', default='pbload')
     parser.add_argument('--tool-cwd', type=Path, default=Path.cwd(),
@@ -349,7 +352,7 @@ def main(argv=None):
         report['firmware'], symbols, expected_prefix = firmware_info(ROOT, args.firmware)
         clp_test = args.firmware == 'clp-selftest'
         reader = Reader(args.pbload, args.tool_cwd.resolve(), args.tool_timeout, log, clp_test=clp_test,
-                        model_data=args.firmware == 'demo-pcie')
+                        model_data=args.firmware in ('demo-pcie','demo-fast'))
         report['pbload'] = reader.command
         with link_lock():
             report['snapshots'] = collect(reader, symbols, expected_prefix, args.samples, args.interval, log)

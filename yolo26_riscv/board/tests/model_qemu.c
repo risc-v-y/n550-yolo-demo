@@ -82,6 +82,7 @@ int __wrap_board_pcie_node_end(void) {
 static void submit(unsigned command,unsigned sequence,unsigned frame) {
     PcieRequest request={.session=0x12345678,.frame=frame,.command=command,
                         .sequence=sequence,.options=DIAG_FINITE};
+    if(YOLO_FAST) request.options=DIAG_LITE;
 #ifdef MODEL_CAPTURE_TEST
     request.options|=PCIE_CAPTURE;
 #endif
@@ -126,7 +127,7 @@ static uintptr_t poison_constant_view_alias(void) {
 #endif
 void __wrap_board_pcie_loop(int failure) {
     board_pcie_start(failure);
-    if(failure || board_test_stage!=3 || board_uart_status) clp_qemu_exit(20);
+    if(failure || (!YOLO_FAST && board_test_stage!=3) || board_uart_status) clp_qemu_exit(20);
     if(accel_weight_bytes!=5033984 || accel_weight_values!=2391664 || accel_weight_layers!=94)
         clp_qemu_exit(25);
     if(!board_is_clp(board_model_input()) || !board_is_clp(board_model_output())) clp_qemu_exit(21);

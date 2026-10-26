@@ -163,7 +163,7 @@ static void complete(void) {
     uintptr_t flags;
     __asm__ volatile ("csrr %0, xmfflags" : "=r"(flags) : : "memory");
     (void)flags;
-#ifdef YOLO_N550_BOARD
+#if defined(YOLO_N550_BOARD) && !YOLO_FAST
     board_diag.amu_flags=flags;
     if(board_diag.options&DIAG_TRACE)
         board_clean((const void *)&board_diag.amu_flags,sizeof(board_diag.amu_flags));
@@ -241,7 +241,7 @@ static int matmul_fp16(const float *a,const AmuPackedWeights *packed,const float
                 __riscv_mfmacc_s_h("acc0", "tr1", "tr0");
                 model_profile_end(PROFILE_MATRIX_SUBMIT, start);
                 complete();
-                ++amu_instruction_count;
+                if(!YOLO_FAST) ++amu_instruction_count;
             }
             start = model_ticks();
 #ifdef YOLO_N550_BOARD

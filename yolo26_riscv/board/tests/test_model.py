@@ -18,9 +18,11 @@ parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--capture',action='store_true',help='Exercise node snapshots/ACK and export all tensors')
 parser.add_argument('--pack-probe',action='store_true',help='Enable first-block probe and exclude diagnostic timing')
 parser.add_argument('--stream',action='store_true',help='Two UINT8 slots, wide tiles, graph fusion and lite/full modes')
+parser.add_argument('--fast',action='store_true',help='Actual performance image, no data CRC/profile/selftest')
 parser.add_argument('--manifest',type=Path,default=root/'reference/prepared/manifest.json',
                     help='Validate the first prepared sample (normally BUS)')
 args=parser.parse_args()
+if args.fast and not args.stream: parser.error('--fast requires --stream')
 if args.stream and (args.capture or args.pack_probe): parser.error('Stream is a separate functional test')
 manifest_path=args.manifest.resolve()
 manifest=json.loads(manifest_path.read_text())
@@ -45,6 +47,9 @@ if args.capture:
     flags+=['-DMODEL_CAPTURE_TEST=1','-Wl,--wrap=board_pcie_node_end']
 if args.pack_probe: flags+=['-DMODEL_PACK_PROBE_TEST=1']
 if args.stream: flags+=['-DMODEL_STREAM_TEST=1']
+if args.fast:
+    flags.remove('-DMODEL_PROFILE=1')
+    flags+=['-DMODEL_PROFILE=0','-DYOLO_FAST=1']
 subprocess.run([tc+'-gcc',*flags,'-c','board/start.S','-o',str(out/'start.o')],cwd=src,check=True)
 (out/'weights.S').write_text('.section .rodata.weights,"a",@progbits\n.balign 64\n'
                             '.global model_weights,model_weights_end\nmodel_weights:\n'
@@ -88,7 +93,12 @@ if result.returncode or 'QEMU MODEL BUS PASS' not in text:
     (out/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     raise RuntimeError(f'QEMU model failed; inspect {out}/uart.log')
 from board_profile import decode_profile
-profile=decode_profile((out/'frame-0-profile.bin').read_bytes(),1,0x12345678)
+profile=decode_profile((out/'frame-0-profile.bin').read_bytes(),1,0x12345678) if not args.fast else {
+    'version':None,'input_path':'performance pack25','sha256':None,'phases':None}
+if args.fast:
+    assert not (out/'frame-0-profile.bin').exists()
+    assert '[YOLO]' not in text and 'CLP RVV' not in text, 'Performance image emitted normal progress'
+report['mode']='performance' if args.fast else 'diagnostic'
 if args.pack_probe:
     sys.path.insert(0,str(root/'tools'))
     from pack_probe import decode

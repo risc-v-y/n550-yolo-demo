@@ -1,5 +1,5 @@
 {
-  "revision": "2026-10-22 / PCIe v2 UINT8 pipeline / measured candidate selection / profile v9",
+  "revision": "2026-10-23 / same model: performance and diagnostic images / profile v9 diagnostic only",
   "nodes": 334,
   "operators": {
     "CONV": 102,
@@ -33,9 +33,9 @@
   },
   "source_sha256_lf": {
     "accel_model.c": "3dc0a6346cc401608c364f89077611ce3ff29693ff58781950ccc4fedd9233fd",
-    "amu.c": "4bbfd402c3c1e9c96e49f583e25c9c7166956fab38b1f2a6dfd29b616c0a8828",
-    "amu.h": "8637b262081aa1302cbd1f17a25769a6e036fe0f8cc82b0c869c004ef7fa5983",
-    "amu_input_rvv.c": "97401fdfd409f0443b23c1a9c7e00c50f21870d327708fa7074858a049b84fe8",
+    "amu.c": "7234d970844562f0d0e898f244f8d2c5a0eadb8f4f541af7d4ef6f8468990a34",
+    "amu.h": "30be51443ffd351d9623b36e64aaef4b15de2b7509ad1f5d9d8331426d3b39bc",
+    "amu_input_rvv.c": "c5f5c947ed11d89a9d2804009c779dfa1f81c282a39928e3131209604ba55b8b",
     "amu_half_rvv.h": "3518f43039c36d7382e54d41523526a951132645ff28b2eaa1c3d293a0915d78",
     "amu_input_tiles.h": "654b00cb26de0a2afca3871710e44d37d8c92b2843aefb2aac398c4917862e39",
     "rvv_model_ops.c": "928c8bb834a1634d9412b87d73457cba86cce0cc2fa20fe5f2eadb40bbfc61b6",
@@ -45,14 +45,14 @@
     "scalar_model.c": "6b6077a4e4ec7740c6ed5910dfc000d9e3a5edd97513f60d1a80afb24799dba6",
     "board/coherent_rvv.h": "d4186182f64e10b2e7c8ade451c27f5df2e2263a4adf9e6fef03973d8d7afe20",
     "board/cache.h": "393a06047c94222be2e505685679ef17fc1f98e5d1ab82186cbb9672334db016",
-    "board/main.c": "3fa34b2aefa00a7220e79743943c3727aa64e4c6bccad3eb24d903c82d18d622",
-    "board/diagnostics.c": "7aaeb98ab7bb8f78be6ed97508a066bccbb2bd21eae2d908f4d939c0c58c3ece",
-    "board/diagnostics.h": "49d751a505358d614d974257abbb9b410e8696a2dfb801ec86b625a3f21ed108",
+    "board/main.c": "ad3f9f500d6dfa2c841a02b7f0cea1949819d20254893050069cba3485eaf0b8",
+    "board/diagnostics.c": "8c979743c26ce2672750f625714fdc020d66ea461e4e01696aa3d540eca09b37",
+    "board/diagnostics.h": "719fe0708d045eb66131ed389bd02a39518ea83184fb2a1271c1464b07866f2f",
     "board/model_io.c": "8ae0ec329223372856b09da2dd265cba728fbfd6f65492f42172d38fd9d74201",
     "board/graph_plan.h": "bdaca779f8be9c42584743b1a9c9484eaf8fd67d1745d090c068c5f0094d9bd7",
-    "board/pcie.c": "551ee7bf2dbb509be6ca310462761a63e96aab2e3135d9f6081b31a2c3dddf34",
-    "board/stream.h": "6cb63992a4996e9ba1b4199d9fb84662943205fa330193c626f39beb56d5892a",
-    "build_board.sh": "6e75747e2d0fdee207af131c76d4ecbe3ef1a50627bdcf4d6c7b4d0fa13f14aa"
+    "board/pcie.c": "1895082bcb00d991b736e061079a76078e14274266997e35b0e8482df2923572",
+    "board/stream.h": "fd37bbb17ccedd503dae32b72d0c6516d37d5679f75493fea249ee19b144c15a",
+    "build_board.sh": "3eccf24ceeeb52441b8adbbfbeac0d5b887e6e41716aaa1308a920e93d353421"
   },
   "model_files_sha256": {
     "constants.bin": "ce4ce892ec5cc8b0f1bee0f4cb754535aa4932b5879da95ed01c3db9039ad1ce",

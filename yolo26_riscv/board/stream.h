@@ -3,6 +3,7 @@
 #include "pcie.h"
 enum { PCIE_HAS_STREAM=2, PCIE_RUN_U8=5, PCIE_CONFIGURE=6,
        STREAM_INPUT_BYTES=3*416*416 };
+enum { PCIE_FAST_IMAGE=4, PCIE_RESULT_POLL=8 };
 typedef struct {
     PcieRequest request;
     uint8_t input[STREAM_INPUT_BYTES];

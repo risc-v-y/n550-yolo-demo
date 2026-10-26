@@ -16,6 +16,7 @@ int model_profile_enabled=1;
 static uint64_t frame_start;
 static uint64_t profile_start;
 void board_profile_begin(unsigned nodes) {
+    if(YOLO_FAST) { model_profile_enabled=0; (void)nodes; return; }
     model_profile_enabled=!(board_diag.options&DIAG_LITE);
     volatile uint64_t *p=(volatile uint64_t *)&board_profile;
     for(unsigned i=0;i<sizeof(board_profile)/8;++i) p[i]=0;
@@ -35,6 +36,7 @@ void board_profile_begin(unsigned nodes) {
     profile_start=board_diag_ticks();
 }
 void board_profile_end(uint64_t graph_start,uint64_t input_cycles) {
+    if(YOLO_FAST) { (void)graph_start; (void)input_cycles; return; }
     uint64_t end=board_diag_ticks();
     board_profile.model_cycles=end-profile_start;
     board_profile.graph_cycles=end-graph_start;
@@ -47,6 +49,7 @@ void board_profile_end(uint64_t graph_start,uint64_t input_cycles) {
 }
 void board_diag_event(void) {
 #if defined(YOLO_N550_BOARD) || defined(BOARD_LOG_TEST)
+    if(YOLO_FAST && board_diag.stage!=DIAG_FAILED && board_diag.stage!=DIAG_TRAP) return;
     if(board_uart_status) return;
     static const char *const stages[]={"UNKNOWN","BOOT","UART","AMU_INIT","SELFTEST",
         "READY","RECEIVE","RUN","DONE","FAILED","TRAP","WEIGHTS"};
@@ -129,17 +132,27 @@ void board_diag_init(void) {
     board_diag.op=UINT64_MAX;
     board_diag.stage=DIAG_BOOT;
 #ifdef YOLO_N550_BOARD
-    board_diag.profile_address=(uintptr_t)&board_profile;
-    board_diag.profile_bytes=sizeof(board_profile);
+    if(!YOLO_FAST) {
+        board_diag.profile_address=(uintptr_t)&board_profile;
+        board_diag.profile_bytes=sizeof(board_profile);
+    }
 #endif
     board_diag_commit();
 }
 void board_diag_stage(unsigned stage) {
+    if(YOLO_FAST) {
+        board_diag.stage=stage;
+        if(stage==DIAG_FAILED || stage==DIAG_TRAP) {
+            board_diag_commit(); board_diag_event();
+        }
+        return;
+    }
     if(stage==DIAG_RUN) frame_start=board_diag_ticks();
     board_diag.stage=stage;
     board_diag_commit();
     board_diag_event();
 }
+#if !YOLO_FAST
 void board_diag_phase(unsigned phase) {
     board_diag.phase=phase;
 #ifdef YOLO_N550_BOARD
@@ -147,6 +160,7 @@ void board_diag_phase(unsigned phase) {
         board_clean((const void *)&board_diag.phase,sizeof(board_diag.phase));
 #endif
 }
+#endif
 void board_diag_error(unsigned code,int detail) {
     board_diag.error=code;
     board_diag.detail=(uint64_t)(int64_t)detail;
@@ -154,6 +168,7 @@ void board_diag_error(unsigned code,int detail) {
 }
 void board_diag_node(uint32_t id,const ModelNode *node,const ModelTensor *tensors) {
     board_diag.node=id; board_diag.op=node->op;
+    if(YOLO_FAST) { board_diag.phase=PHASE_COMPUTE; (void)tensors; return; }
     board_diag.inputs=node->inputs; board_diag.outputs=node->outputs;
     for(unsigned slot=0;slot<6;++slot) {
         int valid=slot<4 ? slot<node->inputs : slot-4<node->outputs;

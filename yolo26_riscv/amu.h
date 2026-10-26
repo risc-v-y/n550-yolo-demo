@@ -1,5 +1,8 @@
 #ifndef YOLO26_AMU_H_
 #define YOLO26_AMU_H_
+#ifndef YOLO_FAST
+#define YOLO_FAST 0
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include "conv2d.h"

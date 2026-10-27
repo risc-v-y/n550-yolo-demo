@@ -174,6 +174,9 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
             const float *biases = bias + group * ocg;
             float *dest = output + (batch * p->out_channels + group * ocg) * area;
             if(amu && packed) {
+                if((amu_input_flags&AMU_INPUT_OWNED) && amu_output_acquire(dest,ocg*area*sizeof(float))) {
+                    amu_input_release(); return -1;
+                }
                 for(size_t first=0;first<area;first+=amu_tile_n) {
                     size_t count=area-first<amu_tile_n ? area-first : amu_tile_n;
                     AmuPackedInput input_block;
@@ -182,10 +185,11 @@ static int convolution(const Conv2D *p, const float *input, const float *weight,
                                                        sizeof(conv_scratch.fp16),&input_block);
                     model_profile_end(PROFILE_INPUT_PACK,start);
                     if(status || amu_matmul_packed_fp16(packed,&input_block,dest+first,area)) {
-                        amu_input_release(); return -1;
+                        amu_output_release(); amu_input_release(); return -1;
                     }
                     /* All M blocks have completed: next pack may reuse scratch. */
                 }
+                amu_output_release(); /* Every AMU store completed; bias may read now. */
                 if(add_bias(dest,biases,ocg,area)) {amu_input_release(); return -1;}
                 continue;
             }

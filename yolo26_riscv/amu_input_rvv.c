@@ -22,6 +22,8 @@ static uint16_t normalized[256] __attribute__((aligned(64)));
 static int normalized_ready;
 static uint16_t *owned_scratch,*owned_half;
 static size_t owned_scratch_bytes,owned_half_bytes;
+static uint16_t *reserved_half;
+static size_t reserved_half_bytes;
 
 #ifdef YOLO_N550_BOARD
 static int owned(const void *p,size_t bytes) {
@@ -35,10 +37,11 @@ void amu_input_release(void) {
     if(owned_half) board_finish_write(owned_half,owned_half_bytes);
 #endif
     owned_scratch=owned_half=0; owned_scratch_bytes=owned_half_bytes=0;
+    reserved_half=0; reserved_half_bytes=0;
     prepared_input=0; prepared_source=0; prepared_bits=32;
 }
 int amu_input_acquire(uint16_t *scratch,size_t scratch_bytes,uint16_t *half,size_t half_bytes) {
-    if(owned_scratch || owned_half) return -1;
+    if(owned_scratch || owned_half || reserved_half) return -1;
     if(!(amu_input_flags&AMU_INPUT_OWNED)) return 0;
     uintptr_t a=(uintptr_t)scratch,b=(uintptr_t)half;
     if(!a || a%64 || !scratch_bytes || scratch_bytes%64 || a>UINTPTR_MAX-scratch_bytes ||
@@ -49,10 +52,11 @@ int amu_input_acquire(uint16_t *scratch,size_t scratch_bytes,uint16_t *half,size
        !board_is_clp((char *)scratch+scratch_bytes-1) ||
        (half_bytes && (!board_is_clp(half) || !board_is_clp((char *)half+half_bytes-1)))) return 0;
     board_prepare_write(scratch,scratch_bytes);
-    if(half_bytes) board_prepare_write(half,half_bytes);
 #endif
     owned_scratch=scratch; owned_scratch_bytes=scratch_bytes;
-    if(half_bytes) {owned_half=half; owned_half_bytes=half_bytes;}
+    /* Reserve the disjoint region, but transfer ownership only if prepare
+     * actually converts it. Pointwise FP32 inputs never use this buffer. */
+    if(half_bytes) {reserved_half=half; reserved_half_bytes=half_bytes;}
     return 0;
 }
 
@@ -81,6 +85,12 @@ int amu_input_prepare(const Conv2D *p,const float *input,uint16_t *half,size_t c
     if(prepared_bits==32 && (!(amu_input_flags&AMU_INPUT_PRECONVERT) || p->kernel_h*p->kernel_w==1)) return 0;
     size_t count=(size_t)p->batch*p->in_channels*p->in_h*p->in_w;
     if(!half || count>capacity) return -1;
+    if(half==reserved_half && count<=reserved_half_bytes/2 && !owned_half) {
+#ifdef YOLO_N550_BOARD
+        board_prepare_write(half,reserved_half_bytes);
+#endif
+        owned_half=half; owned_half_bytes=reserved_half_bytes;
+    }
     const uint32_t *src=(const uint32_t *)input;
     const uint8_t *pixels=(const uint8_t *)prepared_source;
     uint16_t *dst=half;

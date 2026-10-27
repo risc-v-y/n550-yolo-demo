@@ -1,5 +1,5 @@
 {
-  "revision": "2026-10-23 / same model: performance and diagnostic images / profile v9 diagnostic only",
+  "revision": "2026-10-26 / lazy conversion workspace and whole-convolution output ownership / profile v9 diagnostic only",
   "nodes": 334,
   "operators": {
     "CONV": 102,
@@ -32,10 +32,10 @@
     "scalar C": 5
   },
   "source_sha256_lf": {
-    "accel_model.c": "3dc0a6346cc401608c364f89077611ce3ff29693ff58781950ccc4fedd9233fd",
-    "amu.c": "7234d970844562f0d0e898f244f8d2c5a0eadb8f4f541af7d4ef6f8468990a34",
-    "amu.h": "30be51443ffd351d9623b36e64aaef4b15de2b7509ad1f5d9d8331426d3b39bc",
-    "amu_input_rvv.c": "c5f5c947ed11d89a9d2804009c779dfa1f81c282a39928e3131209604ba55b8b",
+    "accel_model.c": "b8f7122f6e1f88c55c7b2f21ff287bc0e8820c8c881fbe573f5b65c9f74d00aa",
+    "amu.c": "ecfdb4ee5afbdad86649e5a54f3328ebbc94f923f1fbfc7697001cb7cefddd8c",
+    "amu.h": "00ab05d5b9b72e5fd020cddb215bc28a2e1986865ac354490d4e752895f2c6f0",
+    "amu_input_rvv.c": "064204c9d9a0c98e58e8d1620597d61f71855faf03790dfd14ba6f2ec0cb41f4",
     "amu_half_rvv.h": "3518f43039c36d7382e54d41523526a951132645ff28b2eaa1c3d293a0915d78",
     "amu_input_tiles.h": "654b00cb26de0a2afca3871710e44d37d8c92b2843aefb2aac398c4917862e39",
     "rvv_model_ops.c": "928c8bb834a1634d9412b87d73457cba86cce0cc2fa20fe5f2eadb40bbfc61b6",
@@ -50,7 +50,7 @@
     "board/diagnostics.h": "719fe0708d045eb66131ed389bd02a39518ea83184fb2a1271c1464b07866f2f",
     "board/model_io.c": "8ae0ec329223372856b09da2dd265cba728fbfd6f65492f42172d38fd9d74201",
     "board/graph_plan.h": "bdaca779f8be9c42584743b1a9c9484eaf8fd67d1745d090c068c5f0094d9bd7",
-    "board/pcie.c": "1895082bcb00d991b736e061079a76078e14274266997e35b0e8482df2923572",
+    "board/pcie.c": "dddeae8180cf13afa460a0a1d30f5aaba54f2062d23f5a434a081b89c0b9066a",
     "board/stream.h": "fd37bbb17ccedd503dae32b72d0c6516d37d5679f75493fea249ee19b144c15a",
     "build_board.sh": "3eccf24ceeeb52441b8adbbfbeac0d5b887e6e41716aaa1308a920e93d353421"
   },

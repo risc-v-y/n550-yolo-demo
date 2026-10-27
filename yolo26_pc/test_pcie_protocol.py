@@ -390,9 +390,16 @@ with (root/'ddr.bin').open('r+b',buffering=0) as ddr:
         self.assertEqual(struct.unpack_from('<I',self.read(MAILBOX+64,64),32)[0],6)
         self.assertEqual(backend.last_diagnostic['options'],6)
 
+    def test_lite_option_supported(self):
+        backend=self.connect()
+        # Bit 4 is the supported DIAG_LITE option, not a reserved bit.
+        backend.options=16
+        self.assertEqual(len(backend.infer_bytes(self.tensor())),OUTPUT_BYTES)
+        self.assertEqual(struct.unpack('<I',self.read(0x80a20000,4))[0],1)
+
     def test_unsupported_option_rejected(self):
         backend=self.connect()
-        backend.options=16
+        backend.options=32
         with self.assertRaisesRegex(RuntimeError,'Board PCIe error'):
             backend.infer_bytes(self.tensor())
         self.assertEqual(backend.last_status['error'],0x40)

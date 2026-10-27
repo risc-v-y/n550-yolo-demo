@@ -7,140 +7,140 @@ Discarded input sections
  .text          0x0000000000000000        0x0 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/weights.o
  .data          0x0000000000000000        0x0 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/weights.o
  .bss           0x0000000000000000        0x0 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/weights.o
- .text          0x0000000000000000        0x0 /tmp/ccMQ8vRH.o
- .data          0x0000000000000000        0x0 /tmp/ccMQ8vRH.o
- .bss           0x0000000000000000        0x0 /tmp/ccMQ8vRH.o
+ .text          0x0000000000000000        0x0 /tmp/cczHA5sd.o
+ .data          0x0000000000000000        0x0 /tmp/cczHA5sd.o
+ .bss           0x0000000000000000        0x0 /tmp/cczHA5sd.o
  .text.matmul_fp32_rvv
-                0x0000000000000000      0x176 /tmp/ccMQ8vRH.o
- .comment       0x0000000000000000       0x43 /tmp/ccMQ8vRH.o
- .text          0x0000000000000000        0x0 /tmp/cckWbqKc.o
- .data          0x0000000000000000        0x0 /tmp/cckWbqKc.o
- .bss           0x0000000000000000        0x0 /tmp/cckWbqKc.o
+                0x0000000000000000      0x176 /tmp/cczHA5sd.o
+ .comment       0x0000000000000000       0x43 /tmp/cczHA5sd.o
+ .text          0x0000000000000000        0x0 /tmp/ccIEr9mg.o
+ .data          0x0000000000000000        0x0 /tmp/ccIEr9mg.o
+ .bss           0x0000000000000000        0x0 /tmp/ccIEr9mg.o
  .text.conv2d_scratch_floats
-                0x0000000000000000       0x62 /tmp/cckWbqKc.o
+                0x0000000000000000       0x62 /tmp/ccIEr9mg.o
  .text.conv2d_fp32_rvv
-                0x0000000000000000      0x3a6 /tmp/cckWbqKc.o
- .comment       0x0000000000000000       0x43 /tmp/cckWbqKc.o
- .text          0x0000000000000000        0x0 /tmp/ccUsQ6DO.o
- .data          0x0000000000000000        0x0 /tmp/ccUsQ6DO.o
- .bss           0x0000000000000000        0x0 /tmp/ccUsQ6DO.o
+                0x0000000000000000      0x3a6 /tmp/ccIEr9mg.o
+ .comment       0x0000000000000000       0x43 /tmp/ccIEr9mg.o
+ .text          0x0000000000000000        0x0 /tmp/cctU2o5m.o
+ .data          0x0000000000000000        0x0 /tmp/cctU2o5m.o
+ .bss           0x0000000000000000        0x0 /tmp/cctU2o5m.o
  .text.silu_fp32
-                0x0000000000000000       0x76 /tmp/ccUsQ6DO.o
- .comment       0x0000000000000000       0x43 /tmp/ccUsQ6DO.o
- .text          0x0000000000000000        0x0 /tmp/ccpwI7X6.o
- .data          0x0000000000000000        0x0 /tmp/ccpwI7X6.o
- .bss           0x0000000000000000        0x0 /tmp/ccpwI7X6.o
+                0x0000000000000000       0x76 /tmp/cctU2o5m.o
+ .comment       0x0000000000000000       0x43 /tmp/cctU2o5m.o
+ .text          0x0000000000000000        0x0 /tmp/cc4KHHjR.o
+ .data          0x0000000000000000        0x0 /tmp/cc4KHHjR.o
+ .bss           0x0000000000000000        0x0 /tmp/cc4KHHjR.o
  .text.add_fp32_scalar
-                0x0000000000000000       0x3a /tmp/ccpwI7X6.o
- .comment       0x0000000000000000       0x43 /tmp/ccpwI7X6.o
- .text          0x0000000000000000        0x0 /tmp/cchBC08i.o
- .data          0x0000000000000000        0x0 /tmp/cchBC08i.o
- .bss           0x0000000000000000        0x0 /tmp/cchBC08i.o
+                0x0000000000000000       0x3a /tmp/cc4KHHjR.o
+ .comment       0x0000000000000000       0x43 /tmp/cc4KHHjR.o
+ .text          0x0000000000000000        0x0 /tmp/ccKuNdrT.o
+ .data          0x0000000000000000        0x0 /tmp/ccKuNdrT.o
+ .bss           0x0000000000000000        0x0 /tmp/ccKuNdrT.o
  .text.add_fp32_rvv
-                0x0000000000000000      0x12c /tmp/cchBC08i.o
- .comment       0x0000000000000000       0x43 /tmp/cchBC08i.o
- .text          0x0000000000000000        0x0 /tmp/ccOmPeEW.o
- .data          0x0000000000000000        0x0 /tmp/ccOmPeEW.o
- .bss           0x0000000000000000        0x0 /tmp/ccOmPeEW.o
- .comment       0x0000000000000000       0x43 /tmp/ccOmPeEW.o
- .text          0x0000000000000000        0x0 /tmp/ccvW6Lb8.o
- .data          0x0000000000000000        0x0 /tmp/ccvW6Lb8.o
- .bss           0x0000000000000000        0x0 /tmp/ccvW6Lb8.o
- .comment       0x0000000000000000       0x43 /tmp/ccvW6Lb8.o
- .text          0x0000000000000000        0x0 /tmp/ccDXJZNz.o
- .data          0x0000000000000000        0x0 /tmp/ccDXJZNz.o
- .bss           0x0000000000000000        0x0 /tmp/ccDXJZNz.o
- .comment       0x0000000000000000       0x43 /tmp/ccDXJZNz.o
- .text          0x0000000000000000        0x0 /tmp/ccyxhawJ.o
- .data          0x0000000000000000        0x0 /tmp/ccyxhawJ.o
- .bss           0x0000000000000000        0x0 /tmp/ccyxhawJ.o
+                0x0000000000000000      0x12c /tmp/ccKuNdrT.o
+ .comment       0x0000000000000000       0x43 /tmp/ccKuNdrT.o
+ .text          0x0000000000000000        0x0 /tmp/ccogk2jV.o
+ .data          0x0000000000000000        0x0 /tmp/ccogk2jV.o
+ .bss           0x0000000000000000        0x0 /tmp/ccogk2jV.o
+ .comment       0x0000000000000000       0x43 /tmp/ccogk2jV.o
+ .text          0x0000000000000000        0x0 /tmp/cc50WbJc.o
+ .data          0x0000000000000000        0x0 /tmp/cc50WbJc.o
+ .bss           0x0000000000000000        0x0 /tmp/cc50WbJc.o
+ .comment       0x0000000000000000       0x43 /tmp/cc50WbJc.o
+ .text          0x0000000000000000        0x0 /tmp/cc0D8q5P.o
+ .data          0x0000000000000000        0x0 /tmp/cc0D8q5P.o
+ .bss           0x0000000000000000        0x0 /tmp/cc0D8q5P.o
+ .comment       0x0000000000000000       0x43 /tmp/cc0D8q5P.o
+ .text          0x0000000000000000        0x0 /tmp/cccaanN5.o
+ .data          0x0000000000000000        0x0 /tmp/cccaanN5.o
+ .bss           0x0000000000000000        0x0 /tmp/cccaanN5.o
  .sbss.amu_rvv_input_blocks
-                0x0000000000000000        0x8 /tmp/ccyxhawJ.o
- .comment       0x0000000000000000       0x43 /tmp/ccyxhawJ.o
- .text          0x0000000000000000        0x0 /tmp/ccbZYAoW.o
- .data          0x0000000000000000        0x0 /tmp/ccbZYAoW.o
- .bss           0x0000000000000000        0x0 /tmp/ccbZYAoW.o
- .comment       0x0000000000000000       0x43 /tmp/ccbZYAoW.o
- .text          0x0000000000000000        0x0 /tmp/ccAg1cxM.o
- .data          0x0000000000000000        0x0 /tmp/ccAg1cxM.o
- .bss           0x0000000000000000        0x0 /tmp/ccAg1cxM.o
- .comment       0x0000000000000000       0x43 /tmp/ccAg1cxM.o
- .text          0x0000000000000000        0x0 /tmp/ccDHcOWd.o
- .data          0x0000000000000000        0x0 /tmp/ccDHcOWd.o
- .bss           0x0000000000000000        0x0 /tmp/ccDHcOWd.o
- .comment       0x0000000000000000       0x43 /tmp/ccDHcOWd.o
- .text          0x0000000000000000        0x0 /tmp/ccUgbSuU.o
- .data          0x0000000000000000        0x0 /tmp/ccUgbSuU.o
- .bss           0x0000000000000000        0x0 /tmp/ccUgbSuU.o
- .comment       0x0000000000000000       0x43 /tmp/ccUgbSuU.o
- .text          0x0000000000000000        0x0 /tmp/ccKfhgPH.o
- .data          0x0000000000000000        0x0 /tmp/ccKfhgPH.o
- .bss           0x0000000000000000        0x0 /tmp/ccKfhgPH.o
+                0x0000000000000000        0x8 /tmp/cccaanN5.o
+ .comment       0x0000000000000000       0x43 /tmp/cccaanN5.o
+ .text          0x0000000000000000        0x0 /tmp/ccNt6y9K.o
+ .data          0x0000000000000000        0x0 /tmp/ccNt6y9K.o
+ .bss           0x0000000000000000        0x0 /tmp/ccNt6y9K.o
+ .comment       0x0000000000000000       0x43 /tmp/ccNt6y9K.o
+ .text          0x0000000000000000        0x0 /tmp/cchpSYRj.o
+ .data          0x0000000000000000        0x0 /tmp/cchpSYRj.o
+ .bss           0x0000000000000000        0x0 /tmp/cchpSYRj.o
+ .comment       0x0000000000000000       0x43 /tmp/cchpSYRj.o
+ .text          0x0000000000000000        0x0 /tmp/ccclYbkA.o
+ .data          0x0000000000000000        0x0 /tmp/ccclYbkA.o
+ .bss           0x0000000000000000        0x0 /tmp/ccclYbkA.o
+ .comment       0x0000000000000000       0x43 /tmp/ccclYbkA.o
+ .text          0x0000000000000000        0x0 /tmp/ccTkcAsy.o
+ .data          0x0000000000000000        0x0 /tmp/ccTkcAsy.o
+ .bss           0x0000000000000000        0x0 /tmp/ccTkcAsy.o
+ .comment       0x0000000000000000       0x43 /tmp/ccTkcAsy.o
+ .text          0x0000000000000000        0x0 /tmp/ccPP6AdW.o
+ .data          0x0000000000000000        0x0 /tmp/ccPP6AdW.o
+ .bss           0x0000000000000000        0x0 /tmp/ccPP6AdW.o
  .rodata.board_clp_selftest.str1.8
-                0x0000000000000000       0xd2 /tmp/ccKfhgPH.o
+                0x0000000000000000       0xd2 /tmp/ccPP6AdW.o
  .text.board_clp_selftest
-                0x0000000000000000      0xa9a /tmp/ccKfhgPH.o
+                0x0000000000000000      0xa9a /tmp/ccPP6AdW.o
  .srodata.magnitude.0
-                0x0000000000000000        0x8 /tmp/ccKfhgPH.o
+                0x0000000000000000        0x8 /tmp/ccPP6AdW.o
  .sbss.board_test_stage
-                0x0000000000000000        0x4 /tmp/ccKfhgPH.o
+                0x0000000000000000        0x4 /tmp/ccPP6AdW.o
  .rodata.shapes
-                0x0000000000000000       0x30 /tmp/ccKfhgPH.o
- .debug_info    0x0000000000000000     0x1abb /tmp/ccKfhgPH.o
- .debug_abbrev  0x0000000000000000      0x31e /tmp/ccKfhgPH.o
+                0x0000000000000000       0x30 /tmp/ccPP6AdW.o
+ .debug_info    0x0000000000000000     0x1abb /tmp/ccPP6AdW.o
+ .debug_abbrev  0x0000000000000000      0x31e /tmp/ccPP6AdW.o
  .debug_loclists
-                0x0000000000000000     0x1136 /tmp/ccKfhgPH.o
+                0x0000000000000000     0x1136 /tmp/ccPP6AdW.o
  .debug_aranges
-                0x0000000000000000       0x30 /tmp/ccKfhgPH.o
+                0x0000000000000000       0x30 /tmp/ccPP6AdW.o
  .debug_rnglists
-                0x0000000000000000      0x4c1 /tmp/ccKfhgPH.o
- .debug_line    0x0000000000000000     0x17ff /tmp/ccKfhgPH.o
- .debug_str     0x0000000000000000      0x6a0 /tmp/ccKfhgPH.o
+                0x0000000000000000      0x4c1 /tmp/ccPP6AdW.o
+ .debug_line    0x0000000000000000     0x17ff /tmp/ccPP6AdW.o
+ .debug_str     0x0000000000000000      0x6a0 /tmp/ccPP6AdW.o
  .debug_line_str
-                0x0000000000000000      0x150 /tmp/ccKfhgPH.o
- .comment       0x0000000000000000       0x43 /tmp/ccKfhgPH.o
+                0x0000000000000000      0x150 /tmp/ccPP6AdW.o
+ .comment       0x0000000000000000       0x43 /tmp/ccPP6AdW.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccKfhgPH.o
- .debug_frame   0x0000000000000000       0x80 /tmp/ccKfhgPH.o
+                0x0000000000000000        0x0 /tmp/ccPP6AdW.o
+ .debug_frame   0x0000000000000000       0x80 /tmp/ccPP6AdW.o
  .riscv.attributes
-                0x0000000000000000       0xf9 /tmp/ccKfhgPH.o
- .text          0x0000000000000000        0x0 /tmp/cc6ruct1.o
- .data          0x0000000000000000        0x0 /tmp/cc6ruct1.o
- .bss           0x0000000000000000        0x0 /tmp/cc6ruct1.o
+                0x0000000000000000       0xf9 /tmp/ccPP6AdW.o
+ .text          0x0000000000000000        0x0 /tmp/ccCcnLlx.o
+ .data          0x0000000000000000        0x0 /tmp/ccCcnLlx.o
+ .bss           0x0000000000000000        0x0 /tmp/ccCcnLlx.o
  .text.pack_publish
-                0x0000000000000000      0x1d2 /tmp/cc6ruct1.o
+                0x0000000000000000      0x1d2 /tmp/ccCcnLlx.o
  .text.board_profile_begin
-                0x0000000000000000        0xa /tmp/cc6ruct1.o
+                0x0000000000000000        0xa /tmp/ccCcnLlx.o
  .text.board_profile_end
-                0x0000000000000000        0x2 /tmp/cc6ruct1.o
+                0x0000000000000000        0x2 /tmp/ccCcnLlx.o
  .text.board_diag_event
-                0x0000000000000000       0x2c /tmp/cc6ruct1.o
+                0x0000000000000000       0x2c /tmp/ccCcnLlx.o
  .text.board_diag_ticks
-                0x0000000000000000        0x6 /tmp/cc6ruct1.o
+                0x0000000000000000        0x6 /tmp/ccCcnLlx.o
  .text.board_pack_begin
-                0x0000000000000000       0xe4 /tmp/cc6ruct1.o
+                0x0000000000000000       0xe4 /tmp/ccCcnLlx.o
  .text.board_pack_mark
-                0x0000000000000000      0x1d0 /tmp/cc6ruct1.o
+                0x0000000000000000      0x1d0 /tmp/ccCcnLlx.o
  .rodata.names.0
-                0x0000000000000000       0x90 /tmp/cc6ruct1.o
+                0x0000000000000000       0x90 /tmp/ccCcnLlx.o
  .sdata.model_profile_enabled
-                0x0000000000000000        0x4 /tmp/cc6ruct1.o
+                0x0000000000000000        0x4 /tmp/ccCcnLlx.o
  .bss.model_profile_phases
-                0x0000000000000000       0x60 /tmp/cc6ruct1.o
- .srodata.cst8  0x0000000000000000        0x8 /tmp/cc6ruct1.o
- .comment       0x0000000000000000       0x43 /tmp/cc6ruct1.o
- .text          0x0000000000000000        0x0 /tmp/ccEvm8bz.o
- .data          0x0000000000000000        0x0 /tmp/ccEvm8bz.o
- .bss           0x0000000000000000        0x0 /tmp/ccEvm8bz.o
- .comment       0x0000000000000000       0x43 /tmp/ccEvm8bz.o
- .text          0x0000000000000000        0x0 /tmp/cc51i8vQ.o
- .data          0x0000000000000000        0x0 /tmp/cc51i8vQ.o
- .bss           0x0000000000000000        0x0 /tmp/cc51i8vQ.o
+                0x0000000000000000       0x60 /tmp/ccCcnLlx.o
+ .srodata.cst8  0x0000000000000000        0x8 /tmp/ccCcnLlx.o
+ .comment       0x0000000000000000       0x43 /tmp/ccCcnLlx.o
+ .text          0x0000000000000000        0x0 /tmp/ccToeOLY.o
+ .data          0x0000000000000000        0x0 /tmp/ccToeOLY.o
+ .bss           0x0000000000000000        0x0 /tmp/ccToeOLY.o
+ .comment       0x0000000000000000       0x43 /tmp/ccToeOLY.o
+ .text          0x0000000000000000        0x0 /tmp/cc1Hc20X.o
+ .data          0x0000000000000000        0x0 /tmp/cc1Hc20X.o
+ .bss           0x0000000000000000        0x0 /tmp/cc1Hc20X.o
  .text.board_pcie_node_begin
-                0x0000000000000000      0x1aa /tmp/cc51i8vQ.o
+                0x0000000000000000      0x1aa /tmp/cc1Hc20X.o
  .text.board_pcie_node_end
-                0x0000000000000000      0x2b6 /tmp/cc51i8vQ.o
- .comment       0x0000000000000000       0x43 /tmp/cc51i8vQ.o
+                0x0000000000000000      0x2b6 /tmp/cc1Hc20X.o
+ .comment       0x0000000000000000       0x43 /tmp/cc1Hc20X.o
 
 Memory Configuration
 
@@ -153,520 +153,534 @@ Linker script and memory map
 
 LOAD /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
 LOAD /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/weights.o
-LOAD /tmp/ccMQ8vRH.o
-LOAD /tmp/cckWbqKc.o
-LOAD /tmp/ccUsQ6DO.o
-LOAD /tmp/ccpwI7X6.o
-LOAD /tmp/cchBC08i.o
-LOAD /tmp/ccOmPeEW.o
-LOAD /tmp/ccvW6Lb8.o
-LOAD /tmp/ccDXJZNz.o
-LOAD /tmp/ccyxhawJ.o
-LOAD /tmp/ccbZYAoW.o
-LOAD /tmp/ccAg1cxM.o
-LOAD /tmp/ccDHcOWd.o
-LOAD /tmp/ccUgbSuU.o
-LOAD /tmp/ccKfhgPH.o
-LOAD /tmp/cc6ruct1.o
-LOAD /tmp/ccEvm8bz.o
-LOAD /tmp/cc51i8vQ.o
+LOAD /tmp/cczHA5sd.o
+LOAD /tmp/ccIEr9mg.o
+LOAD /tmp/cctU2o5m.o
+LOAD /tmp/cc4KHHjR.o
+LOAD /tmp/ccKuNdrT.o
+LOAD /tmp/ccogk2jV.o
+LOAD /tmp/cc50WbJc.o
+LOAD /tmp/cc0D8q5P.o
+LOAD /tmp/cccaanN5.o
+LOAD /tmp/ccNt6y9K.o
+LOAD /tmp/cchpSYRj.o
+LOAD /tmp/ccclYbkA.o
+LOAD /tmp/ccTkcAsy.o
+LOAD /tmp/ccPP6AdW.o
+LOAD /tmp/ccCcnLlx.o
+LOAD /tmp/ccToeOLY.o
+LOAD /tmp/cc1Hc20X.o
 
-.text           0x0000000080000000     0xa832
+.text           0x0000000080000000     0xa91e
  *(.text.init)
  .text.init     0x0000000080000000       0xf8 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
                 0x0000000080000000                _start
  *(.text .text.*)
  .text.matmul_fp32_scalar
-                0x00000000800000f8       0x88 /tmp/ccMQ8vRH.o
+                0x00000000800000f8       0x88 /tmp/cczHA5sd.o
                 0x00000000800000f8                matmul_fp32_scalar
  .text.conv2d_output_shape
-                0x0000000080000180      0x16e /tmp/cckWbqKc.o
+                0x0000000080000180      0x16e /tmp/ccIEr9mg.o
                 0x0000000080000180                conv2d_output_shape
  .text.conv2d_fp32_scalar
-                0x00000000800002ee      0x296 /tmp/cckWbqKc.o
+                0x00000000800002ee      0x296 /tmp/ccIEr9mg.o
                 0x00000000800002ee                conv2d_fp32_scalar
  .text.silu_fp32_value.part.0
-                0x0000000080000584       0xd0 /tmp/ccUsQ6DO.o
+                0x0000000080000584       0xd0 /tmp/cctU2o5m.o
  .text.silu_fp32_value
-                0x0000000080000654       0x3c /tmp/ccUsQ6DO.o
+                0x0000000080000654       0x3c /tmp/cctU2o5m.o
                 0x0000000080000654                silu_fp32_value
  .text.basic_pool_shape
-                0x0000000080000690      0x11e /tmp/ccpwI7X6.o
+                0x0000000080000690      0x11e /tmp/cc4KHHjR.o
                 0x0000000080000690                basic_pool_shape
  .text.basic_nearest_shape
-                0x00000000800007ae       0xe8 /tmp/ccpwI7X6.o
+                0x00000000800007ae       0xe8 /tmp/cc4KHHjR.o
                 0x00000000800007ae                basic_nearest_shape
  .text.basic_join_shape
-                0x0000000080000896       0x54 /tmp/ccpwI7X6.o
+                0x0000000080000896       0x54 /tmp/cc4KHHjR.o
                 0x0000000080000896                basic_join_shape
  .text.basic_slice_shape
-                0x00000000800008ea       0x3c /tmp/ccpwI7X6.o
+                0x00000000800008ea       0x3c /tmp/cc4KHHjR.o
                 0x00000000800008ea                basic_slice_shape
  .text.maxpool_fp32_scalar
-                0x0000000080000926      0x148 /tmp/ccpwI7X6.o
+                0x0000000080000926      0x148 /tmp/cc4KHHjR.o
                 0x0000000080000926                maxpool_fp32_scalar
  .text.nearest_fp32_scalar
-                0x0000000080000a6e       0xc4 /tmp/ccpwI7X6.o
+                0x0000000080000a6e       0xc4 /tmp/cc4KHHjR.o
                 0x0000000080000a6e                nearest_fp32_scalar
  .text.concat_fp32_scalar
-                0x0000000080000b32       0xfa /tmp/ccpwI7X6.o
+                0x0000000080000b32       0xfa /tmp/cc4KHHjR.o
                 0x0000000080000b32                concat_fp32_scalar
  .text.slice_fp32_scalar
-                0x0000000080000c2c       0xa8 /tmp/ccpwI7X6.o
+                0x0000000080000c2c       0xa8 /tmp/cc4KHHjR.o
                 0x0000000080000c2c                slice_fp32_scalar
  .text.maxpool_fp32_rvv
-                0x0000000080000cd4      0x4fc /tmp/cchBC08i.o
+                0x0000000080000cd4      0x4fc /tmp/ccKuNdrT.o
                 0x0000000080000cd4                maxpool_fp32_rvv
  .text.nearest_fp32_rvv
-                0x00000000800011d0      0x366 /tmp/cchBC08i.o
+                0x00000000800011d0      0x366 /tmp/ccKuNdrT.o
                 0x00000000800011d0                nearest_fp32_rvv
  .text.concat_fp32_rvv
-                0x0000000080001536      0x216 /tmp/cchBC08i.o
+                0x0000000080001536      0x216 /tmp/ccKuNdrT.o
                 0x0000000080001536                concat_fp32_rvv
  .text.slice_fp32_rvv
-                0x000000008000174c      0x17a /tmp/cchBC08i.o
+                0x000000008000174c      0x17a /tmp/ccKuNdrT.o
                 0x000000008000174c                slice_fp32_rvv
  .text.scalar_model_exp_neg
-                0x00000000800018c6       0xd0 /tmp/ccOmPeEW.o
+                0x00000000800018c6       0xd0 /tmp/ccogk2jV.o
                 0x00000000800018c6                scalar_model_exp_neg
  .text.scalar_model_node
-                0x0000000080001996      0xd96 /tmp/ccOmPeEW.o
+                0x0000000080001996      0xd96 /tmp/ccogk2jV.o
                 0x0000000080001996                scalar_model_node
- .text.exp_neg  0x000000008000272c       0xb4 /tmp/ccvW6Lb8.o
+ .text.exp_neg  0x000000008000272c       0xb4 /tmp/cc50WbJc.o
  .text.rvv_binary_periodic
-                0x00000000800027e0      0x270 /tmp/ccvW6Lb8.o
+                0x00000000800027e0      0x270 /tmp/cc50WbJc.o
                 0x00000000800027e0                rvv_binary_periodic
  .text.rvv_bias_channels
-                0x0000000080002a50      0x238 /tmp/ccvW6Lb8.o
+                0x0000000080002a50      0x238 /tmp/cc50WbJc.o
                 0x0000000080002a50                rvv_bias_channels
  .text.rvv_transpose
-                0x0000000080002c88      0x290 /tmp/ccvW6Lb8.o
+                0x0000000080002c88      0x290 /tmp/cc50WbJc.o
                 0x0000000080002c88                rvv_transpose
  .text.rvv_max_rows
-                0x0000000080002f18      0x1de /tmp/ccvW6Lb8.o
+                0x0000000080002f18      0x1de /tmp/cc50WbJc.o
                 0x0000000080002f18                rvv_max_rows
  .text.rvv_gather_rows
-                0x00000000800030f6      0x298 /tmp/ccvW6Lb8.o
+                0x00000000800030f6      0x298 /tmp/cc50WbJc.o
                 0x00000000800030f6                rvv_gather_rows
  .text.rvv_repeat_i64
-                0x000000008000338e       0xce /tmp/ccvW6Lb8.o
+                0x000000008000338e       0xce /tmp/cc50WbJc.o
                 0x000000008000338e                rvv_repeat_i64
  .text.rvv_depthwise3x3
-                0x000000008000345c      0x434 /tmp/ccvW6Lb8.o
+                0x000000008000345c      0x434 /tmp/cc50WbJc.o
                 0x000000008000345c                rvv_depthwise3x3
  .text.rvv_matmul_ordered
-                0x0000000080003890      0x2ba /tmp/ccvW6Lb8.o
+                0x0000000080003890      0x2ba /tmp/cc50WbJc.o
                 0x0000000080003890                rvv_matmul_ordered
  .text.rvv_copy_bytes
-                0x0000000080003b4a       0xb8 /tmp/ccvW6Lb8.o
+                0x0000000080003b4a       0xb8 /tmp/cc50WbJc.o
                 0x0000000080003b4a                rvv_copy_bytes
  .text.rvv_nonlinear
-                0x0000000080003c02      0x196 /tmp/ccvW6Lb8.o
+                0x0000000080003c02      0x196 /tmp/cc50WbJc.o
                 0x0000000080003c02                rvv_nonlinear
  .text.rvv_softmax
-                0x0000000080003d98      0x356 /tmp/ccvW6Lb8.o
+                0x0000000080003d98      0x356 /tmp/cc50WbJc.o
                 0x0000000080003d98                rvv_softmax
  .text.amu_configure
-                0x00000000800040ee       0x70 /tmp/ccDXJZNz.o
+                0x00000000800040ee       0x70 /tmp/cc0D8q5P.o
                 0x00000000800040ee                amu_configure
  .text.amu_half
-                0x000000008000415e       0xc8 /tmp/ccDXJZNz.o
+                0x000000008000415e       0xc8 /tmp/cc0D8q5P.o
                 0x000000008000415e                amu_half
  .text.matmul_fp16
-                0x0000000080004226      0x4bc /tmp/ccDXJZNz.o
+                0x0000000080004226      0x560 /tmp/cc0D8q5P.o
  .text.amu_packed_weight_bytes
-                0x00000000800046e2       0x44 /tmp/ccDXJZNz.o
-                0x00000000800046e2                amu_packed_weight_bytes
+                0x0000000080004786       0x44 /tmp/cc0D8q5P.o
+                0x0000000080004786                amu_packed_weight_bytes
  .text.amu_packed_input_bytes
-                0x0000000080004726       0x30 /tmp/ccDXJZNz.o
-                0x0000000080004726                amu_packed_input_bytes
+                0x00000000800047ca       0x30 /tmp/cc0D8q5P.o
+                0x00000000800047ca                amu_packed_input_bytes
  .text.amu_pack_weights
-                0x0000000080004756      0x1ea /tmp/ccDXJZNz.o
-                0x0000000080004756                amu_pack_weights
+                0x00000000800047fa      0x1ea /tmp/cc0D8q5P.o
+                0x00000000800047fa                amu_pack_weights
  .text.amu_conv_input_shape
-                0x0000000080004940       0xf2 /tmp/ccDXJZNz.o
-                0x0000000080004940                amu_conv_input_shape
+                0x00000000800049e4       0xf2 /tmp/cc0D8q5P.o
+                0x00000000800049e4                amu_conv_input_shape
  .text.amu_pack_conv_input
-                0x0000000080004a32      0x31e /tmp/ccDXJZNz.o
-                0x0000000080004a32                amu_pack_conv_input
+                0x0000000080004ad6      0x31e /tmp/cc0D8q5P.o
+                0x0000000080004ad6                amu_pack_conv_input
+ .text.amu_output_acquire
+                0x0000000080004df4       0x78 /tmp/cc0D8q5P.o
+                0x0000000080004df4                amu_output_acquire
+ .text.amu_output_release
+                0x0000000080004e6c       0x44 /tmp/cc0D8q5P.o
+                0x0000000080004e6c                amu_output_release
  .text.amu_init
-                0x0000000080004d50       0x7e /tmp/ccDXJZNz.o
-                0x0000000080004d50                amu_init
+                0x0000000080004eb0       0x7e /tmp/cc0D8q5P.o
+                0x0000000080004eb0                amu_init
  .text.amu_matmul_fp16
-                0x0000000080004dce       0x2e /tmp/ccDXJZNz.o
-                0x0000000080004dce                amu_matmul_fp16
+                0x0000000080004f2e       0x2e /tmp/cc0D8q5P.o
+                0x0000000080004f2e                amu_matmul_fp16
  .text.amu_matmul_prepacked_fp16
-                0x0000000080004dfc       0x88 /tmp/ccDXJZNz.o
-                0x0000000080004dfc                amu_matmul_prepacked_fp16
+                0x0000000080004f5c       0x88 /tmp/cc0D8q5P.o
+                0x0000000080004f5c                amu_matmul_prepacked_fp16
  .text.amu_matmul_packed_fp16
-                0x0000000080004e84      0x102 /tmp/ccDXJZNz.o
-                0x0000000080004e84                amu_matmul_packed_fp16
+                0x0000000080004fe4      0x102 /tmp/cc0D8q5P.o
+                0x0000000080004fe4                amu_matmul_packed_fp16
  .text.spatial_half
-                0x0000000080004f86      0x274 /tmp/ccyxhawJ.o
+                0x00000000800050e6      0x274 /tmp/cccaanN5.o
  .text.amu_input_release
-                0x00000000800051fa       0xa2 /tmp/ccyxhawJ.o
-                0x00000000800051fa                amu_input_release
+                0x000000008000535a       0xb2 /tmp/cccaanN5.o
+                0x000000008000535a                amu_input_release
  .text.amu_input_acquire
-                0x000000008000529c      0x11c /tmp/ccyxhawJ.o
-                0x000000008000529c                amu_input_acquire
+                0x000000008000540c       0xe2 /tmp/cccaanN5.o
+                0x000000008000540c                amu_input_acquire
  .text.amu_input_bind_u8
-                0x00000000800053b8       0x12 /tmp/ccyxhawJ.o
-                0x00000000800053b8                amu_input_bind_u8
+                0x00000000800054ee       0x12 /tmp/cccaanN5.o
+                0x00000000800054ee                amu_input_bind_u8
  .text.amu_input_prepare
-                0x00000000800053ca      0x440 /tmp/ccyxhawJ.o
-                0x00000000800053ca                amu_input_prepare
+                0x0000000080005500      0x4a2 /tmp/cccaanN5.o
+                0x0000000080005500                amu_input_prepare
  .text.amu_pack_conv_input_rvv
-                0x000000008000580a      0xcaa /tmp/ccyxhawJ.o
-                0x000000008000580a                amu_pack_conv_input_rvv
+                0x00000000800059a2      0xcaa /tmp/cccaanN5.o
+                0x00000000800059a2                amu_pack_conv_input_rvv
  .text.heap_down
-                0x00000000800064b4       0xd4 /tmp/ccbZYAoW.o
- .text.matmul   0x0000000080006588       0x5a /tmp/ccbZYAoW.o
+                0x000000008000664c       0xd4 /tmp/ccNt6y9K.o
+ .text.matmul   0x0000000080006720       0x5a /tmp/ccNt6y9K.o
  .text.accel_model_prepare
-                0x00000000800065e2      0x230 /tmp/ccbZYAoW.o
-                0x00000000800065e2                accel_model_prepare
+                0x000000008000677a      0x230 /tmp/ccNt6y9K.o
+                0x000000008000677a                accel_model_prepare
  .text.accel_model_node
-                0x0000000080006812     0x1930 /tmp/ccbZYAoW.o
-                0x0000000080006812                accel_model_node
+                0x00000000800069aa     0x195a /tmp/ccNt6y9K.o
+                0x00000000800069aa                accel_model_node
  .text.board_uart_init
-                0x0000000080008142      0x2d0 /tmp/ccAg1cxM.o
-                0x0000000080008142                board_uart_init
+                0x0000000080008304      0x2d0 /tmp/cchpSYRj.o
+                0x0000000080008304                board_uart_init
  .text.board_uart_put
-                0x0000000080008412       0xa6 /tmp/ccAg1cxM.o
-                0x0000000080008412                board_uart_put
+                0x00000000800085d4       0xa6 /tmp/cchpSYRj.o
+                0x00000000800085d4                board_uart_put
  .text.board_uart_text
-                0x00000000800084b8       0x52 /tmp/ccAg1cxM.o
-                0x00000000800084b8                board_uart_text
+                0x000000008000867a       0x52 /tmp/cchpSYRj.o
+                0x000000008000867a                board_uart_text
  .text.board_uart_u64
-                0x000000008000850a       0x7e /tmp/ccAg1cxM.o
-                0x000000008000850a                board_uart_u64
+                0x00000000800086cc       0x7e /tmp/cchpSYRj.o
+                0x00000000800086cc                board_uart_u64
  .text.board_uart_i64
-                0x0000000080008588       0x3e /tmp/ccAg1cxM.o
-                0x0000000080008588                board_uart_i64
+                0x000000008000874a       0x3e /tmp/cchpSYRj.o
+                0x000000008000874a                board_uart_i64
  .text.board_uart_hex
-                0x00000000800085c6       0x80 /tmp/ccAg1cxM.o
-                0x00000000800085c6                board_uart_hex
+                0x0000000080008788       0x80 /tmp/cchpSYRj.o
+                0x0000000080008788                board_uart_hex
  .text.board_crc32
-                0x0000000080008646      0x162 /tmp/ccDHcOWd.o
-                0x0000000080008646                board_crc32
+                0x0000000080008808      0x162 /tmp/ccclYbkA.o
+                0x0000000080008808                board_crc32
  .text.graph_plan
-                0x00000000800087a8      0x798 /tmp/ccUgbSuU.o
+                0x000000008000896a      0x798 /tmp/ccTkcAsy.o
  .text.board_model_configure
-                0x0000000080008f40       0x9c /tmp/ccUgbSuU.o
-                0x0000000080008f40                board_model_configure
+                0x0000000080009102       0x9c /tmp/ccTkcAsy.o
+                0x0000000080009102                board_model_configure
  .text.board_model_set_u8
-                0x0000000080008fdc       0x28 /tmp/ccUgbSuU.o
-                0x0000000080008fdc                board_model_set_u8
+                0x000000008000919e       0x28 /tmp/ccTkcAsy.o
+                0x000000008000919e                board_model_set_u8
  .text.platform_exit
-                0x0000000080009004       0x66 /tmp/ccUgbSuU.o
-                0x0000000080009004                platform_exit
+                0x00000000800091c6       0x66 /tmp/ccTkcAsy.o
+                0x00000000800091c6                platform_exit
  .text.platform_trap
-                0x000000008000906a       0x30 /tmp/ccUgbSuU.o
-                0x000000008000906a                platform_trap
+                0x000000008000922c       0x30 /tmp/ccTkcAsy.o
+                0x000000008000922c                platform_trap
  .text.board_model_input
-                0x000000008000909a       0x14 /tmp/ccUgbSuU.o
-                0x000000008000909a                board_model_input
+                0x000000008000925c       0x14 /tmp/ccTkcAsy.o
+                0x000000008000925c                board_model_input
  .text.board_model_output
-                0x00000000800090ae       0x14 /tmp/ccUgbSuU.o
-                0x00000000800090ae                board_model_output
+                0x0000000080009270       0x14 /tmp/ccTkcAsy.o
+                0x0000000080009270                board_model_output
  .text.board_model_input_size
-                0x00000000800090c2        0xa /tmp/ccUgbSuU.o
-                0x00000000800090c2                board_model_input_size
+                0x0000000080009284        0xa /tmp/ccTkcAsy.o
+                0x0000000080009284                board_model_input_size
  .text.board_model_output_size
-                0x00000000800090cc        0xa /tmp/ccUgbSuU.o
-                0x00000000800090cc                board_model_output_size
+                0x000000008000928e        0xa /tmp/ccTkcAsy.o
+                0x000000008000928e                board_model_output_size
  .text.board_model_run
-                0x00000000800090d6      0x34c /tmp/ccUgbSuU.o
-                0x00000000800090d6                board_model_run
+                0x0000000080009298      0x34c /tmp/ccTkcAsy.o
+                0x0000000080009298                board_model_run
  .text.startup.main
-                0x0000000080009422      0x23c /tmp/ccUgbSuU.o
-                0x0000000080009422                main
+                0x00000000800095e4      0x23c /tmp/ccTkcAsy.o
+                0x00000000800095e4                main
  .text.board_diag_event.part.0
-                0x000000008000965e      0x440 /tmp/cc6ruct1.o
+                0x0000000080009820      0x440 /tmp/ccCcnLlx.o
  .text.board_diag_commit
-                0x0000000080009a9e       0x48 /tmp/cc6ruct1.o
-                0x0000000080009a9e                board_diag_commit
+                0x0000000080009c60       0x48 /tmp/ccCcnLlx.o
+                0x0000000080009c60                board_diag_commit
  .text.board_diag_init
-                0x0000000080009ae6       0x7e /tmp/cc6ruct1.o
-                0x0000000080009ae6                board_diag_init
+                0x0000000080009ca8       0x7e /tmp/ccCcnLlx.o
+                0x0000000080009ca8                board_diag_init
  .text.board_diag_stage
-                0x0000000080009b64       0x7c /tmp/cc6ruct1.o
-                0x0000000080009b64                board_diag_stage
+                0x0000000080009d26       0x7c /tmp/ccCcnLlx.o
+                0x0000000080009d26                board_diag_stage
  .text.board_diag_error
-                0x0000000080009be0       0x78 /tmp/cc6ruct1.o
-                0x0000000080009be0                board_diag_error
+                0x0000000080009da2       0x78 /tmp/ccCcnLlx.o
+                0x0000000080009da2                board_diag_error
  .text.board_diag_node
-                0x0000000080009c58       0x1a /tmp/cc6ruct1.o
-                0x0000000080009c58                board_diag_node
+                0x0000000080009e1a       0x1a /tmp/ccCcnLlx.o
+                0x0000000080009e1a                board_diag_node
  .text.board_diag_trap
-                0x0000000080009c72       0xb4 /tmp/cc6ruct1.o
-                0x0000000080009c72                board_diag_trap
- .text.publish  0x0000000080009d26      0x212 /tmp/cc51i8vQ.o
+                0x0000000080009e34       0xb4 /tmp/ccCcnLlx.o
+                0x0000000080009e34                board_diag_trap
+ .text.publish  0x0000000080009ee8      0x212 /tmp/cc1Hc20X.o
  .text.board_pcie_init
-                0x0000000080009f38      0x1d0 /tmp/cc51i8vQ.o
-                0x0000000080009f38                board_pcie_init
+                0x000000008000a0fa      0x1d0 /tmp/cc1Hc20X.o
+                0x000000008000a0fa                board_pcie_init
  .text.board_pcie_fault
-                0x000000008000a108        0xe /tmp/cc51i8vQ.o
-                0x000000008000a108                board_pcie_fault
+                0x000000008000a2ca        0xe /tmp/cc1Hc20X.o
+                0x000000008000a2ca                board_pcie_fault
  .text.board_pcie_start
-                0x000000008000a116      0x1b8 /tmp/cc51i8vQ.o
-                0x000000008000a116                board_pcie_start
+                0x000000008000a2d8      0x1b8 /tmp/cc1Hc20X.o
+                0x000000008000a2d8                board_pcie_start
  .text.board_pcie_poll
-                0x000000008000a2ce      0x54e /tmp/cc51i8vQ.o
-                0x000000008000a2ce                board_pcie_poll
+                0x000000008000a490      0x478 /tmp/cc1Hc20X.o
+                0x000000008000a490                board_pcie_poll
  .text.board_pcie_loop
-                0x000000008000a81c       0x16 /tmp/cc51i8vQ.o
-                0x000000008000a81c                board_pcie_loop
+                0x000000008000a908       0x16 /tmp/cc1Hc20X.o
+                0x000000008000a908                board_pcie_loop
 
-.rodata         0x000000008000a840   0x94886c
+.rodata         0x000000008000a940   0x94886c
  *(.rodata .rodata.* .srodata .srodata.*)
  .rodata.weights
-                0x000000008000a840   0x93af40 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/weights.o
-                0x000000008000a840                model_weights
-                0x0000000080945774                model_weights_end
- .srodata.cst4  0x0000000080945780       0x38 /tmp/ccUsQ6DO.o
+                0x000000008000a940   0x93af40 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/weights.o
+                0x000000008000a940                model_weights
+                0x0000000080945874                model_weights_end
+ .srodata.cst4  0x0000000080945880       0x38 /tmp/cctU2o5m.o
                                          0x30 (size before relaxing)
- .srodata.cst4  0x00000000809457b8        0x4 /tmp/ccpwI7X6.o
- .srodata.cst4  0x00000000809457b8        0x4 /tmp/cchBC08i.o
+ .srodata.cst4  0x00000000809458b8        0x4 /tmp/cc4KHHjR.o
+ .srodata.cst4  0x00000000809458b8        0x4 /tmp/ccKuNdrT.o
  .rodata.scalar_model_node
-                0x00000000809457b8       0x54 /tmp/ccOmPeEW.o
- .srodata.cst4  0x000000008094580c       0x28 /tmp/ccOmPeEW.o
- .srodata.cst4  0x000000008094580c       0x18 /tmp/ccvW6Lb8.o
- *fill*         0x000000008094580c        0x4 
- .srodata.cst8  0x0000000080945810       0x20 /tmp/ccvW6Lb8.o
+                0x00000000809458b8       0x54 /tmp/ccogk2jV.o
+ .srodata.cst4  0x000000008094590c       0x28 /tmp/ccogk2jV.o
+ .srodata.cst4  0x000000008094590c       0x18 /tmp/cc50WbJc.o
+ *fill*         0x000000008094590c        0x4 
+ .srodata.cst8  0x0000000080945910       0x20 /tmp/cc50WbJc.o
                                          0x10 (size before relaxing)
- .srodata.cst4  0x0000000080945830        0x4 /tmp/ccyxhawJ.o
+ .srodata.cst4  0x0000000080945930        0x4 /tmp/cccaanN5.o
  .rodata.accel_model_node
-                0x0000000080945830       0x48 /tmp/ccbZYAoW.o
+                0x0000000080945930       0x48 /tmp/ccNt6y9K.o
  .rodata.board_uart_hex.str1.8
-                0x0000000080945878     0x1117 /tmp/ccAg1cxM.o
+                0x0000000080945978     0x1117 /tmp/cchpSYRj.o
                                          0x19 (size before relaxing)
  .rodata.pack_publish.str1.8
-                0x000000008094698f       0x4a /tmp/cc6ruct1.o
+                0x0000000080946a8f       0x4a /tmp/ccCcnLlx.o
  .rodata.board_diag_event.part.0.str1.8
-                0x000000008094698f      0x11b /tmp/cc6ruct1.o
+                0x0000000080946a8f      0x11b /tmp/ccCcnLlx.o
  .rodata.str1.8
-                0x000000008094698f      0x168 /tmp/cc6ruct1.o
- *fill*         0x000000008094698f        0x1 
+                0x0000000080946a8f      0x168 /tmp/ccCcnLlx.o
+ *fill*         0x0000000080946a8f        0x1 
  .rodata.stages.1
-                0x0000000080946990       0x60 /tmp/cc6ruct1.o
+                0x0000000080946a90       0x60 /tmp/ccCcnLlx.o
  .rodata.str1.8
-                0x00000000809469f0      0xdd9 /tmp/ccEvm8bz.o
+                0x0000000080946af0      0xdd9 /tmp/ccToeOLY.o
  .rodata.model_nodes
-                0x00000000809469f0     0x6860 /tmp/ccEvm8bz.o
-                0x00000000809469f0                model_nodes
+                0x0000000080946af0     0x6860 /tmp/ccToeOLY.o
+                0x0000000080946af0                model_nodes
  .rodata.model_tensors
-                0x000000008094d250     0x5e5c /tmp/ccEvm8bz.o
-                0x000000008094d250                model_tensors
+                0x000000008094d350     0x5e5c /tmp/ccToeOLY.o
+                0x000000008094d350                model_tensors
  .rodata.publish.str1.8
-                0x00000000809530ac       0x6a /tmp/cc51i8vQ.o
- .srodata.cst8  0x00000000809530ac       0x10 /tmp/cc51i8vQ.o
+                0x00000000809531ac       0x6a /tmp/cc1Hc20X.o
+ .srodata.cst8  0x00000000809531ac       0x10 /tmp/cc1Hc20X.o
 
-.rela.dyn       0x00000000809530b0        0x0
+.rela.dyn       0x00000000809531b0        0x0
  .rela.text.init
-                0x00000000809530b0        0x0 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
+                0x00000000809531b0        0x0 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
  .rela.text.startup.main
-                0x00000000809530b0        0x0 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
+                0x00000000809531b0        0x0 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
 
-.data           0x00000000809530c0       0x28
-                0x00000000809538c0                PROVIDE (__global_pointer$ = (. + 0x800))
+.data           0x00000000809531c0       0x28
+                0x00000000809539c0                PROVIDE (__global_pointer$ = (. + 0x800))
  *(.sdata .sdata.* .data .data.*)
  .sdata.accumulator_bytes
-                0x00000000809530c0        0x8 /tmp/ccDXJZNz.o
+                0x00000000809531c0        0x8 /tmp/cc0D8q5P.o
  .sdata.amu_capacity_rows
-                0x00000000809530c8        0x8 /tmp/ccDXJZNz.o
-                0x00000000809530c8                amu_capacity_rows
+                0x00000000809531c8        0x8 /tmp/cc0D8q5P.o
+                0x00000000809531c8                amu_capacity_rows
  .sdata.amu_tile_n
-                0x00000000809530d0        0x8 /tmp/ccDXJZNz.o
-                0x00000000809530d0                amu_tile_n
+                0x00000000809531d0        0x8 /tmp/cc0D8q5P.o
+                0x00000000809531d0                amu_tile_n
  .sdata.amu_tile_m
-                0x00000000809530d8        0x8 /tmp/ccDXJZNz.o
-                0x00000000809530d8                amu_tile_m
+                0x00000000809531d8        0x8 /tmp/cc0D8q5P.o
+                0x00000000809531d8                amu_tile_m
  .sdata.prepared_bits
-                0x00000000809530e0        0x4 /tmp/ccyxhawJ.o
+                0x00000000809531e0        0x4 /tmp/cccaanN5.o
  .sdata.board_uart_status
-                0x00000000809530e4        0x4 /tmp/ccAg1cxM.o
-                0x00000000809530e4                board_uart_status
+                0x00000000809531e4        0x4 /tmp/cchpSYRj.o
+                0x00000000809531e4                board_uart_status
 
-.bss            0x0000000080953100   0x823c80
-                0x0000000080953100                __bss_start = .
+.bss            0x0000000080953200   0x823c80
+                0x0000000080953200                __bss_start = .
  *(.sbss .sbss.* .bss .bss.* COMMON)
  .bss.trap_stack
-                0x0000000080953100     0x1000 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
+                0x0000000080953200     0x1000 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
  .sbss.rvv_fuse_bias_silu
-                0x0000000080954100        0x4 /tmp/ccvW6Lb8.o
-                0x0000000080954100                rvv_fuse_bias_silu
+                0x0000000080954200        0x4 /tmp/cc50WbJc.o
+                0x0000000080954200                rvv_fuse_bias_silu
  .sbss.rvv_compute_flags
-                0x0000000080954104        0x4 /tmp/ccvW6Lb8.o
-                0x0000000080954104                rvv_compute_flags
+                0x0000000080954204        0x4 /tmp/cc50WbJc.o
+                0x0000000080954204                rvv_compute_flags
  .sbss.rvv_depthwise3x3_calls
-                0x0000000080954108        0x8 /tmp/ccvW6Lb8.o
-                0x0000000080954108                rvv_depthwise3x3_calls
+                0x0000000080954208        0x8 /tmp/cc50WbJc.o
+                0x0000000080954208                rvv_depthwise3x3_calls
+ .sbss.owned_output_bytes
+                0x0000000080954210        0x8 /tmp/cc0D8q5P.o
+ .sbss.owned_output
+                0x0000000080954218        0x8 /tmp/cc0D8q5P.o
  .sbss.amu_runtime_weight_conversions
-                0x0000000080954110        0x8 /tmp/ccDXJZNz.o
-                0x0000000080954110                amu_runtime_weight_conversions
+                0x0000000080954220        0x8 /tmp/cc0D8q5P.o
+                0x0000000080954220                amu_runtime_weight_conversions
  .sbss.amu_instruction_count
-                0x0000000080954118        0x8 /tmp/ccDXJZNz.o
-                0x0000000080954118                amu_instruction_count
+                0x0000000080954228        0x8 /tmp/cc0D8q5P.o
+                0x0000000080954228                amu_instruction_count
+ .sbss.reserved_half_bytes
+                0x0000000080954230        0x8 /tmp/cccaanN5.o
+ .sbss.reserved_half
+                0x0000000080954238        0x8 /tmp/cccaanN5.o
  .sbss.owned_half_bytes
-                0x0000000080954120        0x8 /tmp/ccyxhawJ.o
+                0x0000000080954240        0x8 /tmp/cccaanN5.o
  .sbss.owned_scratch_bytes
-                0x0000000080954128        0x8 /tmp/ccyxhawJ.o
+                0x0000000080954248        0x8 /tmp/cccaanN5.o
  .sbss.owned_half
-                0x0000000080954130        0x8 /tmp/ccyxhawJ.o
+                0x0000000080954250        0x8 /tmp/cccaanN5.o
  .sbss.owned_scratch
-                0x0000000080954138        0x8 /tmp/ccyxhawJ.o
+                0x0000000080954258        0x8 /tmp/cccaanN5.o
  .sbss.normalized_ready
-                0x0000000080954140        0x4 /tmp/ccyxhawJ.o
- *fill*         0x0000000080954144       0x3c 
+                0x0000000080954260        0x4 /tmp/cccaanN5.o
+ *fill*         0x0000000080954264       0x1c 
  .bss.normalized
-                0x0000000080954180      0x200 /tmp/ccyxhawJ.o
+                0x0000000080954280      0x200 /tmp/cccaanN5.o
  .sbss.prepared_source
-                0x0000000080954380        0x8 /tmp/ccyxhawJ.o
+                0x0000000080954480        0x8 /tmp/cccaanN5.o
  .sbss.u8_physical
-                0x0000000080954388        0x8 /tmp/ccyxhawJ.o
+                0x0000000080954488        0x8 /tmp/cccaanN5.o
  .sbss.prepared_input
-                0x0000000080954390        0x8 /tmp/ccyxhawJ.o
+                0x0000000080954490        0x8 /tmp/cccaanN5.o
  .sbss.u8_logical
-                0x0000000080954398        0x8 /tmp/ccyxhawJ.o
+                0x0000000080954498        0x8 /tmp/cccaanN5.o
  .sbss.amu_input_flags
-                0x00000000809543a0        0x4 /tmp/ccyxhawJ.o
-                0x00000000809543a0                amu_input_flags
- *fill*         0x00000000809543a4        0x4 
- .sbss.plan_kw  0x00000000809543a8        0x8 /tmp/ccyxhawJ.o
- .sbss.plan_kh  0x00000000809543b0        0x8 /tmp/ccyxhawJ.o
- .sbss.plan_w   0x00000000809543b8        0x8 /tmp/ccyxhawJ.o
- .sbss.plan_h   0x00000000809543c0        0x8 /tmp/ccyxhawJ.o
- .sbss.plan_k   0x00000000809543c8        0x8 /tmp/ccyxhawJ.o
- *fill*         0x00000000809543d0       0x30 
- .bss.indices   0x0000000080954400     0xc000 /tmp/ccyxhawJ.o
+                0x00000000809544a0        0x4 /tmp/cccaanN5.o
+                0x00000000809544a0                amu_input_flags
+ *fill*         0x00000000809544a4        0x4 
+ .sbss.plan_kw  0x00000000809544a8        0x8 /tmp/cccaanN5.o
+ .sbss.plan_kh  0x00000000809544b0        0x8 /tmp/cccaanN5.o
+ .sbss.plan_w   0x00000000809544b8        0x8 /tmp/cccaanN5.o
+ .sbss.plan_h   0x00000000809544c0        0x8 /tmp/cccaanN5.o
+ .sbss.plan_k   0x00000000809544c8        0x8 /tmp/cccaanN5.o
+ *fill*         0x00000000809544d0       0x30 
+ .bss.indices   0x0000000080954500     0xc000 /tmp/cccaanN5.o
  .sbss.accel_weight_layers
-                0x0000000080960400        0x8 /tmp/ccbZYAoW.o
-                0x0000000080960400                accel_weight_layers
+                0x0000000080960500        0x8 /tmp/ccNt6y9K.o
+                0x0000000080960500                accel_weight_layers
  .sbss.accel_weight_cycles
-                0x0000000080960408        0x8 /tmp/ccbZYAoW.o
-                0x0000000080960408                accel_weight_cycles
+                0x0000000080960508        0x8 /tmp/ccNt6y9K.o
+                0x0000000080960508                accel_weight_cycles
  .sbss.accel_weight_values
-                0x0000000080960410        0x8 /tmp/ccbZYAoW.o
-                0x0000000080960410                accel_weight_values
+                0x0000000080960510        0x8 /tmp/ccNt6y9K.o
+                0x0000000080960510                accel_weight_values
  .sbss.accel_weight_bytes
-                0x0000000080960418        0x8 /tmp/ccbZYAoW.o
-                0x0000000080960418                accel_weight_bytes
+                0x0000000080960518        0x8 /tmp/ccNt6y9K.o
+                0x0000000080960518                accel_weight_bytes
  .sbss.prepared_constants
-                0x0000000080960420        0x8 /tmp/ccbZYAoW.o
- .bss.prepared  0x0000000080960428     0x44a0 /tmp/ccbZYAoW.o
- *fill*         0x00000000809648c8       0x38 
+                0x0000000080960520        0x8 /tmp/ccNt6y9K.o
+ .bss.prepared  0x0000000080960528     0x44a0 /tmp/ccNt6y9K.o
+ *fill*         0x00000000809649c8       0x38 
  .bss.prepared_weights
-                0x0000000080964900   0x800000 /tmp/ccbZYAoW.o
+                0x0000000080964a00   0x800000 /tmp/ccNt6y9K.o
  .sbss.accel_alias_nodes
-                0x0000000081164900        0x4 /tmp/ccbZYAoW.o
-                0x0000000081164900                accel_alias_nodes
+                0x0000000081164a00        0x4 /tmp/ccNt6y9K.o
+                0x0000000081164a00                accel_alias_nodes
  .sbss.accel_scalar_nodes
-                0x0000000081164904        0x4 /tmp/ccbZYAoW.o
-                0x0000000081164904                accel_scalar_nodes
+                0x0000000081164a04        0x4 /tmp/ccNt6y9K.o
+                0x0000000081164a04                accel_scalar_nodes
  .sbss.accel_amu_nodes
-                0x0000000081164908        0x4 /tmp/ccbZYAoW.o
-                0x0000000081164908                accel_amu_nodes
+                0x0000000081164a08        0x4 /tmp/ccNt6y9K.o
+                0x0000000081164a08                accel_amu_nodes
  .sbss.accel_rvv_nodes
-                0x000000008116490c        0x4 /tmp/ccbZYAoW.o
-                0x000000008116490c                accel_rvv_nodes
+                0x0000000081164a0c        0x4 /tmp/ccNt6y9K.o
+                0x0000000081164a0c                accel_rvv_nodes
  .sbss.board_uart_dlf_bits
-                0x0000000081164910        0x4 /tmp/ccAg1cxM.o
-                0x0000000081164910                board_uart_dlf_bits
+                0x0000000081164a10        0x4 /tmp/cchpSYRj.o
+                0x0000000081164a10                board_uart_dlf_bits
  .sbss.board_uart_baud
-                0x0000000081164914        0x4 /tmp/ccAg1cxM.o
-                0x0000000081164914                board_uart_baud
- .bss.table.0   0x0000000081164918     0x1000 /tmp/ccDHcOWd.o
- .sbss.ready.1  0x0000000081165918        0x4 /tmp/ccDHcOWd.o
- *fill*         0x000000008116591c        0x4 
+                0x0000000081164a14        0x4 /tmp/cchpSYRj.o
+                0x0000000081164a14                board_uart_baud
+ .bss.table.0   0x0000000081164a18     0x1000 /tmp/ccclYbkA.o
+ .sbss.ready.1  0x0000000081165a18        0x4 /tmp/ccclYbkA.o
+ *fill*         0x0000000081165a1c        0x4 
  .bss.root_dirty
-                0x0000000081165920      0x225 /tmp/ccUgbSuU.o
- *fill*         0x0000000081165b45        0x3 
+                0x0000000081165a20      0x225 /tmp/ccTkcAsy.o
+ *fill*         0x0000000081165c45        0x3 
  .sbss.input_is_u8
-                0x0000000081165b48        0x4 /tmp/ccUgbSuU.o
+                0x0000000081165c48        0x4 /tmp/ccTkcAsy.o
  .sbss.startup_failure
-                0x0000000081165b4c        0x4 /tmp/ccUgbSuU.o
+                0x0000000081165c4c        0x4 /tmp/ccTkcAsy.o
  .sbss.board_current_node
-                0x0000000081165b50        0x4 /tmp/ccUgbSuU.o
-                0x0000000081165b50                board_current_node
- *fill*         0x0000000081165b54        0x4 
+                0x0000000081165c50        0x4 /tmp/ccTkcAsy.o
+                0x0000000081165c50                board_current_node
+ *fill*         0x0000000081165c54        0x4 
  .sbss.board_trap_value
-                0x0000000081165b58        0x8 /tmp/ccUgbSuU.o
-                0x0000000081165b58                board_trap_value
+                0x0000000081165c58        0x8 /tmp/ccTkcAsy.o
+                0x0000000081165c58                board_trap_value
  .sbss.board_trap_pc
-                0x0000000081165b60        0x8 /tmp/ccUgbSuU.o
-                0x0000000081165b60                board_trap_pc
+                0x0000000081165c60        0x8 /tmp/ccTkcAsy.o
+                0x0000000081165c60                board_trap_pc
  .sbss.board_trap_cause
-                0x0000000081165b68        0x8 /tmp/ccUgbSuU.o
-                0x0000000081165b68                board_trap_cause
+                0x0000000081165c68        0x8 /tmp/ccTkcAsy.o
+                0x0000000081165c68                board_trap_cause
  .sbss.board_error
-                0x0000000081165b70        0x8 /tmp/ccUgbSuU.o
-                0x0000000081165b70                board_error
+                0x0000000081165c70        0x8 /tmp/ccTkcAsy.o
+                0x0000000081165c70                board_error
  .sbss.graph_peak
-                0x0000000081165b78        0x8 /tmp/ccUgbSuU.o
+                0x0000000081165c78        0x8 /tmp/ccTkcAsy.o
  .sbss.graph_flags
-                0x0000000081165b80        0x4 /tmp/ccUgbSuU.o
- *fill*         0x0000000081165b84        0x4 
+                0x0000000081165c80        0x4 /tmp/ccTkcAsy.o
+ *fill*         0x0000000081165c84        0x4 
  .bss.graph_group
-                0x0000000081165b88      0x538 /tmp/ccUgbSuU.o
+                0x0000000081165c88      0x538 /tmp/ccTkcAsy.o
  .bss.graph_uses
-                0x00000000811660c0      0x894 /tmp/ccUgbSuU.o
- *fill*         0x0000000081166954        0x4 
+                0x00000000811661c0      0x894 /tmp/ccTkcAsy.o
+ *fill*         0x0000000081166a54        0x4 
  .bss.graph_last
-                0x0000000081166958      0x894 /tmp/ccUgbSuU.o
- *fill*         0x00000000811671ec        0x4 
+                0x0000000081166a58      0x894 /tmp/ccTkcAsy.o
+ *fill*         0x00000000811672ec        0x4 
  .bss.graph_first
-                0x00000000811671f0      0x894 /tmp/ccUgbSuU.o
- *fill*         0x0000000081167a84        0x4 
+                0x00000000811672f0      0x894 /tmp/ccTkcAsy.o
+ *fill*         0x0000000081167b84        0x4 
  .bss.graph_relative
-                0x0000000081167a88      0x894 /tmp/ccUgbSuU.o
- *fill*         0x000000008116831c        0x4 
+                0x0000000081167b88      0x894 /tmp/ccTkcAsy.o
+ *fill*         0x000000008116841c        0x4 
  .bss.graph_root
-                0x0000000081168320      0x894 /tmp/ccUgbSuU.o
- *fill*         0x0000000081168bb4        0x4 
+                0x0000000081168420      0x894 /tmp/ccTkcAsy.o
+ *fill*         0x0000000081168cb4        0x4 
  .bss.execution_tensors
-                0x0000000081168bb8     0x5e5c /tmp/ccUgbSuU.o
- *fill*         0x000000008116ea14       0x2c 
+                0x0000000081168cb8     0x5e5c /tmp/ccTkcAsy.o
+ *fill*         0x000000008116eb14       0x2c 
  .bss.board_pack_probe
-                0x000000008116ea40      0x100 /tmp/cc6ruct1.o
-                0x000000008116ea40                board_pack_probe
+                0x000000008116eb40      0x100 /tmp/ccCcnLlx.o
+                0x000000008116eb40                board_pack_probe
  .bss.board_profile
-                0x000000008116eb40     0x5f00 /tmp/cc6ruct1.o
-                0x000000008116eb40                board_profile
+                0x000000008116ec40     0x5f00 /tmp/ccCcnLlx.o
+                0x000000008116ec40                board_profile
  .bss.board_diag
-                0x0000000081174a40      0x340 /tmp/cc6ruct1.o
-                0x0000000081174a40                board_diag
+                0x0000000081174b40      0x340 /tmp/ccCcnLlx.o
+                0x0000000081174b40                board_diag
  .sbss.startup_failed
-                0x0000000081174d80        0x4 /tmp/cc51i8vQ.o
+                0x0000000081174e80        0x4 /tmp/cc1Hc20X.o
  .sbss.last_sequence
-                0x0000000081174d84        0x4 /tmp/cc51i8vQ.o
- .bss.status    0x0000000081174d88       0x40 /tmp/cc51i8vQ.o
- *fill*         0x0000000081174dc8       0x38 
+                0x0000000081174e84        0x4 /tmp/cc1Hc20X.o
+ .bss.status    0x0000000081174e88       0x40 /tmp/cc1Hc20X.o
+ *fill*         0x0000000081174ec8       0x38 
  .bss.board_node_snapshot
-                0x0000000081174e00      0x200 /tmp/cc51i8vQ.o
-                0x0000000081174e00                board_node_snapshot
+                0x0000000081174f00      0x200 /tmp/cc1Hc20X.o
+                0x0000000081174f00                board_node_snapshot
  .sbss.stream_configuration
-                0x0000000081175000        0x8 /tmp/cc51i8vQ.o
- *fill*         0x0000000081175008       0x38 
+                0x0000000081175100        0x8 /tmp/cc1Hc20X.o
+ *fill*         0x0000000081175108       0x38 
  .bss.stream_result
-                0x0000000081175040     0x1ca8 /tmp/cc51i8vQ.o
- *fill*         0x0000000081176ce8       0x18 
+                0x0000000081175140     0x1ca8 /tmp/cc1Hc20X.o
+ *fill*         0x0000000081176de8       0x18 
  .bss.stream_info
-                0x0000000081176d00       0x80 /tmp/cc51i8vQ.o
-                0x0000000081176d80                . = ALIGN (0x40)
-                0x0000000081176d80                __bss_end = .
+                0x0000000081176e00       0x80 /tmp/cc1Hc20X.o
+                0x0000000081176e80                . = ALIGN (0x40)
+                0x0000000081176e80                __bss_end = .
 
 .pcie_mailbox   0x0000000081f00000      0x100
  *(.pcie_mailbox)
- .pcie_mailbox  0x0000000081f00000      0x100 /tmp/cc51i8vQ.o
+ .pcie_mailbox  0x0000000081f00000      0x100 /tmp/cc1Hc20X.o
                 0x0000000081f00000                board_pcie_mailbox
 
 .clp_data       0x00000000f0000000   0xa96980
                 0x00000000f0000000                __clp_start = .
  *(.clp_data .clp_data.*)
- .clp_data      0x00000000f0000000     0x4000 /tmp/ccDXJZNz.o
- .clp_data      0x00000000f0004000   0x252000 /tmp/ccbZYAoW.o
- .clp_data      0x00000000f0256000   0x743100 /tmp/ccUgbSuU.o
- .clp_data      0x00000000f0999100    0xfd880 /tmp/cc51i8vQ.o
+ .clp_data      0x00000000f0000000     0x4000 /tmp/cc0D8q5P.o
+ .clp_data      0x00000000f0004000   0x252000 /tmp/ccNt6y9K.o
+ .clp_data      0x00000000f0256000   0x743100 /tmp/ccTkcAsy.o
+ .clp_data      0x00000000f0999100    0xfd880 /tmp/cc1Hc20X.o
                 0x00000000f0a96980                . = ALIGN (0x40)
                 0x00000000f0a96980                __clp_end = .
                 0x0000000082000000                __stack_top = (ORIGIN (RAM) + LENGTH (RAM))
@@ -684,91 +698,91 @@ OUTPUT(/mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/demo-fast.e
  .riscv.attributes
                 0x00000000000000f7       0xf3 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/weights.o
  .riscv.attributes
-                0x00000000000001ea       0xf5 /tmp/ccMQ8vRH.o
+                0x00000000000001ea       0xf5 /tmp/cczHA5sd.o
  .riscv.attributes
-                0x00000000000002df       0xf5 /tmp/cckWbqKc.o
+                0x00000000000002df       0xf5 /tmp/ccIEr9mg.o
  .riscv.attributes
-                0x00000000000003d4       0xf5 /tmp/ccUsQ6DO.o
+                0x00000000000003d4       0xf5 /tmp/cctU2o5m.o
  .riscv.attributes
-                0x00000000000004c9       0xf5 /tmp/ccpwI7X6.o
+                0x00000000000004c9       0xf5 /tmp/cc4KHHjR.o
  .riscv.attributes
-                0x00000000000005be       0xf5 /tmp/cchBC08i.o
+                0x00000000000005be       0xf5 /tmp/ccKuNdrT.o
  .riscv.attributes
-                0x00000000000006b3       0xf5 /tmp/ccOmPeEW.o
+                0x00000000000006b3       0xf5 /tmp/ccogk2jV.o
  .riscv.attributes
-                0x00000000000007a8       0xf5 /tmp/ccvW6Lb8.o
+                0x00000000000007a8       0xf5 /tmp/cc50WbJc.o
  .riscv.attributes
-                0x000000000000089d       0xf9 /tmp/ccDXJZNz.o
+                0x000000000000089d       0xf9 /tmp/cc0D8q5P.o
  .riscv.attributes
-                0x0000000000000996       0xf9 /tmp/ccyxhawJ.o
+                0x0000000000000996       0xf9 /tmp/cccaanN5.o
  .riscv.attributes
-                0x0000000000000a8f       0xf5 /tmp/ccbZYAoW.o
+                0x0000000000000a8f       0xf5 /tmp/ccNt6y9K.o
  .riscv.attributes
-                0x0000000000000b84       0xf5 /tmp/ccAg1cxM.o
+                0x0000000000000b84       0xf5 /tmp/cchpSYRj.o
  .riscv.attributes
-                0x0000000000000c79       0xf5 /tmp/ccDHcOWd.o
+                0x0000000000000c79       0xf5 /tmp/ccclYbkA.o
  .riscv.attributes
-                0x0000000000000d6e       0xf9 /tmp/ccUgbSuU.o
+                0x0000000000000d6e       0xf9 /tmp/ccTkcAsy.o
  .riscv.attributes
-                0x0000000000000e67       0xf5 /tmp/cc6ruct1.o
+                0x0000000000000e67       0xf5 /tmp/ccCcnLlx.o
  .riscv.attributes
-                0x0000000000000f5c       0xf5 /tmp/ccEvm8bz.o
+                0x0000000000000f5c       0xf5 /tmp/ccToeOLY.o
  .riscv.attributes
-                0x0000000000001051       0xf9 /tmp/cc51i8vQ.o
+                0x0000000000001051       0xf9 /tmp/cc1Hc20X.o
 
 .note.GNU-stack
                 0x0000000000000000        0x0
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccMQ8vRH.o
+                0x0000000000000000        0x0 /tmp/cczHA5sd.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/cckWbqKc.o
+                0x0000000000000000        0x0 /tmp/ccIEr9mg.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccUsQ6DO.o
+                0x0000000000000000        0x0 /tmp/cctU2o5m.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccpwI7X6.o
+                0x0000000000000000        0x0 /tmp/cc4KHHjR.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/cchBC08i.o
+                0x0000000000000000        0x0 /tmp/ccKuNdrT.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccOmPeEW.o
+                0x0000000000000000        0x0 /tmp/ccogk2jV.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccvW6Lb8.o
+                0x0000000000000000        0x0 /tmp/cc50WbJc.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccDXJZNz.o
+                0x0000000000000000        0x0 /tmp/cc0D8q5P.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccyxhawJ.o
+                0x0000000000000000        0x0 /tmp/cccaanN5.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccbZYAoW.o
+                0x0000000000000000        0x0 /tmp/ccNt6y9K.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccAg1cxM.o
+                0x0000000000000000        0x0 /tmp/cchpSYRj.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccDHcOWd.o
+                0x0000000000000000        0x0 /tmp/ccclYbkA.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccUgbSuU.o
+                0x0000000000000000        0x0 /tmp/ccTkcAsy.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/cc6ruct1.o
+                0x0000000000000000        0x0 /tmp/ccCcnLlx.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/ccEvm8bz.o
+                0x0000000000000000        0x0 /tmp/ccToeOLY.o
  .note.GNU-stack
-                0x0000000000000000        0x0 /tmp/cc51i8vQ.o
+                0x0000000000000000        0x0 /tmp/cc1Hc20X.o
 
-.debug_line     0x0000000000000000    0x204d3
+.debug_line     0x0000000000000000    0x20746
  .debug_line    0x0000000000000000      0x1e4 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
- .debug_line    0x00000000000001e4      0x73e /tmp/ccMQ8vRH.o
- .debug_line    0x0000000000000922     0x16c6 /tmp/cckWbqKc.o
- .debug_line    0x0000000000001fe8      0x395 /tmp/ccUsQ6DO.o
- .debug_line    0x000000000000237d     0x13c7 /tmp/ccpwI7X6.o
- .debug_line    0x0000000000003744     0x2ea7 /tmp/cchBC08i.o
- .debug_line    0x00000000000065eb     0x23d3 /tmp/ccOmPeEW.o
- .debug_line    0x00000000000089be     0x5d5d /tmp/ccvW6Lb8.o
- .debug_line    0x000000000000e71b     0x22c8 /tmp/ccDXJZNz.o
- .debug_line    0x00000000000109e3     0x389a /tmp/ccyxhawJ.o
- .debug_line    0x000000000001427d     0x4537 /tmp/ccbZYAoW.o
- .debug_line    0x00000000000187b4      0xe04 /tmp/ccAg1cxM.o
- .debug_line    0x00000000000195b8      0x38b /tmp/ccDHcOWd.o
- .debug_line    0x0000000000019943     0x22bb /tmp/ccUgbSuU.o
- .debug_line    0x000000000001bbfe     0x1f4f /tmp/cc6ruct1.o
- .debug_line    0x000000000001db4d       0x4d /tmp/ccEvm8bz.o
- .debug_line    0x000000000001db9a     0x2939 /tmp/cc51i8vQ.o
+ .debug_line    0x00000000000001e4      0x73e /tmp/cczHA5sd.o
+ .debug_line    0x0000000000000922     0x16c6 /tmp/ccIEr9mg.o
+ .debug_line    0x0000000000001fe8      0x395 /tmp/cctU2o5m.o
+ .debug_line    0x000000000000237d     0x13c7 /tmp/cc4KHHjR.o
+ .debug_line    0x0000000000003744     0x2ea7 /tmp/ccKuNdrT.o
+ .debug_line    0x00000000000065eb     0x23d3 /tmp/ccogk2jV.o
+ .debug_line    0x00000000000089be     0x5d5d /tmp/cc50WbJc.o
+ .debug_line    0x000000000000e71b     0x2724 /tmp/cc0D8q5P.o
+ .debug_line    0x0000000000010e3f     0x388b /tmp/cccaanN5.o
+ .debug_line    0x00000000000146ca     0x457b /tmp/ccNt6y9K.o
+ .debug_line    0x0000000000018c45      0xe04 /tmp/cchpSYRj.o
+ .debug_line    0x0000000000019a49      0x38b /tmp/ccclYbkA.o
+ .debug_line    0x0000000000019dd4     0x22bb /tmp/ccTkcAsy.o
+ .debug_line    0x000000000001c08f     0x1f4f /tmp/ccCcnLlx.o
+ .debug_line    0x000000000001dfde       0x4d /tmp/ccToeOLY.o
+ .debug_line    0x000000000001e02b     0x271b /tmp/cc1Hc20X.o
 
 .debug_line_str
                 0x0000000000000000      0x2f9
@@ -776,211 +790,211 @@ OUTPUT(/mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/demo-fast.e
                 0x0000000000000000      0x2f9 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
                                          0x3b (size before relaxing)
  .debug_line_str
-                0x00000000000002f9      0x12b /tmp/ccMQ8vRH.o
+                0x00000000000002f9      0x12b /tmp/cczHA5sd.o
  .debug_line_str
-                0x00000000000002f9      0x13d /tmp/cckWbqKc.o
+                0x00000000000002f9      0x13d /tmp/ccIEr9mg.o
  .debug_line_str
-                0x00000000000002f9      0x100 /tmp/ccUsQ6DO.o
+                0x00000000000002f9      0x100 /tmp/cctU2o5m.o
  .debug_line_str
-                0x00000000000002f9       0xf9 /tmp/ccpwI7X6.o
+                0x00000000000002f9       0xf9 /tmp/cc4KHHjR.o
  .debug_line_str
-                0x00000000000002f9      0x149 /tmp/cchBC08i.o
+                0x00000000000002f9      0x149 /tmp/ccKuNdrT.o
  .debug_line_str
-                0x00000000000002f9      0x12f /tmp/ccOmPeEW.o
+                0x00000000000002f9      0x12f /tmp/ccogk2jV.o
  .debug_line_str
-                0x00000000000002f9      0x157 /tmp/ccvW6Lb8.o
+                0x00000000000002f9      0x157 /tmp/cc50WbJc.o
  .debug_line_str
-                0x00000000000002f9      0x12e /tmp/ccDXJZNz.o
+                0x00000000000002f9      0x137 /tmp/cc0D8q5P.o
  .debug_line_str
-                0x00000000000002f9      0x199 /tmp/ccyxhawJ.o
+                0x00000000000002f9      0x199 /tmp/cccaanN5.o
  .debug_line_str
-                0x00000000000002f9      0x18e /tmp/ccbZYAoW.o
+                0x00000000000002f9      0x18e /tmp/ccNt6y9K.o
  .debug_line_str
-                0x00000000000002f9      0x138 /tmp/ccAg1cxM.o
+                0x00000000000002f9      0x138 /tmp/cchpSYRj.o
  .debug_line_str
-                0x00000000000002f9      0x106 /tmp/ccDHcOWd.o
+                0x00000000000002f9      0x106 /tmp/ccclYbkA.o
  .debug_line_str
-                0x00000000000002f9      0x1c9 /tmp/ccUgbSuU.o
+                0x00000000000002f9      0x1c9 /tmp/ccTkcAsy.o
  .debug_line_str
-                0x00000000000002f9      0x163 /tmp/cc6ruct1.o
+                0x00000000000002f9      0x163 /tmp/ccCcnLlx.o
  .debug_line_str
-                0x00000000000002f9      0x173 /tmp/ccEvm8bz.o
+                0x00000000000002f9      0x173 /tmp/ccToeOLY.o
  .debug_line_str
-                0x00000000000002f9      0x168 /tmp/cc51i8vQ.o
+                0x00000000000002f9      0x168 /tmp/cc1Hc20X.o
 
-.debug_info     0x0000000000000000    0x18dea
+.debug_info     0x0000000000000000    0x19297
  .debug_info    0x0000000000000000       0x29 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
- .debug_info    0x0000000000000029      0x6fb /tmp/ccMQ8vRH.o
- .debug_info    0x0000000000000724      0xe09 /tmp/cckWbqKc.o
- .debug_info    0x000000000000152d      0x265 /tmp/ccUsQ6DO.o
- .debug_info    0x0000000000001792      0xf64 /tmp/ccpwI7X6.o
- .debug_info    0x00000000000026f6     0x2599 /tmp/cchBC08i.o
- .debug_info    0x0000000000004c8f     0x15ce /tmp/ccOmPeEW.o
- .debug_info    0x000000000000625d     0x3fb1 /tmp/ccvW6Lb8.o
- .debug_info    0x000000000000a20e     0x15a3 /tmp/ccDXJZNz.o
- .debug_info    0x000000000000b7b1     0x2dd8 /tmp/ccyxhawJ.o
- .debug_info    0x000000000000e589     0x351a /tmp/ccbZYAoW.o
- .debug_info    0x0000000000011aa3      0xd70 /tmp/ccAg1cxM.o
- .debug_info    0x0000000000012813      0x1b6 /tmp/ccDHcOWd.o
- .debug_info    0x00000000000129c9     0x19ac /tmp/ccUgbSuU.o
- .debug_info    0x0000000000014375     0x1e7e /tmp/cc6ruct1.o
- .debug_info    0x00000000000161f3      0x2b1 /tmp/ccEvm8bz.o
- .debug_info    0x00000000000164a4     0x2946 /tmp/cc51i8vQ.o
+ .debug_info    0x0000000000000029      0x6fb /tmp/cczHA5sd.o
+ .debug_info    0x0000000000000724      0xe09 /tmp/ccIEr9mg.o
+ .debug_info    0x000000000000152d      0x265 /tmp/cctU2o5m.o
+ .debug_info    0x0000000000001792      0xf64 /tmp/cc4KHHjR.o
+ .debug_info    0x00000000000026f6     0x2599 /tmp/ccKuNdrT.o
+ .debug_info    0x0000000000004c8f     0x15ce /tmp/ccogk2jV.o
+ .debug_info    0x000000000000625d     0x3fb1 /tmp/cc50WbJc.o
+ .debug_info    0x000000000000a20e     0x1a89 /tmp/cc0D8q5P.o
+ .debug_info    0x000000000000bc97     0x2e16 /tmp/cccaanN5.o
+ .debug_info    0x000000000000eaad     0x35c2 /tmp/ccNt6y9K.o
+ .debug_info    0x000000000001206f      0xd70 /tmp/cchpSYRj.o
+ .debug_info    0x0000000000012ddf      0x1b6 /tmp/ccclYbkA.o
+ .debug_info    0x0000000000012f95     0x19ac /tmp/ccTkcAsy.o
+ .debug_info    0x0000000000014941     0x1e7e /tmp/ccCcnLlx.o
+ .debug_info    0x00000000000167bf      0x2b1 /tmp/ccToeOLY.o
+ .debug_info    0x0000000000016a70     0x2827 /tmp/cc1Hc20X.o
 
-.debug_abbrev   0x0000000000000000     0x3242
+.debug_abbrev   0x0000000000000000     0x32dc
  .debug_abbrev  0x0000000000000000       0x14 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
- .debug_abbrev  0x0000000000000014      0x228 /tmp/ccMQ8vRH.o
- .debug_abbrev  0x000000000000023c      0x294 /tmp/cckWbqKc.o
- .debug_abbrev  0x00000000000004d0      0x15f /tmp/ccUsQ6DO.o
- .debug_abbrev  0x000000000000062f      0x287 /tmp/ccpwI7X6.o
- .debug_abbrev  0x00000000000008b6      0x325 /tmp/cchBC08i.o
- .debug_abbrev  0x0000000000000bdb      0x2fb /tmp/ccOmPeEW.o
- .debug_abbrev  0x0000000000000ed6      0x48b /tmp/ccvW6Lb8.o
- .debug_abbrev  0x0000000000001361      0x3f8 /tmp/ccDXJZNz.o
- .debug_abbrev  0x0000000000001759      0x4c7 /tmp/ccyxhawJ.o
- .debug_abbrev  0x0000000000001c20      0x4f9 /tmp/ccbZYAoW.o
- .debug_abbrev  0x0000000000002119      0x2c8 /tmp/ccAg1cxM.o
- .debug_abbrev  0x00000000000023e1       0xce /tmp/ccDHcOWd.o
- .debug_abbrev  0x00000000000024af      0x409 /tmp/ccUgbSuU.o
- .debug_abbrev  0x00000000000028b8      0x450 /tmp/cc6ruct1.o
- .debug_abbrev  0x0000000000002d08       0xe3 /tmp/ccEvm8bz.o
- .debug_abbrev  0x0000000000002deb      0x457 /tmp/cc51i8vQ.o
+ .debug_abbrev  0x0000000000000014      0x228 /tmp/cczHA5sd.o
+ .debug_abbrev  0x000000000000023c      0x294 /tmp/ccIEr9mg.o
+ .debug_abbrev  0x00000000000004d0      0x15f /tmp/cctU2o5m.o
+ .debug_abbrev  0x000000000000062f      0x287 /tmp/cc4KHHjR.o
+ .debug_abbrev  0x00000000000008b6      0x325 /tmp/ccKuNdrT.o
+ .debug_abbrev  0x0000000000000bdb      0x2fb /tmp/ccogk2jV.o
+ .debug_abbrev  0x0000000000000ed6      0x48b /tmp/cc50WbJc.o
+ .debug_abbrev  0x0000000000001361      0x49a /tmp/cc0D8q5P.o
+ .debug_abbrev  0x00000000000017fb      0x4d8 /tmp/cccaanN5.o
+ .debug_abbrev  0x0000000000001cd3      0x4ea /tmp/ccNt6y9K.o
+ .debug_abbrev  0x00000000000021bd      0x2c8 /tmp/cchpSYRj.o
+ .debug_abbrev  0x0000000000002485       0xce /tmp/ccclYbkA.o
+ .debug_abbrev  0x0000000000002553      0x409 /tmp/ccTkcAsy.o
+ .debug_abbrev  0x000000000000295c      0x450 /tmp/ccCcnLlx.o
+ .debug_abbrev  0x0000000000002dac       0xe3 /tmp/ccToeOLY.o
+ .debug_abbrev  0x0000000000002e8f      0x44d /tmp/cc1Hc20X.o
 
-.debug_aranges  0x0000000000000000      0x860
+.debug_aranges  0x0000000000000000      0x880
  .debug_aranges
                 0x0000000000000000       0x30 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
  .debug_aranges
-                0x0000000000000030       0x40 /tmp/ccMQ8vRH.o
+                0x0000000000000030       0x40 /tmp/cczHA5sd.o
  .debug_aranges
-                0x0000000000000070       0x60 /tmp/cckWbqKc.o
+                0x0000000000000070       0x60 /tmp/ccIEr9mg.o
  .debug_aranges
-                0x00000000000000d0       0x50 /tmp/ccUsQ6DO.o
+                0x00000000000000d0       0x50 /tmp/cctU2o5m.o
  .debug_aranges
-                0x0000000000000120       0xb0 /tmp/ccpwI7X6.o
+                0x0000000000000120       0xb0 /tmp/cc4KHHjR.o
  .debug_aranges
-                0x00000000000001d0       0x70 /tmp/cchBC08i.o
+                0x00000000000001d0       0x70 /tmp/ccKuNdrT.o
  .debug_aranges
-                0x0000000000000240       0x40 /tmp/ccOmPeEW.o
+                0x0000000000000240       0x40 /tmp/ccogk2jV.o
  .debug_aranges
-                0x0000000000000280       0xe0 /tmp/ccvW6Lb8.o
+                0x0000000000000280       0xe0 /tmp/cc50WbJc.o
  .debug_aranges
-                0x0000000000000360       0xe0 /tmp/ccDXJZNz.o
+                0x0000000000000360      0x100 /tmp/cc0D8q5P.o
  .debug_aranges
-                0x0000000000000440       0x80 /tmp/ccyxhawJ.o
+                0x0000000000000460       0x80 /tmp/cccaanN5.o
  .debug_aranges
-                0x00000000000004c0       0x60 /tmp/ccbZYAoW.o
+                0x00000000000004e0       0x60 /tmp/ccNt6y9K.o
  .debug_aranges
-                0x0000000000000520       0x80 /tmp/ccAg1cxM.o
+                0x0000000000000540       0x80 /tmp/cchpSYRj.o
  .debug_aranges
-                0x00000000000005a0       0x30 /tmp/ccDHcOWd.o
+                0x00000000000005c0       0x30 /tmp/ccclYbkA.o
  .debug_aranges
-                0x00000000000005d0       0xd0 /tmp/ccUgbSuU.o
+                0x00000000000005f0       0xd0 /tmp/ccTkcAsy.o
  .debug_aranges
-                0x00000000000006a0      0x100 /tmp/cc6ruct1.o
+                0x00000000000006c0      0x100 /tmp/ccCcnLlx.o
  .debug_aranges
-                0x00000000000007a0       0x20 /tmp/ccEvm8bz.o
+                0x00000000000007c0       0x20 /tmp/ccToeOLY.o
  .debug_aranges
-                0x00000000000007c0       0xa0 /tmp/cc51i8vQ.o
+                0x00000000000007e0       0xa0 /tmp/cc1Hc20X.o
 
-.debug_str      0x0000000000000000     0x2b05
- .debug_str     0x0000000000000000     0x2b05 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
+.debug_str      0x0000000000000000     0x2b74
+ .debug_str     0x0000000000000000     0x2b74 /mnt/d/Document/work/YOLO移植/yolo26_riscv/build/n550-board/start.o
                                          0x49 (size before relaxing)
- .debug_str     0x0000000000002b05      0x3a3 /tmp/ccMQ8vRH.o
- .debug_str     0x0000000000002b05      0x4d8 /tmp/cckWbqKc.o
- .debug_str     0x0000000000002b05      0x2b6 /tmp/ccUsQ6DO.o
- .debug_str     0x0000000000002b05      0x3a9 /tmp/ccpwI7X6.o
- .debug_str     0x0000000000002b05      0x7cc /tmp/cchBC08i.o
- .debug_str     0x0000000000002b05      0x5d3 /tmp/ccOmPeEW.o
- .debug_str     0x0000000000002b05      0xbc2 /tmp/ccvW6Lb8.o
- .debug_str     0x0000000000002b05      0x73a /tmp/ccDXJZNz.o
- .debug_str     0x0000000000002b05     0x1019 /tmp/ccyxhawJ.o
- .debug_str     0x0000000000002b05      0xba6 /tmp/ccbZYAoW.o
- .debug_str     0x0000000000002b05      0x569 /tmp/ccAg1cxM.o
- .debug_str     0x0000000000002b05      0x275 /tmp/ccDHcOWd.o
- .debug_str     0x0000000000002b05      0xcaa /tmp/ccUgbSuU.o
- .debug_str     0x0000000000002b05      0xcad /tmp/cc6ruct1.o
- .debug_str     0x0000000000002b05      0x39d /tmp/ccEvm8bz.o
- .debug_str     0x0000000000002b05      0xe41 /tmp/cc51i8vQ.o
+ .debug_str     0x0000000000002b74      0x3a3 /tmp/cczHA5sd.o
+ .debug_str     0x0000000000002b74      0x4d8 /tmp/ccIEr9mg.o
+ .debug_str     0x0000000000002b74      0x2b6 /tmp/cctU2o5m.o
+ .debug_str     0x0000000000002b74      0x3a9 /tmp/cc4KHHjR.o
+ .debug_str     0x0000000000002b74      0x7cc /tmp/ccKuNdrT.o
+ .debug_str     0x0000000000002b74      0x5d3 /tmp/ccogk2jV.o
+ .debug_str     0x0000000000002b74      0xbc2 /tmp/cc50WbJc.o
+ .debug_str     0x0000000000002b74      0x91d /tmp/cc0D8q5P.o
+ .debug_str     0x0000000000002b74     0x103b /tmp/cccaanN5.o
+ .debug_str     0x0000000000002b74      0xc45 /tmp/ccNt6y9K.o
+ .debug_str     0x0000000000002b74      0x569 /tmp/cchpSYRj.o
+ .debug_str     0x0000000000002b74      0x275 /tmp/ccclYbkA.o
+ .debug_str     0x0000000000002b74      0xcaa /tmp/ccTkcAsy.o
+ .debug_str     0x0000000000002b74      0xcad /tmp/ccCcnLlx.o
+ .debug_str     0x0000000000002b74      0x39d /tmp/ccToeOLY.o
+ .debug_str     0x0000000000002b74      0xe41 /tmp/cc1Hc20X.o
 
 .debug_loclists
-                0x0000000000000000    0x129f0
+                0x0000000000000000    0x12c5e
  .debug_loclists
-                0x0000000000000000      0x5eb /tmp/ccMQ8vRH.o
+                0x0000000000000000      0x5eb /tmp/cczHA5sd.o
  .debug_loclists
-                0x00000000000005eb     0x135a /tmp/cckWbqKc.o
+                0x00000000000005eb     0x135a /tmp/ccIEr9mg.o
  .debug_loclists
-                0x0000000000001945      0x190 /tmp/ccUsQ6DO.o
+                0x0000000000001945      0x190 /tmp/cctU2o5m.o
  .debug_loclists
-                0x0000000000001ad5     0x1069 /tmp/ccpwI7X6.o
+                0x0000000000001ad5     0x1069 /tmp/cc4KHHjR.o
  .debug_loclists
-                0x0000000000002b3e     0x19b6 /tmp/cchBC08i.o
+                0x0000000000002b3e     0x19b6 /tmp/ccKuNdrT.o
  .debug_loclists
-                0x00000000000044f4     0x18fd /tmp/ccOmPeEW.o
+                0x00000000000044f4     0x18fd /tmp/ccogk2jV.o
  .debug_loclists
-                0x0000000000005df1     0x33fb /tmp/ccvW6Lb8.o
+                0x0000000000005df1     0x33fb /tmp/cc50WbJc.o
  .debug_loclists
-                0x00000000000091ec     0x1777 /tmp/ccDXJZNz.o
+                0x00000000000091ec     0x19c1 /tmp/cc0D8q5P.o
  .debug_loclists
-                0x000000000000a963     0x2274 /tmp/ccyxhawJ.o
+                0x000000000000abad     0x2267 /tmp/cccaanN5.o
  .debug_loclists
-                0x000000000000cbd7     0x2cb2 /tmp/ccbZYAoW.o
+                0x000000000000ce14     0x2da0 /tmp/ccNt6y9K.o
  .debug_loclists
-                0x000000000000f889      0x5f0 /tmp/ccAg1cxM.o
+                0x000000000000fbb4      0x5f0 /tmp/cchpSYRj.o
  .debug_loclists
-                0x000000000000fe79      0x1de /tmp/ccDHcOWd.o
+                0x00000000000101a4      0x1de /tmp/ccclYbkA.o
  .debug_loclists
-                0x0000000000010057      0xcf9 /tmp/ccUgbSuU.o
+                0x0000000000010382      0xcf9 /tmp/ccTkcAsy.o
  .debug_loclists
-                0x0000000000010d50      0x989 /tmp/cc6ruct1.o
+                0x000000000001107b      0x989 /tmp/ccCcnLlx.o
  .debug_loclists
-                0x00000000000116d9     0x1317 /tmp/cc51i8vQ.o
+                0x0000000000011a04     0x125a /tmp/cc1Hc20X.o
 
 .debug_rnglists
-                0x0000000000000000     0x44f4
+                0x0000000000000000     0x44ab
  .debug_rnglists
-                0x0000000000000000      0x1b4 /tmp/ccMQ8vRH.o
+                0x0000000000000000      0x1b4 /tmp/cczHA5sd.o
  .debug_rnglists
-                0x00000000000001b4      0x42a /tmp/cckWbqKc.o
+                0x00000000000001b4      0x42a /tmp/ccIEr9mg.o
  .debug_rnglists
-                0x00000000000005de       0x52 /tmp/ccUsQ6DO.o
+                0x00000000000005de       0x52 /tmp/cctU2o5m.o
  .debug_rnglists
-                0x0000000000000630      0x2b2 /tmp/ccpwI7X6.o
+                0x0000000000000630      0x2b2 /tmp/cc4KHHjR.o
  .debug_rnglists
-                0x00000000000008e2      0x89b /tmp/cchBC08i.o
+                0x00000000000008e2      0x89b /tmp/ccKuNdrT.o
  .debug_rnglists
-                0x000000000000117d      0x471 /tmp/ccOmPeEW.o
+                0x000000000000117d      0x471 /tmp/ccogk2jV.o
  .debug_rnglists
-                0x00000000000015ee     0x1146 /tmp/ccvW6Lb8.o
+                0x00000000000015ee     0x1146 /tmp/cc50WbJc.o
  .debug_rnglists
-                0x0000000000002734      0x408 /tmp/ccDXJZNz.o
+                0x0000000000002734      0x49b /tmp/cc0D8q5P.o
  .debug_rnglists
-                0x0000000000002b3c      0x53a /tmp/ccyxhawJ.o
+                0x0000000000002bcf      0x4f2 /tmp/cccaanN5.o
  .debug_rnglists
-                0x0000000000003076      0xa5b /tmp/ccbZYAoW.o
+                0x00000000000030c1      0xa58 /tmp/ccNt6y9K.o
  .debug_rnglists
-                0x0000000000003ad1       0x8a /tmp/ccAg1cxM.o
+                0x0000000000003b19       0x8a /tmp/cchpSYRj.o
  .debug_rnglists
-                0x0000000000003b5b       0x74 /tmp/ccDHcOWd.o
+                0x0000000000003ba3       0x74 /tmp/ccclYbkA.o
  .debug_rnglists
-                0x0000000000003bcf      0x350 /tmp/ccUgbSuU.o
+                0x0000000000003c17      0x350 /tmp/ccTkcAsy.o
  .debug_rnglists
-                0x0000000000003f1f      0x2a6 /tmp/cc6ruct1.o
+                0x0000000000003f67      0x2a6 /tmp/ccCcnLlx.o
  .debug_rnglists
-                0x00000000000041c5      0x32f /tmp/cc51i8vQ.o
+                0x000000000000420d      0x29e /tmp/cc1Hc20X.o
 
-.debug_frame    0x0000000000000000     0x20e0
- .debug_frame   0x0000000000000000       0xa8 /tmp/ccMQ8vRH.o
- .debug_frame   0x00000000000000a8      0x1e0 /tmp/cckWbqKc.o
- .debug_frame   0x0000000000000288       0x78 /tmp/ccUsQ6DO.o
- .debug_frame   0x0000000000000300      0x1c0 /tmp/ccpwI7X6.o
- .debug_frame   0x00000000000004c0      0x268 /tmp/cchBC08i.o
- .debug_frame   0x0000000000000728      0x1f0 /tmp/ccOmPeEW.o
- .debug_frame   0x0000000000000918      0x510 /tmp/ccvW6Lb8.o
- .debug_frame   0x0000000000000e28      0x420 /tmp/ccDXJZNz.o
- .debug_frame   0x0000000000001248      0x228 /tmp/ccyxhawJ.o
- .debug_frame   0x0000000000001470      0x428 /tmp/ccbZYAoW.o
- .debug_frame   0x0000000000001898      0x138 /tmp/ccAg1cxM.o
- .debug_frame   0x00000000000019d0       0x28 /tmp/ccDHcOWd.o
- .debug_frame   0x00000000000019f8      0x220 /tmp/ccUgbSuU.o
- .debug_frame   0x0000000000001c18      0x260 /tmp/cc6ruct1.o
- .debug_frame   0x0000000000001e78      0x268 /tmp/cc51i8vQ.o
+.debug_frame    0x0000000000000000     0x2138
+ .debug_frame   0x0000000000000000       0xa8 /tmp/cczHA5sd.o
+ .debug_frame   0x00000000000000a8      0x1e0 /tmp/ccIEr9mg.o
+ .debug_frame   0x0000000000000288       0x78 /tmp/cctU2o5m.o
+ .debug_frame   0x0000000000000300      0x1c0 /tmp/cc4KHHjR.o
+ .debug_frame   0x00000000000004c0      0x268 /tmp/ccKuNdrT.o
+ .debug_frame   0x0000000000000728      0x1f0 /tmp/ccogk2jV.o
+ .debug_frame   0x0000000000000918      0x510 /tmp/cc50WbJc.o
+ .debug_frame   0x0000000000000e28      0x458 /tmp/cc0D8q5P.o
+ .debug_frame   0x0000000000001280      0x228 /tmp/cccaanN5.o
+ .debug_frame   0x00000000000014a8      0x478 /tmp/ccNt6y9K.o
+ .debug_frame   0x0000000000001920      0x138 /tmp/cchpSYRj.o
+ .debug_frame   0x0000000000001a58       0x28 /tmp/ccclYbkA.o
+ .debug_frame   0x0000000000001a80      0x220 /tmp/ccTkcAsy.o
+ .debug_frame   0x0000000000001ca0      0x260 /tmp/ccCcnLlx.o
+ .debug_frame   0x0000000000001f00      0x238 /tmp/cc1Hc20X.o

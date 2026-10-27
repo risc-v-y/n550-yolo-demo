@@ -205,18 +205,21 @@ void board_pcie_poll(void) {
     uint32_t distance=sequence-last_sequence;
     if(!sequence || !distance || distance>=0x80000000u || startup_failed) return;
     PcieRequest request;
-    read_request(&request);
 #ifdef YOLO_N550_BOARD
     unsigned slot=board_pcie_mailbox.doorbell[1];
     stream_active=0;
     if(slot) {
         if(slot>2) {last_sequence=sequence; status.sequence=sequence; publish(PCIE_ERROR,PCIE_BAD_REQUEST,0); return;}
-        board_finish_write(input_slots+slot-1,sizeof(PcieInputSlot));
+        /* The payload is invalidated once, after validating this header.
+         * Header and payload occupy disjoint cache lines. */
+        board_finish_write(&input_slots[slot-1].request,sizeof(PcieRequest));
         const unsigned char *from=(const unsigned char *)&input_slots[slot-1].request;
         unsigned char *to=(unsigned char *)&request;
         for(unsigned i=0;i<64;++i) to[i]=from[i];
         stream_active=1;
-    }
+    } else read_request(&request);
+#else
+    read_request(&request);
 #endif
     last_sequence=sequence; /* Never repeat a command, including a failed one. */
     status.sequence=sequence; status.output_bytes=status.output_crc=0;
@@ -276,7 +279,7 @@ void board_pcie_poll(void) {
     if(!YOLO_FAST && crc!=request.input_crc) {
         board_diag.frame=request.frame; board_diag.observed=crc; board_diag.expected=request.input_crc;
         board_diag_error(PCIE_BAD_INPUT,0);
-        board_prepare_write(board_model_input(),board_model_input_size());
+        if(!compact) board_prepare_write(board_model_input(),board_model_input_size());
         publish(PCIE_ERROR,PCIE_BAD_INPUT,0); return;
     }
     board_diag.frame=request.frame; board_diag.options=request.options;
@@ -287,9 +290,9 @@ void board_pcie_poll(void) {
         status.output_crc=YOLO_FAST ? 0 : board_crc32(board_model_output(),status.output_bytes);
         board_clean(board_model_output(),status.output_bytes);
     }
-    /* Model arena aliases its tensors. Relinquish input lines again before
-     * DONE; host may reuse them only AFTER it has downloaded the old output. */
-    board_prepare_write(board_model_input(),board_model_input_size());
+    /* Legacy FP32 host writes reuse arena lines. Compact input is held in
+     * its independent slot; never flush an unrelated arena tensor here. */
+    if(!compact) board_prepare_write(board_model_input(),board_model_input_size());
     if(!YOLO_FAST || result) board_diag_commit();
     if(!YOLO_FAST && !result && board_profile.magic==BOARD_PROFILE_MAGIC) {
         board_profile.reserved=status.session;

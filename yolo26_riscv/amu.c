@@ -154,6 +154,43 @@ int amu_pack_conv_input(const Conv2D *p,const float *input,size_t batch,
 
 #ifndef AMU_PACK_ONLY
 
+/* AMU writes all spatial blocks before a scalar/RVV consumer may read.
+ * Whole cache lines only: never invalidate a neighbouring live tensor. */
+#ifdef YOLO_N550_BOARD
+static float *owned_output;
+static size_t owned_output_bytes;
+#endif
+int amu_output_acquire(float *output,size_t bytes) {
+#ifdef YOLO_N550_BOARD
+    if(owned_output) return -1;
+    uintptr_t address=(uintptr_t)output;
+    if(!output || !bytes || bytes>UINTPTR_MAX-address) return -1;
+    if(address%64 || bytes%64 || (board_diag.options&DIAG_TRACE) ||
+       !board_is_clp(output) || !board_is_clp((char *)output+bytes-1)) return 0;
+    board_prepare_write(output,bytes);
+    owned_output=output; owned_output_bytes=bytes;
+#else
+    (void)output; (void)bytes;
+#endif
+    return 0;
+}
+void amu_output_release(void) {
+#ifdef YOLO_N550_BOARD
+    if(owned_output) board_finish_write(owned_output,owned_output_bytes);
+    owned_output=0; owned_output_bytes=0;
+#endif
+}
+#ifdef YOLO_N550_BOARD
+static int output_owned(const float *output,size_t m,size_t n,size_t ldc) {
+    if(!owned_output || !m || !n || ldc<n || n>SIZE_MAX/4 ||
+       m-1>(SIZE_MAX/4-n)/ldc) return 0;
+    size_t bytes=((m-1)*ldc+n)*4;
+    uintptr_t at=(uintptr_t)output,base=(uintptr_t)owned_output;
+    return at>=base && at-base<=owned_output_bytes &&
+           bytes<=owned_output_bytes-(at-base);
+}
+#endif
+
 /* HSC: matrix CSR reads drain the AMU ROB. Compiler barriers are needed:
  * the vendor load/store macros themselves do not declare memory clobbers.
  * Platform cache maintenance will be supplied by the platform adapter. */
@@ -192,6 +229,9 @@ static int matmul_fp16(const float *a,const AmuPackedWeights *packed,const float
                        const AmuPackedInput *input,float *c,
                        size_t m,size_t n,size_t k,size_t lda,size_t ldb,size_t ldc) {
     if ((!a && !packed) || (!b && !input) || !c || lda < k || ldb < n || ldc < n) return -1;
+#ifdef YOLO_N550_BOARD
+    int whole_output=output_owned(c,m,n,ldc);
+#endif
     for (size_t row = 0; row < m; row += amu_tile_m) {
         size_t rows = m - row < amu_tile_m ? m - row : amu_tile_m;
         for (size_t col = 0; col < n; col += amu_tile_n) {
@@ -245,7 +285,7 @@ static int matmul_fp16(const float *a,const AmuPackedWeights *packed,const float
             }
             start = model_ticks();
 #ifdef YOLO_N550_BOARD
-            for (size_t i = 0; i < rows; ++i)
+            for (size_t i = 0; !whole_output && i < rows; ++i)
                 board_prepare_write(c + (row+i)*ldc + col, cols*sizeof(float));
 #endif
             DIAG_PHASE(PHASE_AMU_STORE);
@@ -254,7 +294,7 @@ static int matmul_fp16(const float *a,const AmuPackedWeights *packed,const float
             complete();
             __asm__ volatile ("fence rw, rw" : : : "memory");
 #ifdef YOLO_N550_BOARD
-            for (size_t i = 0; i < rows; ++i)
+            for (size_t i = 0; !whole_output && i < rows; ++i)
                 board_finish_write(c + (row+i)*ldc + col, cols*sizeof(float));
 #endif
             (void)old;

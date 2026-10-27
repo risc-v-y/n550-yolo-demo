@@ -58,6 +58,11 @@ int amu_pack_conv_input_rvv(const Conv2D *p, const float *input, size_t batch,
                             size_t first, size_t columns, uint16_t *storage,
                             size_t capacity, AmuPackedInput *packed);
 int amu_init(void);
+/* One synchronous convolution group owns complete CLP output cache lines.
+ * Release before bias, scalar reads, diagnostics or arena reuse. Unaligned,
+ * non-CLP and trace destinations retain the per-tile handoff path. */
+int amu_output_acquire(float *output,size_t bytes);
+void amu_output_release(void);
 int amu_matmul_fp16(const float *a, const float *b, float *c,
                     size_t m, size_t n, size_t k, size_t lda, size_t ldb, size_t ldc);
 int amu_matmul_prepacked_fp16(const AmuPackedWeights *packed, const float *b, float *c,
